@@ -25,7 +25,7 @@ class ExternalBotsRepo:
 		return obj
 
 	async def get_active(self) -> list[ExternalBot]:
-		res = await self.session.execute(select(ExternalBot).where(ExternalBot.is_active == True))
+		res = await self.session.execute(select(ExternalBot).where(ExternalBot.is_active.is_(True)))
 		return list(res.scalars().all())
 
 	async def get_by_id(self, external_bot_id: int) -> ExternalBot | None:

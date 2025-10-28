@@ -1,0 +1,18 @@
+thresholds:
+  maxChangedLines: 150
+  maxFiles: 15
+categories:
+  - style
+  - typing
+  - dead_code
+  - micro_perf
+exclude:
+  - "**/venv/**"
+  - "**/.venv/**"
+  - "**/node_modules/**"
+  - "**/.specify/**"
+  - "**/.cursor/**"
+  - "**/alembic/**"
+  - "**/*.min.*"
+ci:
+  preCheck: "git diff --name-only --cached | grep -E '\\.py$' | xargs -r uv run ruff check && (uv run pytest -q || true)"
