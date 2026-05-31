@@ -18,8 +18,9 @@ def _build_proxy() -> dict | None:
             raise ValueError(
                 "USERBOT_PROXY_URL must look like socks5://host:port or socks5://user:pass@host:port"
             )
+        scheme = "http" if parsed.scheme == "https" else parsed.scheme
         proxy: dict = {
-            "scheme": parsed.scheme,
+            "scheme": scheme,
             "hostname": parsed.hostname,
             "port": int(parsed.port),
         }
@@ -30,8 +31,9 @@ def _build_proxy() -> dict | None:
         return proxy
 
     if settings.userbot_proxy_host and settings.userbot_proxy_port:
+        scheme = settings.userbot_proxy_scheme or "socks5"
         proxy = {
-            "scheme": settings.userbot_proxy_scheme or "socks5",
+            "scheme": "http" if scheme == "https" else scheme,
             "hostname": settings.userbot_proxy_host,
             "port": int(settings.userbot_proxy_port),
         }
