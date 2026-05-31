@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, field_validator
 from loguru import logger
 import json
 from typing import Any
@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     bot_token: str = Field(alias="BOT_TOKEN")
     api_id: int = Field(alias="API_ID")
     api_hash: str = Field(alias="API_HASH")
+    userbot_session: str | None = Field(default=None, alias="USERBOT_SESSION")
+    userbot_proxy_url: str | None = Field(default=None, alias="USERBOT_PROXY_URL")
+    userbot_proxy_scheme: str | None = Field(default=None, alias="USERBOT_PROXY_SCHEME")
+    userbot_proxy_host: str | None = Field(default=None, alias="USERBOT_PROXY_HOST")
+    userbot_proxy_port: int | None = Field(default=None, alias="USERBOT_PROXY_PORT")
+    userbot_proxy_username: str | None = Field(default=None, alias="USERBOT_PROXY_USERNAME")
+    userbot_proxy_password: str | None = Field(default=None, alias="USERBOT_PROXY_PASSWORD")
     redis_dsn: str | None = Field(default=None, alias="REDIS_DSN")
     # Backward-compat optional legacy keys; ignored if REDIS_DSN provided
     redis_host: str | None = Field(default=None, alias="redis_host")
@@ -107,6 +114,13 @@ class Settings(BaseSettings):
 
     # Content extraction
     content_extract_max_len: int = Field(default=8000, alias="CONTENT_EXTRACT_MAX_LEN")
+
+    @field_validator("userbot_proxy_port", mode="before")
+    @classmethod
+    def _empty_proxy_port_to_none(cls, value):
+        if value == "":
+            return None
+        return value
 
     def effective_redis_dsn(self) -> str | None:
         if self.redis_dsn:
