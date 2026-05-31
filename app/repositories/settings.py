@@ -9,13 +9,17 @@ class ChannelSettingsRepo(BaseRepository[ChannelSettings]):
         super().__init__(session, ChannelSettings)
 
     async def get_by_channel_id(self, channel_id: int) -> ChannelSettings | None:
-        res = await self.session.execute(select(ChannelSettings).where(ChannelSettings.channel_id == channel_id))
+        res = await self.session.execute(
+            select(ChannelSettings).where(ChannelSettings.channel_id == channel_id)
+        )
         return res.scalars().first()
 
     async def update_timezone(self, channel_id: int, tz_code: str) -> bool:
         st = await self.get_by_channel_id(channel_id)
         if not st:
-            st = ChannelSettings(channel_id=channel_id, autosign=None, split_rules=[], filters={})
+            st = ChannelSettings(
+                channel_id=channel_id, autosign=None, split_rules=[], filters={}
+            )
             self.session.add(st)
         if st.filters is None:
             st.filters = {}
@@ -31,7 +35,9 @@ class ChannelSettingsRepo(BaseRepository[ChannelSettings]):
     async def set_service_flag(self, channel_id: int, key: str, value: bool) -> None:
         st = await self.get_by_channel_id(channel_id)
         if not st:
-            st = ChannelSettings(channel_id=channel_id, autosign=None, split_rules=[], filters={})
+            st = ChannelSettings(
+                channel_id=channel_id, autosign=None, split_rules=[], filters={}
+            )
             self.session.add(st)
         if st.filters is None:
             st.filters = {}
@@ -43,10 +49,9 @@ class ChannelSettingsRepo(BaseRepository[ChannelSettings]):
     async def update_autosign(self, channel_id: int, text: str | None) -> None:
         st = await self.get_by_channel_id(channel_id)
         if not st:
-            st = ChannelSettings(channel_id=channel_id, autosign=None, split_rules=[], filters={})
+            st = ChannelSettings(
+                channel_id=channel_id, autosign=None, split_rules=[], filters={}
+            )
             self.session.add(st)
-        st.autosign = (text or None)
+        st.autosign = text or None
         await self.session.commit()
-        return True
-
-

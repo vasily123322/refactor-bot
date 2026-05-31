@@ -50,9 +50,7 @@ PRESETS: Sequence[dict] = [
             "Ты — редактор. Перефразируй так, чтобы стало проще читать, без потери смысла.\n"
             "Соблюдай {tone}, {length}, {emoji_level}, ru. Правила тона: {tone_rules}"
         ),
-        "user_template": (
-            "Перефразируй и упростай:\n{original_text}"
-        ),
+        "user_template": ("Перефразируй и упростай:\n{original_text}"),
     },
     {
         "code": "tg_story",
@@ -63,9 +61,7 @@ PRESETS: Sequence[dict] = [
             "Соблюдай {tone}, {length}, {emoji_level}, ru. Правила тона: {tone_rules}"
         ),
         "user_template": (
-            "Тема/событие: {topic}\n"
-            "Контекст: {goal}\n"
-            "Аудитория: {audience}"
+            "Тема/событие: {topic}\nКонтекст: {goal}\nАудитория: {audience}"
         ),
     },
     {
@@ -91,10 +87,7 @@ PRESETS: Sequence[dict] = [
             "Ты — автор объясняющих постов. Объясняй коротко и ясно, примеры по делу.\n"
             "Соблюдай {tone}, {length}, {emoji_level}, ru. Правила тона: {tone_rules}"
         ),
-        "user_template": (
-            "Тема: {topic}\n"
-            "Что нужно объяснить: {goal}"
-        ),
+        "user_template": ("Тема: {topic}\nЧто нужно объяснить: {goal}"),
     },
     {
         "code": "tg_howto",
@@ -104,10 +97,7 @@ PRESETS: Sequence[dict] = [
             "Ты — автор инструкций. Дай пошаговый план/чек‑лист, без воды.\n"
             "Соблюдай {tone}, {length}, {emoji_level}, ru. Правила тона: {tone_rules}"
         ),
-        "user_template": (
-            "Задача/цель: {goal}\n"
-            "Контекст: {topic}"
-        ),
+        "user_template": ("Задача/цель: {goal}\nКонтекст: {topic}"),
     },
     {
         "code": "tg_case",
@@ -117,10 +107,7 @@ PRESETS: Sequence[dict] = [
             "Ты — редактор кейсов. Структура: контекст; проблема; решение; результат; вывод.\n"
             "Соблюдай {tone}, {length}, {emoji_level}, ru. Правила тона: {tone_rules}"
         ),
-        "user_template": (
-            "Контекст: {topic}\n"
-            "Цель: {goal}"
-        ),
+        "user_template": ("Контекст: {topic}\nЦель: {goal}"),
     },
     {
         "code": "tg_announce",
@@ -131,9 +118,7 @@ PRESETS: Sequence[dict] = [
             "Соблюдай {tone}, {length}, {emoji_level}, ru. Правила тона: {tone_rules}"
         ),
         "user_template": (
-            "Мероприятие: {topic}\n"
-            "Детали: {goal}\n"
-            "Ссылки/регистрация: {links}"
+            "Мероприятие: {topic}\nДетали: {goal}\nСсылки/регистрация: {links}"
         ),
     },
     {
@@ -144,10 +129,7 @@ PRESETS: Sequence[dict] = [
             "Ты — автор подборок. Сделай список с короткими пояснениями.\n"
             "Соблюдай {tone}, {length}, {emoji_level}, ru. Правила тона: {tone_rules}"
         ),
-        "user_template": (
-            "Тема подборки: {topic}\n"
-            "Критерии/цель: {goal}"
-        ),
+        "user_template": ("Тема подборки: {topic}\nКритерии/цель: {goal}"),
     },
 ]
 
@@ -176,5 +158,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-

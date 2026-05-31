@@ -10,22 +10,34 @@ class SubscribersRepo(BaseRepository[Subscriber]):
 
     async def get(self, channel_id: int, user_id: int) -> Subscriber | None:
         res = await self.session.execute(
-            select(Subscriber).where(Subscriber.channel_id == channel_id, Subscriber.user_id == user_id)
+            select(Subscriber).where(
+                Subscriber.channel_id == channel_id, Subscriber.user_id == user_id
+            )
         )
         return res.scalars().first()
 
-    async def add(self, channel_id: int, user_id: int, username: str | None, full_name: str | None) -> Subscriber:
+    async def add(
+        self, channel_id: int, user_id: int, username: str | None, full_name: str | None
+    ) -> Subscriber:
         obj = await self.get(channel_id, user_id)
         if obj:
             return obj
-        obj = Subscriber(channel_id=channel_id, user_id=user_id, username=username, full_name=full_name, tags=[])
+        obj = Subscriber(
+            channel_id=channel_id,
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            tags=[],
+        )
         self.session.add(obj)
         await self.session.commit()
         await self.session.refresh(obj)
         return obj
 
     async def list_user_ids(self, channel_id: int) -> list[int]:
-        res = await self.session.execute(select(Subscriber.user_id).where(Subscriber.channel_id == channel_id))
+        res = await self.session.execute(
+            select(Subscriber.user_id).where(Subscriber.channel_id == channel_id)
+        )
         return [int(r[0]) for r in res.all()]
 
     async def add_tag(self, channel_id: int, user_id: int, tag: str) -> None:
@@ -39,7 +51,9 @@ class SubscribersRepo(BaseRepository[Subscriber]):
             await self.session.commit()
 
     async def list_user_ids_by_tag(self, channel_id: int, tag: str) -> list[int]:
-        res = await self.session.execute(select(Subscriber).where(Subscriber.channel_id == channel_id))
+        res = await self.session.execute(
+            select(Subscriber).where(Subscriber.channel_id == channel_id)
+        )
         uids: list[int] = []
         for s in res.scalars().all():
             try:
@@ -50,8 +64,9 @@ class SubscribersRepo(BaseRepository[Subscriber]):
         return uids
 
     async def list_all_by_channel(self, channel_id: int) -> list[Subscriber]:
-        res = await self.session.execute(select(Subscriber).where(Subscriber.channel_id == channel_id).order_by(Subscriber.created_at.desc()))
+        res = await self.session.execute(
+            select(Subscriber)
+            .where(Subscriber.channel_id == channel_id)
+            .order_by(Subscriber.created_at.desc())
+        )
         return list(res.scalars().all())
-
-
-

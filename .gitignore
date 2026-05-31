@@ -1,2 +1,46 @@
-# Spec Kit agent artifacts
+# Local secrets / environment
+.env
+.env.*
+!.env.example
+
+# Databases and runtime state
+data/*.db
+data/*.db-*
+*.sqlite
+*.sqlite3
+*.session
+*.session-journal
+app/bot/*.session*
+data/userbot/
+data/tmp/
+
+# Logs / pids / runtime cache
+logs/
+*.log
+*.pid
+dispatcher.log
+dispatcher.pid
+var/video_cache/
+
+# Python caches / tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+
+# IDE / agent artifacts
 .cursor/
+.vscode/
+.kiro/
+.specify/
+
+# OS/editor noise
+.DS_Store
+*.swp

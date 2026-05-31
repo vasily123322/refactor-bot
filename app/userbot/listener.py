@@ -15,12 +15,10 @@ logger.info("listener: module loaded")
 
 @app.on_message(filters.command(["ping"]))
 async def _ping_handler(_, message):
-	try:
-		await message.reply_text("pong")
-	except Exception as e:
-		logger.warning(f"userbot listener ping error: {e}")
-
-
+    try:
+        await message.reply_text("pong")
+    except Exception as e:
+        logger.warning(f"userbot listener ping error: {e}")
 
 
 @app.on_message(filters.channel)
@@ -38,7 +36,9 @@ async def _on_channel_post(client, message):
             return
         username = getattr(chat, "username", None)
         uname = f"@{username}" if username else None
-        logger.info(f"listener: channel post chat_id={chat_id} uname={uname} has_text={bool(getattr(message,'text',None)) or bool(getattr(message,'caption',None))}")
+        logger.info(
+            f"listener: channel post chat_id={chat_id} uname={uname} has_text={bool(getattr(message, 'text', None)) or bool(getattr(message, 'caption', None))}"
+        )
 
         # Найдём подходящие источники (включённые) по username/ID
         async with AsyncSessionLocal() as session:
@@ -50,7 +50,9 @@ async def _on_channel_post(client, message):
         logger.info(f"listener: matched {len(sources)} ai_sources")
 
         # Подготовим текст исходного поста
-        orig_text = (getattr(message, "caption", None) or getattr(message, "text", None) or "").strip()
+        orig_text = (
+            getattr(message, "caption", None) or getattr(message, "text", None) or ""
+        ).strip()
         if not orig_text:
             logger.info("listener: skip channel post without text/caption")
             return
@@ -75,6 +77,7 @@ async def _on_channel_post(client, message):
                 gen = AIGenerationService(session)
                 # Получим AI-настройки для вычисления prompt_key и приоритета
                 from app.repositories.ai_settings import ChannelAISettingsRepo
+
                 ai_repo = ChannelAISettingsRepo(session)
                 ai_set = await ai_repo.get_or_create(int(s.channel_id))
                 # Вычислим приоритет
@@ -86,16 +89,33 @@ async def _on_channel_post(client, message):
                     priority = "custom"
                 else:
                     priority = "default"
+
                 # Построим prompt_key
-                def _make_prompt_key(priority: str, mode: str, preset_id, custom_system: str | None, custom_user: str | None, model_name: str | None) -> str:
+                def _make_prompt_key(
+                    priority: str,
+                    mode: str,
+                    preset_id,
+                    custom_system: str | None,
+                    custom_user: str | None,
+                    model_name: str | None,
+                ) -> str:
                     base = f"{priority}|{mode}|{preset_id or ''}|{(custom_system or '').strip()}|{(custom_user or '').strip()}|{(model_name or '').strip()}"
-                    return hashlib.sha1(base.encode('utf-8')).hexdigest()
-                prompt_key = _make_prompt_key(priority, mode, ai_set.preset_id, ai_set.custom_prompt, ai_set.user_prompt_template, ai_set.model)
+                    return hashlib.sha1(base.encode("utf-8")).hexdigest()
+
+                prompt_key = _make_prompt_key(
+                    priority,
+                    mode,
+                    ai_set.preset_id,
+                    ai_set.custom_prompt,
+                    ai_set.user_prompt_template,
+                    ai_set.model,
+                )
                 # Вычислим user_id владельца канала (tg_user_id)
                 user_id_val = None
                 try:
                     from app.repositories.channels import ChannelsRepo
                     from app.domain.models import Client
+
                     ch_repo2 = ChannelsRepo(session)
                     ch2 = await ch_repo2.get_by_id(int(s.channel_id))
                     if ch2 and ch2.owner_id:
@@ -104,10 +124,20 @@ async def _on_channel_post(client, message):
                             user_id_val = int(client.tg_user_id)
                 except Exception:
                     user_id_val = None
-                result = await gen.run_pipeline(channel_id=int(s.channel_id), mode="improve", original_text=orig_text, instruction=instruction, extra={"force_custom": force_custom}, user_id=user_id_val, prompt_key=prompt_key)
+                result = await gen.run_pipeline(
+                    channel_id=int(s.channel_id),
+                    mode="improve",
+                    original_text=orig_text,
+                    instruction=instruction,
+                    extra={"force_custom": force_custom},
+                    user_id=user_id_val,
+                    prompt_key=prompt_key,
+                )
 
             if not result.get("success"):
-                logger.warning(f"listener: generation failed for channel_id={s.channel_id}: {result.get('error')}")
+                logger.warning(
+                    f"listener: generation failed for channel_id={s.channel_id}: {result.get('error')}"
+                )
                 continue
 
             text_out = result.get("text") or ""
@@ -140,19 +170,29 @@ async def _on_channel_post(client, message):
             try:
                 async with AsyncSessionLocal() as s_set:
                     from app.repositories.settings import ChannelSettingsRepo
+
                     set_repo = ChannelSettingsRepo(s_set)
                     st = await set_repo.get_by_channel_id(int(s.channel_id))
                     autosign_text = (st.autosign or None) if st else None
                     if autosign_text:
                         # Автоконвертация text_link-entities в Markdown якоря для автоподписи
                         try:
-                            from app.bot.routers.main import _convert_message_entities_to_markdown
-                            autosign_text = _convert_message_entities_to_markdown(autosign_text, None)
+                            from app.bot.routers.utils.text_utils import (
+                                convert_message_entities_to_markdown,
+                            )
+
+                            autosign_text = convert_message_entities_to_markdown(
+                                autosign_text, None
+                            )
                         except Exception:
                             pass
                         base = text_out or ""
                         combined = base + ("\n\n" if base else "") + autosign_text
-                        text_out = combined if len(combined) <= 4096 else (combined[:4095] + "…")
+                        text_out = (
+                            combined
+                            if len(combined) <= 4096
+                            else (combined[:4095] + "…")
+                        )
             except Exception:
                 pass
 
@@ -161,19 +201,25 @@ async def _on_channel_post(client, message):
             try:
                 async with AsyncSessionLocal() as s_ch:
                     from app.repositories.channels import ChannelsRepo
+
                     ch_repo = ChannelsRepo(s_ch)
                     ch = await ch_repo.get_by_id(int(s.channel_id))
                     if ch:
                         target_chat_id = int(ch.tg_chat_id)
             except Exception as e:
-                logger.warning(f"listener: resolve tg_chat_id failed for channel_id={s.channel_id}: {e}")
+                logger.warning(
+                    f"listener: resolve tg_chat_id failed for channel_id={s.channel_id}: {e}"
+                )
             if not target_chat_id:
-                logger.warning(f"listener: skip post, target channel not found for channel_id={s.channel_id}")
+                logger.warning(
+                    f"listener: skip post, target channel not found for channel_id={s.channel_id}"
+                )
                 continue
             payload = {"type": "text", "text": text_out, "silent": True}
             ids = await posting.send_now(channel_id=target_chat_id, payload=payload)
             if ids:
-                logger.info(f"listener: posted to target_tg={target_chat_id} msg_ids={ids}")
+                logger.info(
+                    f"listener: posted to target_tg={target_chat_id} msg_ids={ids}"
+                )
     except Exception as e:
         logger.exception(f"userbot listener error: {e}")
-
