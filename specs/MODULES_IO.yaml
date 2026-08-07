@@ -1,0 +1,183 @@
+modules:
+  core:
+    runner:
+      PollingLoop:
+        inputs:
+          - interval_seconds: int
+          - on_tick: async callable
+          - name: string (optional)
+          - jitter_seconds: int (optional)
+        outputs: []
+        side_effects:
+          - creates_background_task: true
+          - sleeps: true
+          - logs_errors: true
+    db:
+      engine: AsyncEngine
+      AsyncSessionLocal: async_sessionmaker
+      Base: DeclarativeBase
+      get_session:
+        inputs: []
+        outputs: AsyncSession (async generator)
+        side_effects:
+          - db_connections
+      init_db_if_needed_sync:
+        inputs: []
+        outputs: []
+        side_effects:
+          - sqlite_file_create
+          - simple_sqlite_migrations
+  domain:
+    models:
+      entities:
+        - Client
+        - Channel
+        - ChannelSettings
+        - GrabSource
+        - Application
+        - Subscriber
+        - PostTask
+        - AIPreset
+        - ChannelAISettings
+        - AISource
+        - AIConversation
+        - AIConversationMessage
+        - AICustomSystemPrompt
+        - ExternalBot
+        - ModLog
+        - ChannelBot
+        - JoinRequest
+        - AdminConfig
+        - BannedChat
+  services:
+    http:
+      fetcher:
+        fetch_html:
+          inputs:
+            - url: string
+            - timeout_seconds: float
+            - max_retries: int
+            - backoff_initial: float
+            - backoff_max: float
+            - request_id: string (optional)
+            - user_agent: string (optional)
+          outputs:
+            - html: string
+          side_effects:
+            - http_get_with_retries
+    extractors:
+      html:
+        extract_article_text:
+          inputs:
+            - html_content: string
+            - max_len: int (optional)
+          outputs:
+            - text: string
+          side_effects: []
+    ai_generation:
+      AIGenerationService:
+        methods:
+          clear_history:
+            inputs:
+              - user_id: int
+              - prompt_key: string (optional)
+              - channel_id: int (optional)
+            outputs:
+              - deleted_count: int
+            side_effects:
+              - db_delete
+          generate_text:
+            inputs:
+              - channel_id: int
+              - topic: string
+              - extra: dict
+            outputs:
+              - result: {success: bool, text: string|null, tokens_used: int, error: string|null}
+            side_effects:
+              - http_openrouter
+              - db_update_tokens
+              - optional_telegram_notify_80pct
+          generate_from_link:
+            inputs:
+              - channel_id: int
+              - url: string
+              - mode: string
+            outputs:
+              - result: {success: bool, text: string, tokens_used: int, error: string|null}
+            side_effects:
+              - fetch_html_with_retries
+              - html_extract
+              - llm_call_with_retries
+              - db_update_tokens
+          improve_text:
+            inputs:
+              - channel_id: int
+              - original_text: string
+              - instruction: string
+            outputs:
+              - result: {success: bool, text: string, tokens_used: int, error: string|null}
+            side_effects:
+              - llm_call_with_retries
+              - db_update_tokens
+    llm:
+      openrouter_client:
+        chat:
+          inputs:
+            - messages: list[dict]
+            - model: string
+            - temperature: float
+            - top_p: float
+            - max_tokens: int
+            - base_url: string
+            - api_key: string
+            - request_id: string (optional)
+          outputs:
+            - result: {success: bool, text: string|null, tokens_used: int, error: string|null}
+          side_effects:
+            - http_post_with_retries
+      prompt_builder:
+        build:
+          inputs:
+            - ai_settings: object
+            - topic: string
+            - extra_vars: dict
+            - mode: string (optional)
+          outputs:
+            - system_prompt: string
+            - user_prompt: string
+          side_effects: []
+      notifier:
+        notify_ai_tokens_80pct:
+          inputs:
+            - channel_id: int
+            - used: int
+            - month_limit: int
+            - pct: float
+          outputs: []
+          side_effects:
+            - telegram_send
+  bot:
+    dispatcher:
+      create_dispatcher:
+        inputs: []
+        outputs: aiogram.Dispatcher
+      run_bot:
+        inputs: []
+        outputs: []
+        side_effects:
+          - setup_logging
+          - init_db
+          - start_userbot
+          - start_external_bots
+          - start_workers
+          - start_aiogram_polling
+          - validate_ai_models_json
+  workers:
+    scheduler:
+      optional: true
+    grab_poll:
+      optional: true
+  userbot:
+    client_listener:
+      side_effects:
+        - telegram_network
