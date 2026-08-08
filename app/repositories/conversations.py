@@ -136,19 +136,30 @@ class ConversationsRepo:
         await self.session.commit()
         return count
 
-    async def delete_by_user_and_prompt_key(self, user_id: int, prompt_key: str) -> int:
-        res = await self.session.execute(
-            select(AIConversation).where(
-                AIConversation.user_id == user_id,
-                AIConversation.prompt_key == prompt_key,
-            )
-        )
-        row = res.scalar_one_or_none()
-        if not row:
-            return 0
-        await self.session.delete(row)
-        await self.session.commit()
-        return 1
+    async def delete_by_user_and_prompt_key(
+        self,
+        user_id: int,
+        prompt_key: str,
+        channel_id: int | None = None,
+    ) -> int:
+        """Delete legacy/scoped conversations matching the logical prompt key."""
+        stmt = select(AIConversation).where(AIConversation.user_id == user_id)
+        if channel_id is not None:
+            stmt = stmt.where(AIConversation.channel_id == channel_id)
+        res = await self.session.execute(stmt)
+        rows = list(res.scalars().all())
+
+        matches = [
+            row
+            for row in rows
+            if row.prompt_key == str(prompt_key)
+            or row.prompt_key == scoped_prompt_key(prompt_key, row.channel_id)
+        ]
+        for row in matches:
+            await self.session.delete(row)
+        if matches:
+            await self.session.commit()
+        return len(matches)
 
     async def delete_all_by_channel(self, channel_id: int) -> int:
         res = await self.session.execute(
