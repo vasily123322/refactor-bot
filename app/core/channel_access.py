@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
+from contextlib import suppress
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 
 from app.core.db import AsyncSessionLocal
@@ -43,6 +44,20 @@ def _channel_id_from_callback(data: str | None) -> int | None:
     return None
 
 
+async def user_owns_channel(*, user_id: int, channel_id: int) -> bool:
+    """Return whether a Telegram user owns the internal channel id."""
+    if user_id <= 0 or channel_id <= 0:
+        return False
+
+    async with AsyncSessionLocal() as session:
+        stmt = (
+            select(Channel.id)
+            .join(Client, Channel.owner_id == Client.id)
+            .where(Channel.id == channel_id, Client.tg_user_id == user_id)
+        )
+        return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
 class ChannelOwnerMiddleware(BaseMiddleware):
     """Block protected channel callbacks when the caller is not the owner."""
 
@@ -57,19 +72,41 @@ class ChannelOwnerMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         user_id = int(getattr(getattr(event, "from_user", None), "id", 0) or 0)
-        if not user_id:
-            await event.answer("Нет доступа", show_alert=True)
-            return None
-
-        async with AsyncSessionLocal() as session:
-            stmt = (
-                select(Channel.id)
-                .join(Client, Channel.owner_id == Client.id)
-                .where(Channel.id == channel_id, Client.tg_user_id == user_id)
-            )
-            allowed = (await session.execute(stmt)).scalar_one_or_none() is not None
-
-        if not allowed:
+        if not await user_owns_channel(user_id=user_id, channel_id=channel_id):
             await event.answer("Нет доступа к этому каналу", show_alert=True)
             return None
         return await handler(event, data)
+
+
+class ChannelOwnerStateMiddleware(BaseMiddleware):
+    """Re-check ownership before handlers consume a channel id stored in FSM state."""
+
+    async def __call__(
+        self,
+        handler: Callable[[Message, dict[str, Any]], Awaitable[Any]],
+        event: Message,
+        data: dict[str, Any],
+    ) -> Any:
+        state = data.get("state")
+        if state is None:
+            return await handler(event, data)
+
+        state_data = await state.get_data()
+        raw_channel_id = state_data.get("channel_id")
+        if raw_channel_id is None:
+            return await handler(event, data)
+
+        try:
+            channel_id = int(raw_channel_id)
+        except (TypeError, ValueError):
+            channel_id = 0
+
+        user_id = int(getattr(getattr(event, "from_user", None), "id", 0) or 0)
+        if await user_owns_channel(user_id=user_id, channel_id=channel_id):
+            return await handler(event, data)
+
+        with suppress(Exception):
+            await state.clear()
+        with suppress(Exception):
+            await event.answer("Нет доступа к этому каналу. Действие отменено.")
+        return None
