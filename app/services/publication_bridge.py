@@ -10,8 +10,8 @@ from app.domain.content import PostDocument
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
-from app.services.content import LegacyPayloadError, legacy_payload_from_document
 from app.services.scheduling import as_utc
+from app.services.telegram_renderer import TelegramRenderError, TelegramRenderer
 
 
 class PublicationBridgeError(RuntimeError):
@@ -28,6 +28,27 @@ _TASK_TO_PUBLICATION_STATUS = {
 }
 
 _TERMINAL_TASK_STATUSES = frozenset({"done", "failed", "skipped", "cancelled"})
+
+
+def _scheduler_payload(document: PostDocument) -> dict[str, Any]:
+    """Validate with the shared renderer and build a serializable scheduler payload."""
+    try:
+        plan = TelegramRenderer().render(document)
+    except TelegramRenderError as exc:
+        raise PublicationBridgeError(str(exc)) from exc
+
+    if plan.kind == "classic":
+        if plan.classic_payload is None:
+            raise PublicationBridgeError("classic renderer returned no payload")
+        return dict(plan.classic_payload)
+    if plan.kind == "rich":
+        # aiogram models are transport-edge objects and must never be persisted.
+        # Store the domain document and render again at the actual delivery edge.
+        return {
+            "type": "rich_document",
+            "post_document": document.to_dict(),
+        }
+    raise PublicationBridgeError(f"unsupported Telegram render plan: {plan.kind}")
 
 
 class LegacyPublicationBridge:
@@ -69,10 +90,7 @@ class LegacyPublicationBridge:
             )
 
         document = PostDocument.from_dict(revision_row.document)
-        try:
-            payload = legacy_payload_from_document(document)
-        except LegacyPayloadError as exc:
-            raise PublicationBridgeError(str(exc)) from exc
+        payload = _scheduler_payload(document)
 
         # Keep one canonical timestamp contract across SQLite/PostgreSQL and the
         # existing scheduler. SQLite may deserialize timezone=True columns as naive,

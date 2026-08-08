@@ -3,8 +3,9 @@ import { StrictMode } from 'react';
 import ReactDOM from 'react-dom/client';
 
 import App from './App';
-import { initTelegram } from './telegram';
+import './rich.css';
 import './styles.css';
+import { initTelegram } from './telegram';
 
 const root = ReactDOM.createRoot(document.getElementById('root')!);
 

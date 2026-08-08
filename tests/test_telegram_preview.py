@@ -26,8 +26,8 @@ class _FakePosting:
         self.bot = bot
         self.session_factory = session_factory
 
-    async def send_now(self, chat_id: int, payload: dict) -> list[int] | None:
-        type(self).calls.append((chat_id, payload))
+    async def send_document(self, chat_id: int, document: PostDocument) -> list[int] | None:
+        type(self).calls.append((chat_id, document.to_dict()))
         return type(self).next_result
 
 
@@ -38,7 +38,7 @@ def _document() -> PostDocument:
     )
 
 
-def test_exact_preview_uses_authenticated_chat_and_production_payload() -> None:
+def test_exact_preview_uses_authenticated_chat_and_shared_document_renderer() -> None:
     async def run() -> None:
         _FakePosting.calls = []
         _FakePosting.next_result = [501, 502]
@@ -48,24 +48,15 @@ def test_exact_preview_uses_authenticated_chat_and_production_payload() -> None:
             object(),  # type: ignore[arg-type]
             posting_factory=_FakePosting,  # type: ignore[arg-type]
         )
+        document = _document()
         ids = await service.send(
             tg_user_id=777,
-            document=_document(),
+            document=document,
             replace_message_ids=[400, 501, 401],
         )
 
         assert ids == [501, 502]
-        assert _FakePosting.calls == [
-            (
-                777,
-                {
-                    "type": "text",
-                    "text": "Exact preview",
-                    "buttons": [[{"text": "Open", "url": "https://example.com"}]],
-                },
-            )
-        ]
-        # A newly returned id is never deleted even if the client sent it as stale.
+        assert _FakePosting.calls == [(777, document.to_dict())]
         assert bot.deleted == [(777, 400), (777, 401)]
 
     asyncio.run(run())
@@ -94,8 +85,10 @@ def test_exact_preview_keeps_previous_preview_when_delivery_fails() -> None:
     asyncio.run(run())
 
 
-def test_exact_preview_rejects_rich_content_until_shared_renderer_exists() -> None:
+def test_exact_preview_accepts_rich_document_through_shared_renderer() -> None:
     async def run() -> None:
+        _FakePosting.calls = []
+        _FakePosting.next_result = [601]
         bot = _FakeBot()
         service = TelegramPreviewService(
             bot,  # type: ignore[arg-type]
@@ -106,8 +99,9 @@ def test_exact_preview_rejects_rich_content_until_shared_renderer_exists() -> No
             mode="rich",
             blocks=[{"id": "p1", "type": "paragraph", "content": "Rich"}],
         )
-        with pytest.raises(TelegramPreviewError, match="new Telegram renderer"):
-            await service.send(tg_user_id=999, document=document)
+        ids = await service.send(tg_user_id=999, document=document)
+        assert ids == [601]
+        assert _FakePosting.calls == [(999, document.to_dict())]
 
     asyncio.run(run())
 

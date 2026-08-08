@@ -15,9 +15,9 @@ from app.core.db import AsyncSessionLocal, Base, engine, init_db_if_needed_sync
 from app.core.errors import ErrorsMiddleware
 from app.core.fsm_storage import build_fsm_storage
 from app.core.logging import setup_logging
+from app.services.document_posting import DocumentPostingService as PostingService
 from app.services.external_bots import ExternalBotsManager
 from app.services.llm.openrouter_client import OpenRouterClient
-from app.services.posting import PostingService
 from app.userbot.client import app as userbot
 from app.workers.ai_auto_tasks import AIAutoTasksWorker
 from app.workers.grab_poll import GrabPoller
@@ -104,6 +104,8 @@ async def run_bot() -> None:
         if config_models is not None:
             logger.info("Boot: AI models config loaded: {} entries", len(config_models))
 
+        # Keep the historical monkeypatch seam name while the concrete implementation
+        # is the PostDocument-aware service used by rich and classic publications.
         posting = PostingService(bot, AsyncSessionLocal)
 
         scheduler = Scheduler(AsyncSessionLocal, posting)

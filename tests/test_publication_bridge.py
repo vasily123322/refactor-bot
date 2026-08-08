@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
-import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -12,7 +11,7 @@ from app.domain.content import PostDocument
 from app.domain.models import PostTask
 from app.domain.publishing.models import PublicationAttempt, ScheduleEntry
 from app.repositories.content import ContentRepo
-from app.services.publication_bridge import LegacyPublicationBridge, PublicationBridgeError
+from app.services.publication_bridge import LegacyPublicationBridge
 from app.services.scheduling import as_utc
 
 
@@ -47,8 +46,6 @@ def test_publication_bridge_queues_content_on_existing_scheduler() -> None:
 
                 task = await session.get(PostTask, publication.legacy_post_task_id)
                 assert task is not None
-                # SQLite drops tzinfo for timezone=True columns; the runtime contract
-                # normalizes persisted values with the same helper as the scheduler.
                 assert as_utc(task.scheduled_at) == when
                 assert task.payload["text"] == "Publish me"
                 assert task.payload["repeat_on"] is True
@@ -117,7 +114,6 @@ def test_publication_bridge_reconciles_success_and_records_attempt() -> None:
                 assert schedule is not None
                 assert schedule.status == "completed"
 
-                # Reconciliation is idempotent and must not duplicate attempts.
                 await bridge.reconcile(publication.id)
                 attempts = (
                     await session.execute(
@@ -165,7 +161,7 @@ def test_publication_bridge_reconciles_scheduler_failure() -> None:
     asyncio.run(run())
 
 
-def test_publication_bridge_rejects_rich_document_before_creating_task() -> None:
+def test_publication_bridge_queues_rich_document_for_shared_renderer() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         try:
@@ -173,21 +169,20 @@ def test_publication_bridge_rejects_rich_document_before_creating_task() -> None
                 await conn.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             async with Session() as session:
-                item = await ContentRepo(session).create(
-                    channel_id=1,
-                    document=PostDocument(
-                        mode="rich",
-                        blocks=[
-                            {"id": "p1", "type": "paragraph", "content": "Hello"}
-                        ],
-                    ),
+                document = PostDocument(
+                    mode="rich",
+                    blocks=[{"id": "p1", "type": "paragraph", "content": "Hello"}],
                 )
-                bridge = LegacyPublicationBridge(session)
-                with pytest.raises(PublicationBridgeError, match="new Telegram renderer"):
-                    await bridge.queue(content_item_id=item.id)
+                item = await ContentRepo(session).create(channel_id=1, document=document)
+                publication = await LegacyPublicationBridge(session).queue(
+                    content_item_id=item.id
+                )
 
-                tasks = (await session.execute(select(PostTask))).scalars().all()
-                assert tasks == []
+                task = await session.get(PostTask, publication.legacy_post_task_id)
+                assert task is not None
+                assert task.payload["type"] == "rich_document"
+                assert task.payload["post_document"] == document.to_dict()
+                assert task.payload["_publication_id"] == publication.id
         finally:
             await engine.dispose()
 

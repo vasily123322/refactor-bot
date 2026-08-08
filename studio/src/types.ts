@@ -20,6 +20,10 @@ export type TelegramEntity = {
   language?: string;
 };
 
+export type RichMark = string | { type: string; url?: string; href?: string };
+export type RichSegmentValue = { text: string; marks?: RichMark[] };
+export type RichContentValue = string | RichSegmentValue[];
+
 export type PostBlock = {
   id: string;
   type: string;
@@ -27,7 +31,14 @@ export type PostBlock = {
   caption?: string;
   entities?: TelegramEntity[];
   caption_entities?: TelegramEntity[];
-  content?: string | Array<{ text?: string }>;
+  content?: RichContentValue;
+  credit?: RichContentValue;
+  summary?: RichContentValue;
+  items?: Array<string | { label?: string; content?: RichContentValue; text?: string }>;
+  size?: number;
+  formula?: string;
+  name?: string;
+  is_open?: boolean;
   [key: string]: unknown;
 };
 
@@ -110,15 +121,36 @@ export const emptyTextDocument = (): PostDocument => ({
   metadata: {},
 });
 
+export const emptyRichDocument = (): PostDocument => ({
+  schema_version: 1,
+  mode: 'rich',
+  blocks: [{ id: 'p1', type: 'paragraph', content: '' }],
+  telegram: {},
+  metadata: {},
+});
+
+export function richContentText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((part) =>
+        typeof part === 'object' && part !== null && 'text' in part
+          ? String((part as { text?: unknown }).text ?? '')
+          : '',
+      )
+      .join('');
+  }
+  return '';
+}
+
 export function documentText(document: PostDocument): string {
   return document.blocks
     .map((block) => {
       if (typeof block.text === 'string') return block.text;
       if (typeof block.caption === 'string') return block.caption;
-      if (typeof block.content === 'string') return block.content;
-      if (Array.isArray(block.content)) {
-        return block.content.map((part) => part.text ?? '').join('');
-      }
+      if (block.content !== undefined) return richContentText(block.content);
+      if (block.summary !== undefined) return richContentText(block.summary);
+      if (typeof block.formula === 'string') return block.formula;
       return '';
     })
     .filter(Boolean)

@@ -3,7 +3,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
 import { PlannerPanel } from './PlannerPanel';
+import { RichComposer } from './RichComposer';
 import { TelegramComposer } from './TelegramComposer';
+import { TelegramVisualPreview } from './TelegramVisualPreview';
 import type {
   Channel,
   ContentDetail,
@@ -11,7 +13,7 @@ import type {
   PostDocument,
   StudioUser,
 } from './types';
-import { documentText, emptyTextDocument } from './types';
+import { documentText, emptyRichDocument, emptyTextDocument } from './types';
 
 type StudioView = 'content' | 'planner';
 
@@ -31,42 +33,6 @@ function shortDate(value: string | null): string {
 function errorMessage(error: unknown): string {
   if (error instanceof StudioApiError || error instanceof Error) return error.message;
   return 'Неизвестная ошибка';
-}
-
-function TelegramSimulator({
-  document,
-  channel,
-}: {
-  document: PostDocument;
-  channel: Channel | null;
-}) {
-  const text = documentText(document) || 'Начните писать пост…';
-  return (
-    <div className="phone-stage" aria-label="Предпросмотр Telegram">
-      <div className="phone-header">
-        <span className="phone-back">‹</span>
-        <div>
-          <strong>{channel?.title || 'Telegram Channel'}</strong>
-          <small>предпросмотр публикации</small>
-        </div>
-        <span>•••</span>
-      </div>
-      <div className="telegram-chat">
-        <article className="telegram-post">
-          <div className="telegram-avatar">T</div>
-          <div className="telegram-body">
-            <strong className="telegram-author">{channel?.title || 'Канал'}</strong>
-            <div className="telegram-text">{text}</div>
-            <div className="telegram-meta">сейчас · 👁 1</div>
-          </div>
-        </article>
-      </div>
-      <div className="preview-note">
-        Visual preview показывает геометрию и текст. Кнопка «В Telegram» проверяет
-        форматирование тем же Bot API renderer, что используется при публикации.
-      </div>
-    </div>
-  );
 }
 
 function Sidebar({
@@ -204,19 +170,21 @@ export default function App() {
 
   const openItem = async (item: ContentSummary) => openContentById(item.id);
 
-  const createDraft = async () => {
+  const createDraft = async (mode: 'classic' | 'rich') => {
     if (selectedChannelId === null) return;
     setBusy(true);
     setError(null);
     try {
+      const initial = mode === 'rich' ? emptyRichDocument() : emptyTextDocument();
       const detail = await studioApi.createContent(
         selectedChannelId,
-        emptyTextDocument(),
-        'Новый пост',
+        initial,
+        mode === 'rich' ? 'Новый Rich пост' : 'Новый пост',
       );
       setSelected(detail);
       setDocument(detail.document);
       setDirty(false);
+      setPreviewMessageIds([]);
       await loadItems(selectedChannelId);
     } catch (reason) {
       setError(errorMessage(reason));
@@ -305,8 +273,11 @@ export default function App() {
                 <h1>{selected ? selected.title || `Пост #${selected.id}` : 'Контент'}</h1>
               </div>
               <div className="top-actions">
-                <button className="button secondary" onClick={createDraft} disabled={busy || !channel}>
-                  + Новый пост
+                <button className="button secondary" onClick={() => void createDraft('classic')} disabled={busy || !channel}>
+                  + Classic
+                </button>
+                <button className="button secondary" onClick={() => void createDraft('rich')} disabled={busy || !channel}>
+                  + Rich
                 </button>
                 <button className="button secondary" onClick={exactPreview} disabled={busy}>
                   👁 В Telegram
@@ -359,7 +330,7 @@ export default function App() {
               <section className="editor-panel">
                 <div className="panel-heading editor-heading">
                   <div>
-                    <h2>Composer</h2>
+                    <h2>{document.mode === 'rich' ? 'Rich Composer' : 'Composer'}</h2>
                     <small>
                       {selected ? `Content #${selected.id} · revision ${selected.current_revision}` : 'Новый документ'}
                     </small>
@@ -368,9 +339,15 @@ export default function App() {
                     {dirty ? 'Сохранить версию' : 'Сохранено'}
                   </button>
                 </div>
-                <TelegramComposer document={document} onChange={editDocument} />
+                {document.mode === 'rich' ? (
+                  <RichComposer document={document} onChange={editDocument} />
+                ) : (
+                  <TelegramComposer document={document} onChange={editDocument} />
+                )}
                 <footer className="editor-footer">
-                  <span>{text.length} UTF-16 единиц · Telegram limit: 4096 для text</span>
+                  <span>
+                    {text.length} UTF-16 единиц · {document.mode === 'rich' ? 'native Rich Message blocks' : 'Telegram text limit: 4096'}
+                  </span>
                   <span>{dirty ? '● Есть несохранённые изменения' : '✓ Версия сохранена'}</span>
                 </footer>
               </section>
@@ -382,7 +359,7 @@ export default function App() {
                     <small>Visual + exact Bot API</small>
                   </div>
                 </div>
-                <TelegramSimulator document={document} channel={channel} />
+                <TelegramVisualPreview document={document} channel={channel} />
               </section>
             </div>
           </main>
