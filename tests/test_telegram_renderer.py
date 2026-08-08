@@ -92,15 +92,15 @@ def test_renderer_builds_structured_rich_message() -> None:
     assert plan.classic_payload is None
     assert plan.rich_message is not None
     assert plan.rich_message.blocks is not None
-    assert [block.type for block in plan.rich_message.blocks] == [
+    assert [block.type.value for block in plan.rich_message.blocks] == [
         "paragraph",
         "heading",
         "divider",
-        "block_quote",
-        "pull_quote",
+        "blockquote",
+        "pullquote",
         "list",
         "details",
-        "math",
+        "mathematical_expression",
         "anchor",
     ]
     paragraph = plan.rich_message.blocks[0]
