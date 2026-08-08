@@ -51,13 +51,16 @@ RULES: tuple[Rule, ...] = (
     ),
 )
 
-# Known synthetic values used only to satisfy library validation in CI.
+# Exact synthetic values only. Do not add broad wildcard exceptions here.
 _SAFE_LITERALS = {
     "123456:" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi",
+    "sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxx",
 }
 
 _SKIP_PATHS = {
-    "tests/test_credential_redaction.py",  # dedicated redaction fixtures are intentionally credential-shaped
+    # These files intentionally contain credential-shaped fixtures to test redaction/scanning.
+    "tests/test_credential_redaction.py",
+    "tests/test_secret_scan.py",
 }
 
 
