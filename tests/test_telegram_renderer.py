@@ -80,7 +80,7 @@ def test_renderer_builds_structured_rich_message() -> None:
                 "content": "Hidden body",
                 "is_open": True,
             },
-            {"id": "m1", "type": "math", "formula": "E=mc^2", "size": 2},
+            {"id": "m1", "type": "math", "formula": "E=mc^2"},
             {"id": "a1", "type": "anchor", "name": "section-one"},
         ],
         telegram={"buttons": [[{"text": "Site", "url": "https://example.com"}]]},
@@ -112,7 +112,7 @@ def test_renderer_builds_structured_rich_message() -> None:
     assert plan.rich_message.blocks[1].size == 3
     assert plan.rich_message.blocks[5].items[1].label == "A"
     assert plan.rich_message.blocks[6].is_open is True
-    assert plan.rich_message.blocks[7].formula == "E=mc^2"
+    assert plan.rich_message.blocks[7].expression == "E=mc^2"
     assert plan.reply_markup is not None
 
 
