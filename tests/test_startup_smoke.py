@@ -3,6 +3,10 @@ import asyncio
 from app.bot import dispatcher
 
 
+def test_ai_auto_tasks_worker_imported() -> None:
+    assert dispatcher.AIAutoTasksWorker is not None
+
+
 def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
     events: list[str] = []
 
