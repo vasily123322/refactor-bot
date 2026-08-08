@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.models import AIAutoTask
+from app.domain.ai_auto_task import AIAutoTask
 
 
 class AIAutoTaskRepo:
@@ -42,7 +42,7 @@ class AIAutoTaskRepo:
         enabled: bool = True,
         run_at: str = "10:00",
         schedule: str = "daily",
-        day_of_week: int = 0,
+        day_of_week: int | None = None,
     ) -> AIAutoTask:
         """Create or update an auto-task."""
         existing = await self.get_by_channel_and_type(channel_id, task_type)
@@ -83,8 +83,8 @@ class AIAutoTaskRepo:
             task.last_run_at = run_at
             await self._session.flush()
 
-    async def delete(self, channel_id: int, task_type: int) -> bool:
-        task = await self.get_by_channel_and_type(channel_id, str(task_type))
+    async def delete(self, channel_id: int, task_type: str) -> bool:
+        task = await self.get_by_channel_and_type(channel_id, task_type)
         if not task:
             return False
         await self._session.delete(task)
