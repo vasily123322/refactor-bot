@@ -37,63 +37,53 @@ def post_actions(
     ai_enabled: bool = True,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    # 1) Первый ряд: "Добавить кнопки" + "Превью" (для текста) или "Медиа" (для медиа)
+
+    buttons_label = "✅ Кнопки" if has_buttons else "🔘 Кнопки"
+    media_label = "🔗 Превью" if (has_text and not has_media) else "🖼 Медиа"
+    media_callback = (
+        CB.PREVIEW_MENU
+        if (has_text and not has_media)
+        else (CB.POST_ADD_MEDIA if not has_media else CB.MEDIA_MENU)
+    )
     rows.append(
         [
-            InlineKeyboardButton(
-                text="Добавить кнопки", callback_data=CB.POST_ADD_BUTTON
-            ),
-            InlineKeyboardButton(
-                text=("Превью" if (has_text and not has_media) else "Медиа"),
-                callback_data=(
-                    CB.PREVIEW_MENU
-                    if (has_text and not has_media)
-                    else (CB.POST_ADD_MEDIA if not has_media else CB.MEDIA_MENU)
-                ),
-            ),
+            InlineKeyboardButton(text=buttons_label, callback_data=CB.POST_ADD_BUTTON),
+            InlineKeyboardButton(text=media_label, callback_data=media_callback),
         ]
     )
 
-    # Режим редактирования опубликованного поста: упрощённое меню как на макете
+    # Published-post edit mode stays deliberately compact. The first row above
+    # already contains the button/media controls, so do not duplicate them.
     if edit_mode:
-        # 2) Кнопки
-        rows.append(
-            [InlineKeyboardButton(text="Кнопки", callback_data=CB.POST_ADD_BUTTON)]
-        )
-        # 3) Навигация: Назад | Сохранить (в одном ряду)
         rows.append(
             [
                 InlineKeyboardButton(text="← Назад", callback_data=CB.POST_BACK),
-                InlineKeyboardButton(text="Сохранить", callback_data=CB.POST_SEND),
+                InlineKeyboardButton(text="💾 Сохранить", callback_data=CB.POST_SEND),
             ]
         )
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
-    # Обычный режим (создание/черновик):
-    # Переключатели перенесены в экран «Настройки публикации»
-    # Кнопка ИИ — отдельной строкой между переключателями и навигацией
     if ai_enabled:
-        rows.append([InlineKeyboardButton(text="🤖 ИИ", callback_data=CB.POST_AI)])
-    # Нижняя навигация как на макете: отдельной строкой «⚙️ Настройки публикации»,
-    # далее ряд «По расписанию | Отложить», затем «← Отменить | 🔥 Опубликовать»
+        rows.append([InlineKeyboardButton(text="✨ AI", callback_data=CB.POST_AI)])
+
+    rows.append(
+        [InlineKeyboardButton(text="⚙️ Параметры", callback_data=CB.POST_NEXT)]
+    )
     rows.append(
         [
             InlineKeyboardButton(
-                text="⚙️ Настройки публикации", callback_data=CB.POST_NEXT
-            )
+                text="📅 По расписанию", callback_data=CB.POST_SCHEDULE
+            ),
+            InlineKeyboardButton(
+                text="🕒 Отложить", callback_data=CB.POST_SETTINGS_DEFER
+            ),
         ]
     )
     rows.append(
         [
-            InlineKeyboardButton(text="По расписанию", callback_data=CB.POST_SCHEDULE),
-            InlineKeyboardButton(text="Отложить", callback_data=CB.POST_SETTINGS_DEFER),
-        ]
-    )
-    rows.append(
-        [
-            InlineKeyboardButton(text="← Отменить", callback_data=CB.POST_BACK),
+            InlineKeyboardButton(text="← Отмена", callback_data=CB.POST_BACK),
             InlineKeyboardButton(
-                text="🔥 Опубликовать", callback_data=CB.POST_SETTINGS_PUBLISH
+                text="🚀 Опубликовать", callback_data=CB.POST_SETTINGS_PUBLISH
             ),
         ]
     )
@@ -112,36 +102,33 @@ def settings_menu_kb(
     comments_on: bool | None = None,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    # Динамичный бейдж: приоритет просмотров, иначе таймер
     if views_value and views_value > 0:
         label_v = (
             f"{views_value // 1000}к"
             if (views_value >= 1000 and views_value % 1000 == 0)
             else str(views_value)
         )
-        first_label = f"Удаление по просмотрам: {label_v}"
+        first_label = f"👁 Удаление: {label_v} просмотров"
     elif time_seconds and time_seconds > 0:
-        first_label = f"Таймер удаления: {_format_duration_label(int(time_seconds))}"
+        first_label = f"🗑 Удаление: {_format_duration_label(int(time_seconds))}"
     else:
-        first_label = "Таймер удаления: нет"
-    # Первый ряд: Автоповтор (слева) | Переслать (справа)
+        first_label = "🗑 Удаление: выкл"
+
     rows.append(
         [
             InlineKeyboardButton(
-                text=("Автоповтор: вкл" if repeat_on else "Автоповтор: выкл"),
+                text=("🔁 Автоповтор: вкл" if repeat_on else "🔁 Автоповтор: выкл"),
                 callback_data=CB.POST_SETTINGS_REPEAT,
             ),
             InlineKeyboardButton(
-                text="Переслать", callback_data=CB.POST_SETTINGS_FORWARD
+                text="↗️ Переслать", callback_data=CB.POST_SETTINGS_FORWARD
             ),
         ]
     )
-    # Второй ряд: Таймер удаления отдельной строкой
     rows.append(
         [InlineKeyboardButton(text=first_label, callback_data=CB.POST_SETTINGS_TIMER)]
     )
 
-    # Переключатели уведомлений/комментариев и закреп/автоподпись
     def _check(on: bool | None) -> str:
         return "✅" if on else "☑️"
 
@@ -164,11 +151,15 @@ def settings_menu_kb(
             callback_data=CB.POST_TOGGLE_AUTOSIGN,
         )
         rows.append([left, right])
-    # Нижняя часть карточки настроек как на макете
+
     rows.append(
         [
-            InlineKeyboardButton(text="По расписанию", callback_data=CB.POST_SCHEDULE),
-            InlineKeyboardButton(text="Отложить", callback_data=CB.POST_SETTINGS_DEFER),
+            InlineKeyboardButton(
+                text="📅 По расписанию", callback_data=CB.POST_SCHEDULE
+            ),
+            InlineKeyboardButton(
+                text="🕒 Отложить", callback_data=CB.POST_SETTINGS_DEFER
+            ),
         ]
     )
     rows.append(
@@ -177,7 +168,7 @@ def settings_menu_kb(
                 text="← Редактор", callback_data=CB.POST_SETTINGS_BACK
             ),
             InlineKeyboardButton(
-                text="🔥 Опубликовать", callback_data=CB.POST_SETTINGS_PUBLISH
+                text="🚀 Опубликовать", callback_data=CB.POST_SETTINGS_PUBLISH
             ),
         ]
     )
@@ -199,16 +190,17 @@ def create_post_card_kb(
         )
     if ai_available:
         first_row.append(
-            InlineKeyboardButton(text="🤖 AI-ассистент", callback_data=CB.POST_AI_QUICK)
+            InlineKeyboardButton(text="✨ AI-ассистент", callback_data=CB.POST_AI_QUICK)
         )
     if first_row:
         rows.append(first_row)
-    rows.append([InlineKeyboardButton(text="Назад", callback_data=CB.GM_GLOBAL_MENU)])
+    rows.append(
+        [InlineKeyboardButton(text="← Главное меню", callback_data=CB.GM_GLOBAL_MENU)]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def ad_settings_presets_kb(*, active_preset: str | None = None) -> InlineKeyboardMarkup:
-    # Presets: 1/24, 2/48, 3/72
     def _btn(label: str) -> InlineKeyboardButton:
         key = label.replace("/", "_")
         star = "🔷 " if (active_preset == key) else ""
@@ -216,11 +208,8 @@ def ad_settings_presets_kb(*, active_preset: str | None = None) -> InlineKeyboar
             text=f"{star}{label}", callback_data=f"{CB.POST_AD_PRESET_PREFIX}{key}"
         )
 
-    rows = [
-        [_btn("1/24"), _btn("2/48"), _btn("3/72")],
-    ]
-    rows.append([InlineKeyboardButton(text="Редактор", callback_data=CB.POST_AD_EDIT)])
-    # Block with top-time and delete timer indicators
+    rows = [[_btn("1/24"), _btn("2/48"), _btn("3/72")]]
+    rows.append([InlineKeyboardButton(text="✏️ Редактор", callback_data=CB.POST_AD_EDIT)])
     rows.append(
         [
             InlineKeyboardButton(
@@ -234,14 +223,14 @@ def ad_settings_presets_kb(*, active_preset: str | None = None) -> InlineKeyboar
     rows.append(
         [
             InlineKeyboardButton(
-                text="По расписанию", callback_data=CB.POST_SETTINGS_DEFER
+                text="📅 По расписанию", callback_data=CB.POST_SETTINGS_DEFER
             ),
             InlineKeyboardButton(
-                text="Настройка брони", callback_data=CB.POST_AD_SETTINGS_OPEN
+                text="⚙️ Настройка брони", callback_data=CB.POST_AD_SETTINGS_OPEN
             ),
         ]
     )
     rows.append(
-        [InlineKeyboardButton(text="← Отменить", callback_data=CB.POST_AD_OPEN)]
+        [InlineKeyboardButton(text="← Отмена", callback_data=CB.POST_AD_OPEN)]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
