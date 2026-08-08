@@ -65,6 +65,9 @@ jobs:
       - name: Install Studio dependencies
         working-directory: studio
         run: npm install --no-audit --no-fund
+      - name: Test Studio adapters
+        working-directory: studio
+        run: npm run test
       - name: Build Studio
         working-directory: studio
         run: npm run build
