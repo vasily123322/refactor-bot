@@ -39,6 +39,8 @@ def test_scoped_prompt_key_respects_database_limit() -> None:
         ("ai_source_toggle_12_44", 12),
         ("ai_source_mode_12_44", 12),
         ("ai_source_delete_12_44", 12),
+        ("source_draft_page_12_3", 12),
+        ("source_draft_open_12_3", 12),
         ("neu_tags_12", 12),
         ("neu_sources_12", 12),
         ("settings_neuropost_12", 12),

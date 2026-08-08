@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -77,7 +78,54 @@ def test_safe_redirect_revalidates_private_target(monkeypatch):
     assert requested == ["https://example.com/start"]
 
 
-def test_router_runtime_binds_safe_source_fetcher():
-    from app.bot.routers import sources_module
+def test_sources_router_imports_safe_fetcher_directly():
+    import app.bot.routers.sources as sources_router
 
-    assert sources_module._fetch_url_source_text is source_fetch.fetch_public_source_text
+    assert sources_router.fetch_public_source_text is source_fetch.fetch_public_source_text
+    assert not hasattr(sources_router, "_fetch_url_source_text")
+
+
+def test_digest_url_source_uses_direct_safe_fetcher(monkeypatch):
+    import app.bot.routers.sources as sources_router
+
+    calls: list[str] = []
+
+    async def fake_source_fetch(url: str) -> str:
+        calls.append(url)
+        return "Safe article body"
+
+    monkeypatch.setattr(sources_router, "fetch_public_source_text", fake_source_fetch)
+    source = SimpleNamespace(
+        enabled=True,
+        source_type="url",
+        source_value="https://example.com/post",
+        mode="summary",
+        citation_enabled=False,
+    )
+
+    items = asyncio.run(sources_router._collect_digest_source_items([source]))
+
+    assert calls == ["https://example.com/post"]
+    assert items == [
+        {
+            "source": "url",
+            "url": "https://example.com/post",
+            "text": "Safe article body",
+            "mode": "summary",
+            "citation_enabled": False,
+        }
+    ]
+
+
+def test_telegram_source_target_normalization():
+    import app.bot.routers.sources as sources_router
+
+    assert sources_router._telegram_join_target("@channel_name") == "channel_name"
+    assert (
+        sources_router._telegram_join_target("https://t.me/channel_name/123")
+        == "channel_name"
+    )
+    assert (
+        sources_router._telegram_fallback_value("https://telegram.me/channel_name/123")
+        == "@channel_name"
+    )
