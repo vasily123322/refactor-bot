@@ -83,6 +83,36 @@ def test_rss_ingestion_is_idempotent_and_creates_candidates() -> None:
     asyncio.run(run())
 
 
+def test_rss_ingestion_does_not_persist_unsafe_entry_link() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            feed = """<rss><channel><item><guid>unsafe-1</guid>
+            <title>Unsafe link</title><link>javascript:alert(1)</link>
+            <description>Useful content</description></item></channel></rss>"""
+
+            async def fetcher(_url: str) -> str:
+                return feed
+
+            async with Session() as session:
+                connector = await SourcesRepo(session).create_connector(
+                    channel_id=44,
+                    kind="rss",
+                    value="https://example.com/feed.xml",
+                )
+                await SourceIngestionService(session, fetcher=fetcher).ingest(connector)
+                document = (await session.execute(select(SourceDocument))).scalar_one()
+                assert document.source_url is None
+                assert document.external_id == "unsafe-1"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_web_ingestion_strips_nonvisible_content_and_caps_document_size() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
