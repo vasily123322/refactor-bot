@@ -2,7 +2,6 @@ import asyncio
 from collections.abc import Awaitable, Callable
 
 from aiogram import Dispatcher
-from aiogram.fsm.storage.memory import MemoryStorage
 from loguru import logger
 
 from app.bot.bot_instance import bot
@@ -12,6 +11,7 @@ from app.core.channel_access import ChannelOwnerMiddleware, ChannelOwnerStateMid
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal, Base, engine, init_db_if_needed_sync
 from app.core.errors import ErrorsMiddleware
+from app.core.fsm_storage import build_fsm_storage
 from app.core.logging import setup_logging
 from app.services.external_bots import ExternalBotsManager
 from app.services.posting import PostingService
@@ -28,8 +28,7 @@ except Exception as exc:
 
 async def create_dispatcher() -> Dispatcher:
     setup_logging(settings.log_level)
-    storage = MemoryStorage()
-    dp = Dispatcher(storage=storage)
+    dp = Dispatcher(storage=build_fsm_storage())
     dp.message.middleware(ErrorsMiddleware())
     dp.message.middleware(ChannelOwnerStateMiddleware())
     dp.callback_query.middleware(ErrorsMiddleware())
