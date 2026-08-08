@@ -1,5 +1,7 @@
 from sqlalchemy import select, or_, cast, String, func
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.url_security import validate_public_http_url
 from app.domain.models import AIPreset, ChannelAISettings, AISource
 
 
@@ -145,13 +147,33 @@ class AISourcesRepo:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    @staticmethod
+    async def _validate_source_value(source_type: str, source_value: str) -> None:
+        if (source_type or "").lower().strip() in {"url", "rss"}:
+            await validate_public_http_url((source_value or "").strip())
+
     async def list_by_channel(self, channel_id: int) -> list[AISource]:
         res = await self.session.execute(
             select(AISource)
             .where(AISource.channel_id == channel_id)
             .order_by(AISource.id)
         )
-        return list(res.scalars().all())
+        items = list(res.scalars().all())
+
+        # Existing rows predate URL validation. Fail closed: unsafe/unresolvable
+        # URL/RSS sources are disabled before any caller can fetch them.
+        changed = False
+        for source in items:
+            if not source.enabled:
+                continue
+            try:
+                await self._validate_source_value(source.source_type, source.source_value)
+            except Exception:
+                source.enabled = False
+                changed = True
+        if changed:
+            await self.session.commit()
+        return items
 
     async def get_by_id(self, source_id: int) -> AISource | None:
         res = await self.session.execute(
@@ -167,6 +189,7 @@ class AISourcesRepo:
         mode: str = "summary",
         citation_enabled: bool = True,
     ) -> AISource:
+        await self._validate_source_value(source_type, source_value)
         source = AISource(
             channel_id=channel_id,
             source_type=source_type,
@@ -220,6 +243,8 @@ class AISourcesRepo:
     async def toggle_enabled(self, source_id: int) -> bool:
         source = await self.get_by_id(source_id)
         if source:
+            if not source.enabled:
+                await self._validate_source_value(source.source_type, source.source_value)
             source.enabled = not source.enabled
             await self.session.commit()
             return True
@@ -249,6 +274,11 @@ class AISourcesRepo:
     ) -> bool:
         source = await self.get_by_id(source_id)
         if source:
+            effective_type = source_type if source_type is not None else source.source_type
+            effective_value = (
+                source_value if source_value is not None else source.source_value
+            )
+            await self._validate_source_value(effective_type, effective_value)
             if source_type is not None:
                 source.source_type = source_type
             if source_value is not None:
