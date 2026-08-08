@@ -46,12 +46,25 @@ def test_legacy_sources_are_mirrored_idempotently_without_assuming_reuse_rights(
                 assert {row.kind for row in first} == {"rss", "telegram"}
                 assert all(row.reuse_policy == "reference_only" for row in first)
                 grab = next(row for row in first if row.legacy_grab_source_id is not None)
+                ai = next(row for row in first if row.legacy_ai_source_id is not None)
                 assert grab.mode == "mirror"
                 assert grab.config["filter_flags"]["photo"] == 1
+                assert grab.config["lifecycle_editable"] is False
 
+                # reuse_policy has no field in legacy AISource. Once an operator
+                # chooses it in Sources v2, compatibility sync must preserve it.
+                ai.reuse_policy = "rewrite_with_attribution"
+                await session.commit()
                 await mirror.sync_channel(7)
                 second = await SourcesRepo(session).list_connectors(7)
                 assert len(second) == 2
+                ai_again = next(row for row in second if row.legacy_ai_source_id is not None)
+                grab_again = next(
+                    row for row in second if row.legacy_grab_source_id is not None
+                )
+                assert ai_again.reuse_policy == "rewrite_with_attribution"
+                assert grab_again.reuse_policy == "reference_only"
+                assert grab_again.enabled is True
         finally:
             await engine.dispose()
 
