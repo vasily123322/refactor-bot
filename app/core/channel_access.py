@@ -17,6 +17,7 @@ _CHANNEL_CALLBACK_PATTERNS = (
     re.compile(
         r"^ai_source_(?:item|nop|toggle|cite|mode|delete)_(?P<channel_id>\d+)_\d+$"
     ),
+    re.compile(r"^source_draft_(?:page|open)_(?P<channel_id>\d+)_\d+$"),
     re.compile(r"^ai_priority_set_(?P<channel_id>\d+)_[a-z0-9_-]+$"),
     # Single-channel callbacks.
     re.compile(r"^ai_toggle_[a-z0-9_]+_(?P<channel_id>\d+)$"),
