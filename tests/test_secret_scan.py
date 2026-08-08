@@ -18,11 +18,17 @@ def test_scanner_detects_sk_style_api_key() -> None:
 
 
 def test_scanner_detects_private_key_header() -> None:
-    assert "private-key" in _rules("-----BEGIN PRIVATE KEY-----")
+    header = "-----BEGIN " + "PRIVATE KEY-----"
+    assert "private-key" in _rules(header)
 
 
 def test_scanner_detects_secret_interpolation_in_output_text() -> None:
-    source = 'text_log = f"пользователь добавил бот с токеном: <code>{token}</code>"'
+    placeholder = "{" + "token" + "}"
+    source = (
+        'text_log = f"пользователь добавил бот с токеном: <code>'
+        + placeholder
+        + '</code>"'
+    )
     assert "credential-output-interpolation" in _rules(source)
 
 
