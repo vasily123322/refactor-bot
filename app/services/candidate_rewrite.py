@@ -183,6 +183,9 @@ class CandidateRewriteService:
         await self.session.refresh(run)
         return run
 
+    async def _release_read_lock(self) -> None:
+        await self.session.commit()
+
     async def rewrite(
         self,
         *,
@@ -249,7 +252,7 @@ class CandidateRewriteService:
             ).scalars().all()
         )
         if any(not ai_run_lease_expired(row.started_at) for row in running_rows):
-            await self.session.rollback()
+            await self._release_read_lock()
             raise CandidateRewriteBusy("candidate rewrite is already running")
         for stale_run in running_rows:
             abandon_expired_ai_run(stale_run)
@@ -274,7 +277,6 @@ class CandidateRewriteService:
         )
         self.session.add(run)
         try:
-            # Expired run abandonment and replacement are committed atomically.
             await self.session.commit()
             await self.session.refresh(run)
         except Exception:
@@ -301,7 +303,7 @@ class CandidateRewriteService:
             )
             persisted = await self._refresh_run(run.id)
             if str(persisted.status) != "running":
-                await self.session.rollback()
+                await self._release_read_lock()
                 raise CandidateRewriteError("rewrite run is no longer active") from exc
             persisted.status = "failed"
             persisted.error = type(exc).__name__
@@ -319,7 +321,7 @@ class CandidateRewriteService:
         )
         persisted = await self._refresh_run(run.id)
         if str(persisted.status) != "running":
-            await self.session.rollback()
+            await self._release_read_lock()
             raise CandidateRewriteError("rewrite run is no longer active")
         current_policy = str(connector.reuse_policy or "reference_only")
 
