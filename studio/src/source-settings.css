@@ -1,0 +1,43 @@
+.source-card-disabled { opacity: .72; }
+.source-settings-controls {
+  display: grid;
+  grid-template-columns: minmax(115px, .9fr) minmax(105px, .75fr) minmax(180px, 1.4fr) minmax(120px, .9fr) auto;
+  gap: 7px;
+  align-items: end;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 16%, transparent);
+}
+.source-settings-controls label { display: grid; gap: 4px; min-width: 0; }
+.source-settings-controls label > span {
+  color: var(--tg-theme-hint-color, #94a3b8);
+  font-size: 9px;
+}
+.source-settings-controls select {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 24%, transparent);
+  border-radius: 8px;
+  padding: 7px 8px;
+  background: color-mix(in srgb, var(--tg-theme-bg-color, #0b1020) 78%, transparent);
+  color: inherit;
+  font-size: 10px;
+}
+.source-settings-toggle {
+  display: flex !important;
+  flex-direction: row;
+  align-items: center;
+  align-self: center;
+  gap: 6px !important;
+}
+.source-settings-toggle input { margin: 0; }
+.source-settings-controls .button { align-self: end; white-space: nowrap; }
+
+@media (max-width: 1180px) {
+  .source-settings-controls { grid-template-columns: 1fr 1fr; }
+  .source-settings-controls .button { justify-self: start; }
+}
+
+@media (max-width: 620px) {
+  .source-settings-controls { grid-template-columns: 1fr; }
+}
