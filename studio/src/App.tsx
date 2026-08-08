@@ -1,6 +1,7 @@
 import { AppRoot } from '@telegram-apps/telegram-ui';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { AIStudioPanel } from './AIStudioPanel';
 import { StudioApiError, studioApi } from './api';
 import { InboxPanel } from './InboxPanel';
 import { PlannerPanel } from './PlannerPanel';
@@ -17,7 +18,7 @@ import type {
 } from './types';
 import { documentText, emptyRichDocument, emptyTextDocument } from './types';
 
-type StudioView = 'content' | 'planner' | 'sources' | 'inbox';
+type StudioView = 'content' | 'planner' | 'sources' | 'inbox' | 'ai';
 
 function shortDate(value: string | null): string {
   if (!value) return '—';
@@ -87,7 +88,12 @@ function Sidebar({
         >
           📥 Inbox
         </button>
-        <button className="nav-item" disabled title="Следующий этап">✨ AI Studio</button>
+        <button
+          className={activeView === 'ai' ? 'nav-item nav-item-active' : 'nav-item'}
+          onClick={() => onView('ai')}
+        >
+          ✨ AI Studio
+        </button>
       </nav>
 
       <div className="sidebar-section-title">Каналы</div>
@@ -285,6 +291,10 @@ export default function App() {
         ) : view === 'inbox' ? (
           <main className="workspace sources-workspace">
             <InboxPanel channel={channel} onOpenContent={(id) => void openContentById(id)} />
+          </main>
+        ) : view === 'ai' ? (
+          <main className="workspace sources-workspace">
+            <AIStudioPanel channel={channel} />
           </main>
         ) : (
           <main className="workspace">
