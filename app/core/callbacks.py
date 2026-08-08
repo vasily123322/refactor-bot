@@ -75,6 +75,9 @@ class CB(str, Enum):
     POST_AD_PRESET_PREFIX = "post_ad_preset_"  # +h_top_autodelHours, e.g., 1_24
     POST_AI_QUICK = "post_ai_quick"
     AI_BACK_TO_CREATE = "ai_back_to_create"
+    AI_BACK_TO_PREVIEW = "ai_back_to_preview"
+    AI_RETRY_LAST = "ai_retry_last"
+    AI_RESET_HISTORY = "ai_reset_history"
     AI_QUICK_APPLY = "ai_quick_apply"
     POST_AD_SETTINGS_OPEN = "post_ad_settings_open"
 
