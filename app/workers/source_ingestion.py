@@ -10,10 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.db import AsyncSessionLocal
 from app.domain.sources.models import SourceConnector
 from app.services.source_ingestion import SourceIngestionError, SourceIngestionService
+from app.services.telegram_source_ingestion import TelegramSourceIngestionService
 
 
 class SourceIngestionWorker:
-    """Continuously project enabled Web/RSS connectors into normalized documents."""
+    """Continuously project enabled source connectors into normalized documents."""
 
     def __init__(
         self,
@@ -69,7 +70,7 @@ class SourceIngestionWorker:
                         select(SourceConnector.id)
                         .where(
                             SourceConnector.enabled.is_(True),
-                            SourceConnector.kind.in_(("rss", "url", "web")),
+                            SourceConnector.kind.in_(("rss", "url", "web", "telegram")),
                         )
                         .order_by(SourceConnector.id.asc())
                     )
@@ -85,12 +86,17 @@ class SourceIngestionWorker:
                 if connector is None or not connector.enabled:
                     continue
                 try:
-                    result = await SourceIngestionService(session).ingest(connector)
+                    kind = str(connector.kind).lower()
+                    if kind == "telegram":
+                        result = await TelegramSourceIngestionService(session).ingest(connector)
+                    else:
+                        result = await SourceIngestionService(session).ingest(connector)
                     processed += 1
                     if result.documents_created:
                         logger.info(
-                            "Sources v2 connector={} new_documents={} candidates={}",
+                            "Sources v2 connector={} kind={} new_documents={} candidates={}",
                             int(connector.id),
+                            kind,
                             result.documents_created,
                             result.candidates_created,
                         )
