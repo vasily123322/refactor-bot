@@ -113,6 +113,52 @@ export type PlannerEntry = {
   legacy_post_task_id: number | null;
 };
 
+export type SourceConnectorView = {
+  id: number;
+  channel_id: number;
+  kind: 'telegram' | 'rss' | 'url' | string;
+  value: string;
+  enabled: boolean;
+  mode: string;
+  citation_enabled: boolean;
+  reuse_policy: string;
+  status: string;
+  status_reason: string | null;
+  auth_state: string;
+  capabilities: Record<string, unknown>;
+  health: Record<string, unknown>;
+  last_success_at: string | null;
+  last_error_at: string | null;
+  last_document_at: string | null;
+  legacy_ai_source_id: number | null;
+  legacy_grab_source_id: number | null;
+};
+
+export type SourceIngestionResult = {
+  connector_id: number;
+  documents_seen: number;
+  documents_created: number;
+  candidates_created: number;
+};
+
+export type ContentCandidateView = {
+  id: number;
+  source_document_id: number;
+  connector_id: number;
+  status: string;
+  suggested_action: string | null;
+  score: number | null;
+  topic: string | null;
+  summary: string | null;
+  source_title: string | null;
+  source_url: string | null;
+  excerpt: string;
+  published_at: string | null;
+  fetched_at: string | null;
+  created_at: string | null;
+  reuse_policy: string;
+};
+
 export const emptyTextDocument = (): PostDocument => ({
   schema_version: 1,
   mode: 'classic',

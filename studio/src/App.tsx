@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { StudioApiError, studioApi } from './api';
 import { PlannerPanel } from './PlannerPanel';
 import { RichComposer } from './RichComposer';
+import { SourcesPanel } from './SourcesPanel';
 import { TelegramComposer } from './TelegramComposer';
 import { TelegramVisualPreview } from './TelegramVisualPreview';
 import type {
@@ -15,7 +16,7 @@ import type {
 } from './types';
 import { documentText, emptyRichDocument, emptyTextDocument } from './types';
 
-type StudioView = 'content' | 'planner';
+type StudioView = 'content' | 'planner' | 'sources';
 
 function shortDate(value: string | null): string {
   if (!value) return '—';
@@ -73,8 +74,13 @@ function Sidebar({
         >
           📅 Планер
         </button>
-        <button className="nav-item" disabled title="Следующий этап">📥 Входящие</button>
-        <button className="nav-item" disabled title="Следующий этап">🔎 Источники</button>
+        <button
+          className={activeView === 'sources' ? 'nav-item nav-item-active' : 'nav-item'}
+          onClick={() => onView('sources')}
+        >
+          🔎 Источники
+        </button>
+        <button className="nav-item" disabled title="Inbox источников пока находится внутри Sources">📥 Inbox</button>
         <button className="nav-item" disabled title="Следующий этап">✨ AI Studio</button>
       </nav>
 
@@ -264,6 +270,10 @@ export default function App() {
         {view === 'planner' ? (
           <main className="workspace planner-page">
             <PlannerPanel channel={channel} onOpenContent={(id) => void openContentById(id)} />
+          </main>
+        ) : view === 'sources' ? (
+          <main className="workspace sources-workspace">
+            <SourcesPanel channel={channel} />
           </main>
         ) : (
           <main className="workspace">
