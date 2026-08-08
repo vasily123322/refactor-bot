@@ -1,6 +1,7 @@
 from aiogram import Router
 from .main import router as main_commands
 from .start import router as start_commands
+from .navigation import router as navigation_commands
 from .chats import router as chats_commands
 from .post_editor import router as post_editor_commands
 from .posting_publish import router as posting_publish_commands
@@ -16,6 +17,7 @@ from app.core.settings_channel_access import SettingsChannelOwnerMiddleware
 main_router = Router()
 main_router.callback_query.outer_middleware(SettingsChannelOwnerMiddleware())
 main_router.include_router(start_commands)
+main_router.include_router(navigation_commands)
 main_router.include_router(chats_commands)
 main_router.include_router(post_editor_commands)
 main_router.include_router(posting_publish_commands)
