@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.sources.enrichment import CandidateEnrichmentRun
 from app.domain.sources.models import ContentCandidate, SourceDocument
+from app.services.ai_run_leases import ai_run_lease_expired, abandon_expired_ai_run
 
 
 _MAX_ENRICHMENT_INPUT_CHARS = 12_000
@@ -70,7 +71,10 @@ def _bounded(value: str, limit: int) -> str:
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
-def _input_hash(document: SourceDocument, candidate: ContentCandidate) -> str:
+def candidate_enrichment_input_hash(
+    document: SourceDocument,
+    candidate: ContentCandidate,
+) -> str:
     material = "\0".join(
         [
             str(document.content_hash or ""),
@@ -185,6 +189,13 @@ class CandidateEnrichmentService:
         candidate, document = row
         return candidate, document
 
+    async def _refresh_run(self, run_id: int) -> CandidateEnrichmentRun:
+        run = await self.session.get(CandidateEnrichmentRun, int(run_id))
+        if run is None:
+            raise CandidateEnrichmentError("enrichment run disappeared")
+        await self.session.refresh(run)
+        return run
+
     async def _apply_completed(
         self,
         *,
@@ -218,9 +229,9 @@ class CandidateEnrichmentService:
         if not provider_name or not model_name:
             raise CandidateEnrichmentError("enrichment provider identity is required")
 
-        # Serialize the decision to reuse/create a run for this candidate. The
-        # transaction is committed before the provider call, so no DB lock is
-        # held while external work is running.
+        # Candidate locking serializes start/recovery decisions on PostgreSQL. The
+        # transaction is committed before provider work, so no DB lock is held while
+        # an external AI request is running.
         candidate, document = await self._load(
             channel_id=channel_id,
             candidate_id=candidate_id,
@@ -230,7 +241,7 @@ class CandidateEnrichmentService:
         if str(candidate.status or "new") != "new":
             raise CandidateEnrichmentError("candidate is no longer active")
 
-        input_hash = _input_hash(document, candidate)
+        input_hash = candidate_enrichment_input_hash(document, candidate)
         completed = (
             await self.session.execute(
                 select(CandidateEnrichmentRun)
@@ -253,20 +264,26 @@ class CandidateEnrichmentService:
                 model_name=model_name,
             )
 
-        running = (
-            await self.session.execute(
-                select(CandidateEnrichmentRun.id).where(
-                    CandidateEnrichmentRun.candidate_id == int(candidate.id),
-                    CandidateEnrichmentRun.provider == provider_name,
-                    CandidateEnrichmentRun.model == model_name,
-                    CandidateEnrichmentRun.input_hash == input_hash,
-                    CandidateEnrichmentRun.status == "running",
+        running_rows = list(
+            (
+                await self.session.execute(
+                    select(CandidateEnrichmentRun)
+                    .where(
+                        CandidateEnrichmentRun.candidate_id == int(candidate.id),
+                        CandidateEnrichmentRun.provider == provider_name,
+                        CandidateEnrichmentRun.model == model_name,
+                        CandidateEnrichmentRun.input_hash == input_hash,
+                        CandidateEnrichmentRun.status == "running",
+                    )
+                    .order_by(CandidateEnrichmentRun.id.desc())
                 )
-            )
-        ).scalar_one_or_none()
-        if running is not None:
+            ).scalars().all()
+        )
+        if any(not ai_run_lease_expired(row.started_at) for row in running_rows):
             await self.session.rollback()
             raise CandidateEnrichmentBusy("candidate enrichment is already running")
+        for stale_run in running_rows:
+            abandon_expired_ai_run(stale_run)
 
         text = _bounded(str(document.content or ""), _MAX_ENRICHMENT_INPUT_CHARS)
         payload = EnrichmentInput(
@@ -293,6 +310,7 @@ class CandidateEnrichmentService:
         )
         self.session.add(run)
         try:
+            # Expired run abandonment and replacement are committed atomically.
             await self.session.commit()
             await self.session.refresh(run)
         except Exception:
@@ -302,61 +320,76 @@ class CandidateEnrichmentService:
         try:
             output = _validate_output(await provider.enrich(payload))
         except Exception as exc:
-            run = await self.session.get(CandidateEnrichmentRun, int(run.id))
-            if run is not None:
-                run.status = "failed"
-                run.error = type(exc).__name__
-                run.finished_at = datetime.now(timezone.utc)
-                await self.session.commit()
+            # Serialize failure finalization with any recovery attempt, then re-read
+            # the run. A late provider must never overwrite an already-abandoned row.
+            await self._load(
+                channel_id=channel_id,
+                candidate_id=candidate_id,
+                for_update=True,
+                refresh=True,
+            )
+            persisted = await self._refresh_run(run.id)
+            if str(persisted.status) != "running":
+                await self.session.rollback()
+                raise CandidateEnrichmentError(
+                    "enrichment run is no longer active"
+                ) from exc
+            persisted.status = "failed"
+            persisted.error = type(exc).__name__
+            persisted.finished_at = datetime.now(timezone.utc)
+            await self.session.commit()
             if isinstance(exc, CandidateEnrichmentError):
                 raise
             raise CandidateEnrichmentError("candidate enrichment failed") from exc
 
-        run = await self.session.get(CandidateEnrichmentRun, int(run.id))
-        if run is None:
-            raise CandidateEnrichmentError("enrichment run disappeared")
+        # Acquire the candidate lock before refreshing the run. Recovery uses the
+        # same lock, so after this point the status cannot change underneath us.
         candidate, document = await self._load(
             channel_id=channel_id,
             candidate_id=candidate_id,
             for_update=True,
             refresh=True,
         )
+        persisted = await self._refresh_run(run.id)
+        if str(persisted.status) != "running":
+            await self.session.rollback()
+            raise CandidateEnrichmentError("enrichment run is no longer active")
 
-        run.summary = output.summary
-        run.topic = output.topic
-        run.score = output.score
-        run.error = None
-        run.finished_at = datetime.now(timezone.utc)
+        persisted.summary = output.summary
+        persisted.topic = output.topic
+        persisted.score = output.score
+        persisted.error = None
+        persisted.finished_at = datetime.now(timezone.utc)
         output_meta = dict(output.metadata or {})
 
         if str(candidate.status or "new") != "new":
-            run.status = "discarded"
-            run.output = {**output_meta, "discard_reason": "candidate_not_active"}
+            persisted.status = "discarded"
+            persisted.output = {**output_meta, "discard_reason": "candidate_not_active"}
             await self.session.commit()
             raise CandidateEnrichmentError("candidate is no longer active")
 
-        if _input_hash(document, candidate) != input_hash:
-            run.status = "stale"
-            run.output = {**output_meta, "discard_reason": "source_snapshot_changed"}
+        if candidate_enrichment_input_hash(document, candidate) != input_hash:
+            persisted.status = "stale"
+            persisted.output = {**output_meta, "discard_reason": "source_snapshot_changed"}
             await self.session.commit()
             raise CandidateEnrichmentError("source changed during enrichment")
 
-        run.status = "completed"
-        run.output = output_meta
+        persisted.status = "completed"
+        persisted.output = output_meta
         candidate.summary = output.summary
         candidate.topic = output.topic
         candidate.score = output.score
         candidate.meta = {
             **dict(candidate.meta or {}),
-            "enrichment_run_id": int(run.id),
+            "enrichment_run_id": int(persisted.id),
             "enrichment_provider": provider_name,
             "enrichment_model": model_name,
         }
         try:
             await self.session.commit()
-            await self.session.refresh(run)
+            await self.session.refresh(persisted)
             await self.session.refresh(candidate)
-            return CandidateEnrichmentResult(candidate, run, False)
+            return CandidateEnrichmentResult(candidate, persisted, False)
         except Exception:
             await self.session.rollback()
             raise
