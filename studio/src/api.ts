@@ -1,11 +1,14 @@
 import { getRawInitData } from './telegram';
 import type {
   Channel,
+  ContentCandidateView,
   ContentDetail,
   ContentSummary,
   PlannerEntry,
   PostDocument,
   Publication,
+  SourceConnectorView,
+  SourceIngestionResult,
   StudioUser,
   TelegramPreviewResult,
 } from './types';
@@ -45,6 +48,19 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   return (await response.json()) as T;
 }
+
+export type CreateSourceInput = {
+  kind: 'telegram' | 'rss' | 'url';
+  value: string;
+  mode: 'summary' | 'rewrite';
+  citation_enabled: boolean;
+  reuse_policy:
+    | 'reference_only'
+    | 'summarize'
+    | 'quote_with_attribution'
+    | 'rewrite_with_attribution'
+    | 'mirror_authorized';
+};
 
 export const studioApi = {
   me: () => request<StudioUser>('/api/studio/me'),
@@ -106,6 +122,32 @@ export const studioApi = {
   cancelSchedule: (channelId: number, scheduleId: number) =>
     request<PlannerEntry>(
       `/api/studio/channels/${channelId}/planner/${scheduleId}/cancel`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  sources: (channelId: number) =>
+    request<SourceConnectorView[]>(`/api/studio/channels/${channelId}/sources`),
+  createSource: (channelId: number, input: CreateSourceInput) =>
+    request<SourceConnectorView>(`/api/studio/channels/${channelId}/sources`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  sourceDoctor: (channelId: number, connectorId: number) =>
+    request<SourceConnectorView>(
+      `/api/studio/channels/${channelId}/sources/${connectorId}/doctor`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  ingestSource: (channelId: number, connectorId: number) =>
+    request<SourceIngestionResult>(
+      `/api/studio/channels/${channelId}/sources/${connectorId}/ingest`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  candidates: (channelId: number, status: 'new' | 'dismissed' = 'new') =>
+    request<ContentCandidateView[]>(
+      `/api/studio/channels/${channelId}/candidates?status_filter=${encodeURIComponent(status)}&limit=100`,
+    ),
+  dismissCandidate: (channelId: number, candidateId: number) =>
+    request<ContentCandidateView>(
+      `/api/studio/channels/${channelId}/candidates/${candidateId}/dismiss`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
 };

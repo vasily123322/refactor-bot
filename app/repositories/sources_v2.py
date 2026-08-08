@@ -195,3 +195,52 @@ class SourcesRepo:
             await self.session.commit()
             await self.session.refresh(row)
         return row
+
+    async def get_candidate_for_channel(
+        self, candidate_id: int, channel_id: int
+    ) -> ContentCandidate | None:
+        result = await self.session.execute(
+            select(ContentCandidate).where(
+                ContentCandidate.id == int(candidate_id),
+                ContentCandidate.channel_id == int(channel_id),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_candidate_rows(
+        self,
+        channel_id: int,
+        *,
+        status: str | None = "new",
+        limit: int = 100,
+    ) -> list[tuple[ContentCandidate, SourceDocument]]:
+        statement = (
+            select(ContentCandidate, SourceDocument)
+            .join(
+                SourceDocument,
+                SourceDocument.id == ContentCandidate.source_document_id,
+            )
+            .where(ContentCandidate.channel_id == int(channel_id))
+        )
+        if status is not None:
+            statement = statement.where(ContentCandidate.status == str(status))
+        statement = statement.order_by(
+            SourceDocument.published_at.desc().nullslast(),
+            ContentCandidate.id.desc(),
+        ).limit(max(1, min(int(limit), 500)))
+        result = await self.session.execute(statement)
+        return [(candidate, document) for candidate, document in result.all()]
+
+    async def set_candidate_status(
+        self,
+        candidate: ContentCandidate,
+        status: str,
+    ) -> ContentCandidate:
+        candidate.status = str(status)
+        try:
+            await self.session.commit()
+            await self.session.refresh(candidate)
+            return candidate
+        except Exception:
+            await self.session.rollback()
+            raise

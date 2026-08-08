@@ -11,12 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.studio.auth import StudioPrincipal, require_studio_principal
 from app.core.db import AsyncSessionLocal
 from app.domain.models import AISource
-from app.domain.sources.models import SourceConnector
+from app.domain.sources.models import ContentCandidate, SourceConnector, SourceDocument
 from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
 from app.repositories.sources_v2 import SourcesRepo
 from app.services.legacy_source_mirror import LegacySourceMirror
 from app.services.source_doctor import SourceDoctor
+from app.services.source_ingestion import SourceIngestionError, SourceIngestionService
 
 
 router = APIRouter(prefix="/api/studio", tags=["sources"])
@@ -57,6 +58,31 @@ class SourceResponse(BaseModel):
     last_document_at: datetime | None
     legacy_ai_source_id: int | None
     legacy_grab_source_id: int | None
+
+
+class SourceIngestionResponse(BaseModel):
+    connector_id: int
+    documents_seen: int
+    documents_created: int
+    candidates_created: int
+
+
+class CandidateResponse(BaseModel):
+    id: int
+    source_document_id: int
+    connector_id: int
+    status: str
+    suggested_action: str | None
+    score: float | None
+    topic: str | None
+    summary: str | None
+    source_title: str | None
+    source_url: str | None
+    excerpt: str
+    published_at: datetime | None
+    fetched_at: datetime | None
+    created_at: datetime | None
+    reuse_policy: str
 
 
 async def _session_dependency() -> AsyncIterator[AsyncSession]:
@@ -101,6 +127,42 @@ def _response(row: SourceConnector) -> SourceResponse:
         last_document_at=row.last_document_at,
         legacy_ai_source_id=row.legacy_ai_source_id,
         legacy_grab_source_id=row.legacy_grab_source_id,
+    )
+
+
+def _excerpt(value: str, *, limit: int = 700) -> str:
+    text = " ".join(str(value).split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "…"
+
+
+def _candidate_response(
+    candidate: ContentCandidate,
+    document: SourceDocument,
+) -> CandidateResponse:
+    metadata = dict(candidate.meta or {})
+    document_meta = dict(document.meta or {})
+    return CandidateResponse(
+        id=int(candidate.id),
+        source_document_id=int(document.id),
+        connector_id=int(document.connector_id),
+        status=str(candidate.status),
+        suggested_action=candidate.suggested_action,
+        score=candidate.score,
+        topic=candidate.topic,
+        summary=candidate.summary,
+        source_title=document.title,
+        source_url=document.source_url,
+        excerpt=_excerpt(document.content),
+        published_at=document.published_at,
+        fetched_at=document.fetched_at,
+        created_at=candidate.created_at,
+        reuse_policy=str(
+            metadata.get("reuse_policy")
+            or document_meta.get("reuse_policy")
+            or "reference_only"
+        ),
     )
 
 
@@ -205,3 +267,76 @@ async def check_source(
         success=result.success,
     )
     return _response(row)
+
+
+@router.post(
+    "/channels/{channel_id}/sources/{connector_id}/ingest",
+    response_model=SourceIngestionResponse,
+)
+async def ingest_source(
+    channel_id: int,
+    connector_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> SourceIngestionResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    row = await SourcesRepo(session).get_connector_for_channel(connector_id, channel_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    if str(row.kind).lower() not in {"rss", "url", "web"}:
+        raise HTTPException(
+            status_code=409,
+            detail="This source requires its dedicated ingestion adapter",
+        )
+    try:
+        result = await SourceIngestionService(session).ingest(row)
+    except SourceIngestionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return SourceIngestionResponse(
+        connector_id=result.connector_id,
+        documents_seen=result.documents_seen,
+        documents_created=result.documents_created,
+        candidates_created=result.candidates_created,
+    )
+
+
+@router.get(
+    "/channels/{channel_id}/candidates",
+    response_model=list[CandidateResponse],
+)
+async def list_candidates(
+    channel_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+    status_filter: Literal["new", "dismissed"] | None = "new",
+    limit: int = 100,
+) -> list[CandidateResponse]:
+    await _require_owned_channel(session, principal, channel_id)
+    rows = await SourcesRepo(session).list_candidate_rows(
+        channel_id,
+        status=status_filter,
+        limit=limit,
+    )
+    return [_candidate_response(candidate, document) for candidate, document in rows]
+
+
+@router.post(
+    "/channels/{channel_id}/candidates/{candidate_id}/dismiss",
+    response_model=CandidateResponse,
+)
+async def dismiss_candidate(
+    channel_id: int,
+    candidate_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> CandidateResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    repo = SourcesRepo(session)
+    candidate = await repo.get_candidate_for_channel(candidate_id, channel_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    document = await session.get(SourceDocument, int(candidate.source_document_id))
+    if document is None or int(document.channel_id) != int(channel_id):
+        raise HTTPException(status_code=404, detail="Candidate source not found")
+    candidate = await repo.set_candidate_status(candidate, "dismissed")
+    return _candidate_response(candidate, document)
