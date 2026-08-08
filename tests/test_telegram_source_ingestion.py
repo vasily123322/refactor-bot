@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.db import Base
 from app.domain.sources.models import ContentCandidate, SourceDocument
 from app.repositories.sources_v2 import SourcesRepo
+from app.services.scheduling import as_utc
 from app.services.source_ingestion import SourceIngestionError
 from app.services.telegram_source_ingestion import TelegramSourceIngestionService
 from app.userbot.client import UserbotChat, UserbotMessage
@@ -91,7 +92,7 @@ def test_telegram_ingestion_is_idempotent_and_creates_public_message_links() -> 
                 assert documents[0].source_url == "https://t.me/source_channel/11"
                 assert documents[0].title == "Source Channel"
                 assert documents[1].published_at is not None
-                assert documents[1].published_at.utcoffset().total_seconds() == 0
+                assert as_utc(documents[1].published_at).utcoffset().total_seconds() == 0
                 assert all(row.suggested_action == "summarize" for row in candidates)
                 assert connector.auth_state == "ready"
                 assert connector.status == "healthy"
