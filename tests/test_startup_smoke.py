@@ -3,8 +3,9 @@ import asyncio
 from app.bot import dispatcher
 
 
-def test_ai_auto_tasks_worker_imported() -> None:
+def test_required_background_workers_imported() -> None:
     assert dispatcher.AIAutoTasksWorker is not None
+    assert dispatcher.SourceIngestionWorker is not None
 
 
 def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
@@ -84,6 +85,8 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
     monkeypatch.setattr(dispatcher, "ExternalBotsManager", _FakeExternalBotsManager)
     monkeypatch.setattr(dispatcher, "userbot", _FakeUserbot())
     monkeypatch.setattr(dispatcher, "Scheduler", _worker_class("scheduler"))
+    monkeypatch.setattr(dispatcher, "PublicationReconcilerWorker", _worker_class("publication-reconciler"))
+    monkeypatch.setattr(dispatcher, "SourceIngestionWorker", _worker_class("source-ingestion"))
     monkeypatch.setattr(dispatcher, "GrabPoller", _worker_class("grab-poller"))
     monkeypatch.setattr(dispatcher, "AIAutoTasksWorker", _worker_class("ai-auto"))
     monkeypatch.setattr(dispatcher, "PostingService", lambda *args, **kwargs: object())
@@ -106,11 +109,15 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
         "external-start",
         "userbot-start",
         "scheduler-start",
+        "publication-reconciler-start",
+        "source-ingestion-start",
         "grab-poller-start",
         "ai-auto-start",
         "polling",
         "ai-auto-stop",
         "grab-poller-stop",
+        "source-ingestion-stop",
+        "publication-reconciler-stop",
         "scheduler-stop",
         "bg-cancel",
         "external-stop",
@@ -121,6 +128,8 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
 
     assert events.index("commands-register") < events.index("polling")
     assert events.index("scheduler-start") < events.index("scheduler-stop")
+    assert events.index("publication-reconciler-start") < events.index("publication-reconciler-stop")
+    assert events.index("source-ingestion-start") < events.index("source-ingestion-stop")
     assert events.index("grab-poller-start") < events.index("grab-poller-stop")
     assert events.index("ai-auto-start") < events.index("ai-auto-stop")
     assert events.index("external-start") < events.index("external-stop")
