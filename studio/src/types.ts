@@ -4,11 +4,29 @@ export type InlineButton = {
   callback_data?: string;
 };
 
+export type TelegramEntity = {
+  type:
+    | 'bold'
+    | 'italic'
+    | 'underline'
+    | 'strikethrough'
+    | 'code'
+    | 'pre'
+    | 'text_link'
+    | 'blockquote';
+  offset: number;
+  length: number;
+  url?: string;
+  language?: string;
+};
+
 export type PostBlock = {
   id: string;
   type: string;
   text?: string;
   caption?: string;
+  entities?: TelegramEntity[];
+  caption_entities?: TelegramEntity[];
   content?: string | Array<{ text?: string }>;
   [key: string]: unknown;
 };
@@ -68,7 +86,7 @@ export type Publication = {
 export const emptyTextDocument = (): PostDocument => ({
   schema_version: 1,
   mode: 'classic',
-  blocks: [{ id: 'b1', type: 'text', text: '' }],
+  blocks: [{ id: 'b1', type: 'text', text: '', entities: [] }],
   telegram: {},
   metadata: {},
 });
@@ -86,19 +104,4 @@ export function documentText(document: PostDocument): string {
     })
     .filter(Boolean)
     .join('\n\n');
-}
-
-export function withDocumentText(document: PostDocument, text: string): PostDocument {
-  const first = document.blocks[0];
-  if (!first || first.type !== 'text') {
-    return {
-      ...document,
-      mode: 'classic',
-      blocks: [{ id: 'b1', type: 'text', text }],
-    };
-  }
-  return {
-    ...document,
-    blocks: [{ ...first, text }, ...document.blocks.slice(1)],
-  };
 }
