@@ -342,6 +342,32 @@ class AIGenerationService:
         user_id: int | None = None,
         prompt_key: str | None = None,
     ) -> dict:
+        guard_settings = await self.ai_repo.get_or_create(channel_id)
+        if not bool(getattr(guard_settings, "enabled", False)):
+            return {
+                "success": False,
+                "text": None,
+                "tokens_used": 0,
+                "error": "ИИ отключен для этого канала",
+            }
+        day_limit, month_limit, request_cap = await self._effective_limits(
+            guard_settings, channel_id
+        )
+        if day_limit is not None and int(guard_settings.tokens_used_day or 0) >= int(day_limit):
+            return {
+                "success": False,
+                "text": None,
+                "tokens_used": 0,
+                "error": "Превышен дневной лимит токенов",
+            }
+        if month_limit is not None and int(guard_settings.tokens_used_month or 0) >= int(month_limit):
+            return {
+                "success": False,
+                "text": None,
+                "tokens_used": 0,
+                "error": "Превышен месячный лимит токенов",
+            }
+
         ai_settings, model, system_prompt, user_prompt = await self.build_prompt(
             channel_id,
             mode=mode,
@@ -350,6 +376,10 @@ class AIGenerationService:
             url=url,
             instruction=instruction,
             extra=extra,
+        )
+        ai_settings["max_tokens"] = min(
+            max(1, int(ai_settings.get("max_tokens") or 2000)),
+            max(1, int(request_cap)),
         )
         res = await self.generate_with_model(
             ai_settings=ai_settings,

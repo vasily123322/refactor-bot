@@ -2921,41 +2921,39 @@ async def handle_ai_topic_input(message: Message, state: FSMContext):
     with suppress(TelegramBadRequest):
         await message.delete()
 
-    # Показываем индикатор генерации
-    status_msg = await message.answer("⏳ Генерирую текст...")
-
-    # Генерируем текст
+    # Stream the model directly into Telegram's ephemeral draft preview.
     async with AsyncSessionLocal() as session:
-        from app.services.ai_generation import AIGenerationService
+        from app.bot.ai_draft_stream import render_ai_stream_to_draft
         from app.repositories.ai_settings import ChannelAISettingsRepo
+        from app.services.ai_generation import AIGenerationService
+        from app.services.ai_streaming import InteractiveAIStreamingService
 
-        # Гарантируем, что ИИ включен для канала при попытке генерации
         try:
             repo = ChannelAISettingsRepo(session)
             await repo.update_enabled(channel_id, True)
         except Exception:
             pass
-        service = AIGenerationService(session)
 
-        # Собираем контекст
+        generation = AIGenerationService(session)
+        streaming = InteractiveAIStreamingService(generation)
         context = {
             "brand": data.get("brand", ""),
             "audience": data.get("audience", "подписчики канала"),
             "cta": data.get("cta", ""),
         }
-
-        result = await service.run_pipeline(
-            channel_id=channel_id,
-            mode="from_scratch",
-            topic=topic,
-            extra=context,
-            user_id=message.from_user.id,
-            prompt_key="ai_text",
+        result = await render_ai_stream_to_draft(
+            tg_bot,
+            chat_id=message.chat.id,
+            seed=message.message_id,
+            events=streaming.stream_pipeline(
+                channel_id=channel_id,
+                mode="from_scratch",
+                topic=topic,
+                extra=context,
+                user_id=message.from_user.id,
+                prompt_key="ai_text",
+            ),
         )
-
-    # Удаляем статус
-    with suppress(TelegramBadRequest):
-        await status_msg.delete()
     if not result["success"]:
         err = (result.get("error") or "").lower()
         # Апселл при лимитах токенов
@@ -2989,7 +2987,7 @@ async def handle_ai_topic_input(message: Message, state: FSMContext):
                         text=error_text,
                         reply_markup=kb,
                     )
-        await state.clear()
+        await state.set_state(PostFSM.preview)
         return
 
     # Успешная генерация - обновляем payload поста
@@ -3059,7 +3057,7 @@ async def handle_ai_topic_input(message: Message, state: FSMContext):
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Применить ответ →", callback_data="ai_back_to_preview"
+                    text="← В редактор", callback_data="ai_back_to_preview"
                 )
             ]
         ]
@@ -3095,11 +3093,10 @@ async def handle_ai_link_input(message: Message, state: FSMContext):
             mode = (data.get("ai_link_mode") or "summary").lower().strip()
             if mode not in {"summary", "rewrite", "paraphrase"}:
                 mode = "summary"
-            result = await service.run_pipeline(
+            result = await service.generate_from_link(
                 channel_id=channel_id,
-                mode="from_link",
                 url=url,
-                extra={"link_mode": mode},
+                mode=mode,
                 user_id=message.from_user.id,
                 prompt_key="ai_link",
             )
@@ -3266,21 +3263,26 @@ async def cb_ai_improve_action(callback: CallbackQuery, state: FSMContext):
         await callback.message.delete()
     except TelegramBadRequest:
         pass
-    status_msg = await callback.message.answer("⏳ Улучшаю текст...")
-
     try:
         async with AsyncSessionLocal() as session:
-            service = AIGenerationService(session)
-            result = await service.run_pipeline(
-                channel_id=channel_id,
-                mode="improve",
-                original_text=current_text,
-                instruction=instruction,
-                user_id=callback.from_user.id,
-                prompt_key="ai_improve",
+            from app.bot.ai_draft_stream import render_ai_stream_to_draft
+            from app.services.ai_streaming import InteractiveAIStreamingService
+
+            generation = AIGenerationService(session)
+            streaming = InteractiveAIStreamingService(generation)
+            result = await render_ai_stream_to_draft(
+                tg_bot,
+                chat_id=callback.message.chat.id,
+                seed=callback.message.message_id,
+                events=streaming.stream_pipeline(
+                    channel_id=channel_id,
+                    mode="improve",
+                    original_text=current_text,
+                    instruction=instruction,
+                    user_id=callback.from_user.id,
+                    prompt_key="ai_improve",
+                ),
             )
-            with suppress(TelegramBadRequest):
-                await status_msg.delete()
 
         if not result["success"]:
             await callback.message.answer(
@@ -3329,7 +3331,7 @@ async def cb_ai_improve_action(callback: CallbackQuery, state: FSMContext):
 
     except Exception as e:
         logger.error(f"Ошибка при улучшении текста: {e}")
-        await status_msg.edit_text(f"❌ Произошла ошибка: {str(e)}")
+        await callback.message.answer(f"❌ Произошла ошибка: {str(e)}")
         await state.set_state(PostFSM.preview)
 
 
