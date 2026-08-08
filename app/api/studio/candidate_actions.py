@@ -22,6 +22,13 @@ from app.services.candidate_enrichment import (
 )
 from app.services.candidate_enrichment_ai import ChannelAIEnrichmentProviderFactory
 from app.services.candidate_enrichment_batch import LocalBatchEnrichmentService
+from app.services.candidate_rewrite import (
+    CandidateRewriteBusy,
+    CandidateRewriteError,
+    CandidateRewriteResult,
+    CandidateRewriteService,
+)
+from app.services.candidate_rewrite_ai import ChannelAIRewriteProviderFactory
 
 
 router = APIRouter(prefix="/api/studio", tags=["inbox"])
@@ -37,6 +44,18 @@ class CandidateEnrichmentResponse(BaseModel):
     run_status: str
     provider: str
     model: str | None
+    reused_existing: bool
+    output: dict[str, Any]
+
+
+class CandidateRewriteResponse(BaseModel):
+    candidate_id: int
+    candidate_status: str
+    run_id: int
+    run_status: str
+    provider: str
+    model: str | None
+    text: str
     reused_existing: bool
     output: dict[str, Any]
 
@@ -93,9 +112,31 @@ def _enrichment_response(result: CandidateEnrichmentResult) -> CandidateEnrichme
     )
 
 
+def _rewrite_response(result: CandidateRewriteResult) -> CandidateRewriteResponse:
+    return CandidateRewriteResponse(
+        candidate_id=int(result.candidate.id),
+        candidate_status=str(result.candidate.status),
+        run_id=int(result.run.id),
+        run_status=str(result.run.status),
+        provider=str(result.run.provider),
+        model=result.run.model,
+        text=str(result.run.text or ""),
+        reused_existing=bool(result.reused_existing),
+        output=dict(result.run.output or {}),
+    )
+
+
 def _raise_enrichment_http(exc: CandidateEnrichmentError) -> None:
     if isinstance(exc, CandidateEnrichmentBusy):
         raise HTTPException(status_code=409, detail="Candidate enrichment is already running") from exc
+    if str(exc) == "candidate not found":
+        raise HTTPException(status_code=404, detail="Candidate not found") from exc
+    raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _raise_rewrite_http(exc: CandidateRewriteError) -> None:
+    if isinstance(exc, CandidateRewriteBusy):
+        raise HTTPException(status_code=409, detail="Candidate rewrite is already running") from exc
     if str(exc) == "candidate not found":
         raise HTTPException(status_code=404, detail="Candidate not found") from exc
     raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -203,3 +244,27 @@ async def enrich_candidate_ai(
         _raise_enrichment_http(exc)
         raise AssertionError("unreachable")
     return _enrichment_response(result)
+
+
+@router.post(
+    "/channels/{channel_id}/candidates/{candidate_id}/rewrite/ai",
+    response_model=CandidateRewriteResponse,
+)
+async def rewrite_candidate_ai(
+    channel_id: int,
+    candidate_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> CandidateRewriteResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    try:
+        provider = await ChannelAIRewriteProviderFactory(session).build(channel_id)
+        result = await CandidateRewriteService(session).rewrite(
+            channel_id=channel_id,
+            candidate_id=candidate_id,
+            provider=provider,
+        )
+    except CandidateRewriteError as exc:
+        _raise_rewrite_http(exc)
+        raise AssertionError("unreachable")
+    return _rewrite_response(result)
