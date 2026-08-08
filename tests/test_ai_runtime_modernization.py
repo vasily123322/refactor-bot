@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 from app.repositories.conversations import ConversationsRepo, estimate_text_tokens
 from app.services.ai_generation import AIGenerationService
@@ -40,6 +39,20 @@ def test_shared_http_pool_reuses_client_per_event_loop() -> None:
         assert first.is_closed is False
         await OpenRouterClient.close_shared_http_clients()
         assert first.is_closed is True
+
+    asyncio.run(run())
+
+
+def test_shared_http_pool_recreates_client_after_shutdown() -> None:
+    async def run() -> None:
+        first = _SharedHTTPPool.get()
+        await OpenRouterClient.close_shared_http_clients()
+        second = _SharedHTTPPool.get()
+        try:
+            assert second is not first
+            assert second.is_closed is False
+        finally:
+            await OpenRouterClient.close_shared_http_clients()
 
     asyncio.run(run())
 
