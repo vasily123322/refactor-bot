@@ -7,8 +7,8 @@ from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.content import PostDocument
-from app.services.content import LegacyPayloadError, legacy_payload_from_document
-from app.services.posting import PostingService
+from app.services.document_posting import DocumentPostingService
+from app.services.telegram_renderer import TelegramRenderError
 
 
 class TelegramPreviewError(RuntimeError):
@@ -16,14 +16,14 @@ class TelegramPreviewError(RuntimeError):
 
 
 class TelegramPreviewService:
-    """Send an exact classic preview through the production Bot API renderer."""
+    """Send exact previews through the same PostDocument renderer as production."""
 
     def __init__(
         self,
         bot: Bot,
         session_factory: async_sessionmaker[AsyncSession],
         *,
-        posting_factory: Callable[..., PostingService] = PostingService,
+        posting_factory: Callable[..., DocumentPostingService] = DocumentPostingService,
     ):
         self.bot = bot
         self.session_factory = session_factory
@@ -36,13 +36,11 @@ class TelegramPreviewService:
         document: PostDocument,
         replace_message_ids: list[int] | None = None,
     ) -> list[int]:
-        try:
-            payload = legacy_payload_from_document(document)
-        except LegacyPayloadError as exc:
-            raise TelegramPreviewError(str(exc)) from exc
-
         posting = self.posting_factory(self.bot, self.session_factory)
-        message_ids = await posting.send_now(int(tg_user_id), payload)
+        try:
+            message_ids = await posting.send_document(int(tg_user_id), document)
+        except TelegramRenderError as exc:
+            raise TelegramPreviewError(str(exc)) from exc
         if not message_ids:
             raise TelegramPreviewError("Telegram preview could not be delivered")
 
