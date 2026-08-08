@@ -14,6 +14,7 @@ from app.core.errors import ErrorsMiddleware
 from app.core.fsm_storage import build_fsm_storage
 from app.core.logging import setup_logging
 from app.services.external_bots import ExternalBotsManager
+from app.services.llm.openrouter_client import OpenRouterClient
 from app.services.posting import PostingService
 from app.userbot.client import app as userbot
 from app.workers.ai_auto_tasks import AIAutoTasksWorker
@@ -127,6 +128,7 @@ async def run_bot() -> None:
 
         await _safe_stop("background tasks", cancel_bg_tasks)
         await _safe_stop("external bots", ext_mgr.stop_all)
+        await _safe_stop("OpenRouter HTTP pool", OpenRouterClient.close_shared_http_clients)
         await _safe_stop("database engine", engine.dispose)
 
         if userbot_started:

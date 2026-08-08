@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from typing import Optional
 
 from sqlalchemy import select
@@ -26,6 +27,20 @@ def scoped_prompt_key(prompt_key: str, channel_id: int | None) -> str:
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
     room = _MAX_PROMPT_KEY_LEN - len(prefix) - len(digest) - 1
     return f"{prefix}{key[:max(0, room)]}:{digest}"
+
+
+def estimate_text_tokens(content: str) -> int:
+    """Cheap model-agnostic estimate used only for conversation trimming.
+
+    OpenRouter may route to many tokenizers, so storing a model-specific count
+    would be misleading after a model switch. Four Unicode characters per
+    token is a conservative, deterministic approximation; exact provider usage
+    is still used separately for quotas/billing.
+    """
+    text = str(content or "").strip()
+    if not text:
+        return 0
+    return max(1, math.ceil(len(text) / 4))
 
 
 class ConversationsRepo:
@@ -70,6 +85,8 @@ class ConversationsRepo:
     async def list_recent_by_tokens(
         self, conversation_id: int, max_tokens: int
     ) -> list[dict]:
+        if max_tokens <= 0:
+            return []
         stmt = (
             select(AIConversationMessage)
             .where(AIConversationMessage.conversation_id == conversation_id)
@@ -79,12 +96,15 @@ class ConversationsRepo:
         rows = list(res.scalars())
         total = 0
         selected: list[AIConversationMessage] = []
-        for m in rows:
-            if total + int(m.tokens or 0) > max_tokens:
+        for message in rows:
+            # Historical rows were stored with tokens=0. Estimate those at read
+            # time so old conversations cannot bypass the context budget.
+            weight = int(message.tokens or 0) or estimate_text_tokens(message.content)
+            if total + weight > max_tokens:
                 break
-            selected.append(m)
-            total += int(m.tokens or 0)
-        selected = list(reversed(selected))
+            selected.append(message)
+            total += weight
+        selected.reverse()
         return [{"role": m.role, "content": m.content} for m in selected]
 
     async def append(
@@ -95,11 +115,14 @@ class ConversationsRepo:
         tokens: int = 0,
         meta: dict | None = None,
     ) -> None:
+        token_count = int(tokens or 0)
+        if token_count <= 0:
+            token_count = estimate_text_tokens(content)
         msg = AIConversationMessage(
             conversation_id=conversation_id,
             role=role,
             content=content,
-            tokens=int(tokens or 0),
+            tokens=token_count,
             meta=meta or None,
         )
         self.session.add(msg)
@@ -111,7 +134,10 @@ class ConversationsRepo:
         conv = res.scalar_one_or_none()
         if not conv:
             return None, 0
-        return conv.last_summary, int(conv.summary_tokens or 0)
+        summary_tokens = int(conv.summary_tokens or 0)
+        if conv.last_summary and summary_tokens <= 0:
+            summary_tokens = estimate_text_tokens(conv.last_summary)
+        return conv.last_summary, summary_tokens
 
     async def upsert_summary(
         self, conversation_id: int, content: str, tokens: int
@@ -122,7 +148,7 @@ class ConversationsRepo:
         if not conv:
             return
         conv.last_summary = content
-        conv.summary_tokens = int(tokens or 0)
+        conv.summary_tokens = int(tokens or 0) or estimate_text_tokens(content)
         await self.session.flush()
 
     async def delete_all_by_user(self, user_id: int) -> int:
