@@ -6,8 +6,9 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
-from app.domain.models import AISource
+from app.domain.models import AISource, GrabSource
 from app.repositories.sources_v2 import SourcesRepo
+from app.services.legacy_source_mirror import LegacySourceMirror
 from app.services.source_lifecycle import (
     SourceLifecycleError,
     SourceLifecyclePatch,
@@ -119,6 +120,42 @@ def test_source_lifecycle_rejects_unknown_policy_without_mutation() -> None:
                     )
                 await session.refresh(connector)
                 assert connector.reuse_policy == "reference_only"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_legacy_grab_mirror_is_read_only_in_sources_lifecycle() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                grab = GrabSource(
+                    source_chat_id=-100777,
+                    target_channel_id=94,
+                    filter_flags={"text": 1},
+                )
+                session.add(grab)
+                await session.commit()
+                await session.refresh(grab)
+                await LegacySourceMirror(session).sync_channel(94)
+                connector = (await SourcesRepo(session).list_connectors(94))[0]
+                assert connector.legacy_grab_source_id == grab.id
+
+                with pytest.raises(SourceLifecycleError, match="read-only"):
+                    await SourceLifecycleService(session).update(
+                        channel_id=94,
+                        connector_id=connector.id,
+                        patch=SourceLifecyclePatch(enabled=False),
+                    )
+                await session.refresh(connector)
+                assert connector.enabled is True
+                assert connector.reuse_policy == "reference_only"
+                assert "enabled" not in GrabSource.__table__.columns
         finally:
             await engine.dispose()
 

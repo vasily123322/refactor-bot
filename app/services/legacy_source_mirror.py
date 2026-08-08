@@ -43,6 +43,7 @@ class LegacySourceMirror:
                     channel_id=int(source.channel_id),
                     kind=str(source.source_type),
                     value=str(source.source_value),
+                    reuse_policy="reference_only",
                     legacy_ai_source_id=int(source.id),
                 )
                 self.session.add(row)
@@ -53,13 +54,15 @@ class LegacySourceMirror:
                 row.enabled,
                 row.mode,
                 row.citation_enabled,
+                dict(row.config or {}),
             )
             row.kind = str(source.source_type)
             row.value = str(source.source_value)
             row.enabled = bool(source.enabled)
             row.mode = str(source.mode or "summary")
             row.citation_enabled = bool(source.citation_enabled)
-            row.reuse_policy = "reference_only"
+            # reuse_policy is owned by Sources v2. Legacy AISource has no equivalent
+            # field, so sync must never erase an explicit policy chosen in Studio.
             row.config = {
                 **dict(row.config or {}),
                 "legacy_source": "ai_source",
@@ -70,6 +73,7 @@ class LegacySourceMirror:
                 row.enabled,
                 row.mode,
                 row.citation_enabled,
+                dict(row.config or {}),
             )
             if row.id is not None and before != after:
                 changed += 1
@@ -87,24 +91,40 @@ class LegacySourceMirror:
                     channel_id=int(source.target_channel_id),
                     kind="telegram",
                     value=str(source.source_chat_id),
+                    enabled=True,
+                    mode="mirror",
+                    reuse_policy="reference_only",
                     legacy_grab_source_id=int(source.id),
                 )
                 self.session.add(row)
                 changed += 1
-            before = (row.value, row.enabled, dict(row.config or {}))
+            before = (
+                row.value,
+                row.enabled,
+                row.mode,
+                row.reuse_policy,
+                dict(row.config or {}),
+            )
             row.kind = "telegram"
             row.value = str(source.source_chat_id)
+            # GrabSource has no persisted enabled/mode/citation controls. These rows
+            # are observability mirrors, not editable Sources v2 lifecycle records.
             row.enabled = True
             row.mode = "mirror"
-            # A legacy grab rule is mirrored for observability only. We do not infer
-            # that the operator has republication rights from an old DB row.
             row.reuse_policy = "reference_only"
             row.config = {
                 **dict(row.config or {}),
                 "legacy_source": "grab_source",
+                "lifecycle_editable": False,
                 "filter_flags": dict(source.filter_flags or {}),
             }
-            after = (row.value, row.enabled, dict(row.config or {}))
+            after = (
+                row.value,
+                row.enabled,
+                row.mode,
+                row.reuse_policy,
+                dict(row.config or {}),
+            )
             if row.id is not None and before != after:
                 changed += 1
 
