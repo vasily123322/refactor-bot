@@ -51,7 +51,9 @@ class AIGenerationService:
         """
         if prompt_key:
             return await self.conv_repo.delete_by_user_and_prompt_key(
-                user_id=user_id, prompt_key=prompt_key
+                user_id=user_id,
+                prompt_key=prompt_key,
+                channel_id=channel_id,
             )
         if channel_id is not None:
             return await self.conv_repo.delete_all_by_channel(channel_id)
@@ -145,7 +147,7 @@ class AIGenerationService:
                     conv_id,
                     role="assistant",
                     content=result.get("text") or "",
-                    tokens=0,
+                    tokens=int(result.get("completion_tokens", 0) or 0),
                 )
         else:
             result = await self._call_openrouter(
@@ -294,7 +296,7 @@ class AIGenerationService:
                     conv_id,
                     role="assistant",
                     content=result.get("text") or "",
-                    tokens=0,
+                    tokens=int(result.get("completion_tokens", 0) or 0),
                 )
         else:
             result = await self._call_openrouter(
@@ -567,7 +569,7 @@ class AIGenerationService:
                     conv_id,
                     role="assistant",
                     content=result.get("text") or "",
-                    tokens=0,
+                    tokens=int(result.get("completion_tokens", 0) or 0),
                 )
         else:
             result = await self._call_openrouter(
@@ -684,7 +686,10 @@ class AIGenerationService:
             if result.get("success"):
                 answer = result.get("text") or ""
                 await self.conv_repo.append(
-                    conv_id, role="assistant", content=answer, tokens=0
+                    conv_id,
+                    role="assistant",
+                    content=answer,
+                    tokens=int(result.get("completion_tokens", 0) or 0),
                 )
         else:
             result = await self._call_openrouter(
