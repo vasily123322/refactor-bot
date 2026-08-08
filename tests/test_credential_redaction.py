@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from aiogram import Bot
+from aiogram.methods import SendMessage
 
 from app.bot.bot_instance import RedactingBot
 from app.core.redaction import REDACTED, redact_log_record, redact_secret_text
@@ -62,22 +63,23 @@ def test_log_record_redacts_message_and_nested_extra() -> None:
     assert "x" * 32 not in rendered
 
 
-def test_main_bot_redacts_admin_message_before_send(monkeypatch) -> None:
+def test_main_bot_redacts_admin_message_before_api_call(monkeypatch) -> None:
     captured: dict[str, str] = {}
 
-    async def fake_send_message(self, chat_id, text, *args, **kwargs):
-        captured["text"] = text
+    async def fake_call(self, method, request_timeout=None):
+        captured["text"] = method.text
         return object()
 
-    monkeypatch.setattr(Bot, "send_message", fake_send_message)
+    monkeypatch.setattr(Bot, "__call__", fake_call)
     client = RedactingBot(token=TELEGRAM_TOKEN)
+    method = SendMessage(
+        chat_id=1,
+        text=f"пользователь добавил бот с токеном: <code>{TELEGRAM_TOKEN}</code>",
+    )
 
     async def run() -> None:
         try:
-            await client.send_message(
-                1,
-                f"пользователь добавил бот с токеном: <code>{TELEGRAM_TOKEN}</code>",
-            )
+            await client(method)
         finally:
             await client.session.close()
 
