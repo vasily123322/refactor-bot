@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.core.logging import setup_logging
 from app.bot.bot_instance import bot
 from app.core.errors import ErrorsMiddleware
+from app.core.channel_access import ChannelOwnerMiddleware
 from app.bot.routers import main_router
 from app.core.db import AsyncSessionLocal, engine, Base, init_db_if_needed_sync
 from app.services.posting import PostingService
@@ -17,10 +18,8 @@ try:
 except Exception as e:
     logger.warning(f"Userbot listener не загружен: {e}")
 
-# NEW
 from app.services.external_bots import ExternalBotsManager
 
-# Optional workers (модули могут отсутствовать в сборке)
 try:
     from app.workers.scheduler import Scheduler
 except Exception as _e_sched:
@@ -37,21 +36,27 @@ except Exception as _e_grab:
 else:
     _grab_import_err = None
 
+try:
+    from app.workers.ai_auto_tasks import AIAutoTasksWorker
+except Exception as _e_ai_auto:
+    AIAutoTasksWorker = None  # type: ignore
+    _ai_auto_import_err = _e_ai_auto
+else:
+    _ai_auto_import_err = None
+
 
 async def create_dispatcher() -> Dispatcher:
     setup_logging(settings.log_level)
-    # Всегда используем память, чтобы избежать сбоев без Redis
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
-    # Глобальный error middleware
     dp.message.middleware(ErrorsMiddleware())
     dp.callback_query.middleware(ErrorsMiddleware())
+    dp.callback_query.middleware(ChannelOwnerMiddleware())
     return dp
 
 
 async def _warm_up_userbot_peers() -> None:
     try:
-        # Прогружаем список диалогов для заполнения peer-кэша (исправляет "Peer id invalid")
         async for _ in userbot.get_dialogs(limit=200):
             pass
         logger.info("Boot: userbot peers warmed up")
@@ -60,7 +65,6 @@ async def _warm_up_userbot_peers() -> None:
 
 
 async def run_bot() -> None:
-    # init logging before any Boot messages
     setup_logging(settings.log_level)
     try:
         from app.core.db import engine as _eng
@@ -71,7 +75,7 @@ async def run_bot() -> None:
         )
     except Exception:
         pass
-    # auto-init sqlite and backup legacy schema
+
     init_db_if_needed_sync()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -79,11 +83,9 @@ async def run_bot() -> None:
     dp = await create_dispatcher()
     dp.include_router(main_router)
 
-    # NEW: внешние боты (приём заявок)
     ext_mgr = ExternalBotsManager()
     await ext_mgr.start_all()
 
-    # Стартуем userbot раньше, чтобы исключить проблемы с event loop при остановке
     logger.info("Boot: starting userbot...")
     userbot_started = False
     try:
@@ -101,67 +103,64 @@ async def run_bot() -> None:
         config_models = settings.get_ai_models_config()
         if config_models is not None:
             logger.info(f"Boot: AI models config loaded: {len(config_models)} entries")
-        if (
-            Scheduler is None
-            and "_scheduler_import_err" in globals()
-            and _scheduler_import_err is not None
-        ):
+        if Scheduler is None and _scheduler_import_err is not None:
             logger.warning(f"Scheduler не загружен: {_scheduler_import_err}")
-        if (
-            GrabPoller is None
-            and "_grab_import_err" in globals()
-            and _grab_import_err is not None
-        ):
+        if GrabPoller is None and _grab_import_err is not None:
             logger.warning(f"GrabPoller не загружен: {_grab_import_err}")
-        # Передаём фабрику сессий в PostingService, чтобы он создавал короткие сессии
+        if AIAutoTasksWorker is None and _ai_auto_import_err is not None:
+            logger.warning(f"AI auto tasks worker не загружен: {_ai_auto_import_err}")
+
         posting = PostingService(bot, AsyncSessionLocal)
         scheduler = None
         if Scheduler is not None:
-            # Передаём фабрику в шедулер
             scheduler = Scheduler(AsyncSessionLocal, posting)
             await scheduler.start()
+
         poller = None
         if GrabPoller is not None:
             poller = GrabPoller(interval_seconds=5)
             await poller.start()
+
+        ai_auto_worker = None
+        if AIAutoTasksWorker is not None:
+            ai_auto_worker = AIAutoTasksWorker()
+            await ai_auto_worker.start()
+
         try:
             logger.info("Boot: starting aiogram polling...")
-            # Уменьшаем количество запросов getUpdates и нагрузку: long polling + только используемые типы
             await dp.start_polling(
                 bot,
                 allowed_updates=dp.resolve_used_update_types(),
                 polling_timeout=50,
             )
         except Exception as e:
-            # На остановке aiohttp может ронять ServerDisconnectedError — не шумим
             from aiogram.exceptions import TelegramNetworkError
 
             if not isinstance(e, TelegramNetworkError):
                 raise
         finally:
+            if ai_auto_worker is not None:
+                logger.info("Boot: stopping AI auto tasks worker...")
+                await ai_auto_worker.stop()
             if poller is not None:
                 logger.info("Boot: stopping grab poller...")
                 await poller.stop()
             if scheduler is not None:
                 logger.info("Boot: stopping scheduler...")
                 await scheduler.stop()
-            # Отмена всех фоновых задач (удаления и т.п.) для корректного завершения
             try:
                 await cancel_bg_tasks()
             except Exception:
                 pass
     finally:
-        # NEW: останавливаем внешние боты
         try:
             await ext_mgr.stop_all()
         except Exception:
             pass
-        # Корректно закрыть пул соединений
         try:
             await engine.dispose()
         except Exception:
             pass
-        # Останавливаем userbot в самом конце, если он был запущен
         if userbot_started:
             try:
                 logger.info("Boot: stopping userbot...")
