@@ -1,9 +1,11 @@
 import asyncio
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
-from app.core.channel_access import _channel_id_from_callback
+import app.core.channel_access as channel_access
+from app.core.channel_access import ChannelOwnerStateMiddleware, _channel_id_from_callback
 from app.core.url_security import validate_public_http_url
 from app.repositories.ai_settings import AISourcesRepo
 from app.repositories.conversations import scoped_prompt_key
@@ -51,6 +53,108 @@ def test_channel_callback_parser(
     callback_data: str, expected_channel_id: int | None
 ) -> None:
     assert _channel_id_from_callback(callback_data) == expected_channel_id
+
+
+class _FakeState:
+    def __init__(self, data: dict[str, object]):
+        self.data = dict(data)
+        self.cleared = False
+
+    async def get_data(self) -> dict[str, object]:
+        return dict(self.data)
+
+    async def clear(self) -> None:
+        self.cleared = True
+        self.data.clear()
+
+
+class _FakeMessage:
+    def __init__(self, user_id: int):
+        self.from_user = SimpleNamespace(id=user_id)
+        self.answers: list[str] = []
+
+    async def answer(self, text: str) -> None:
+        self.answers.append(text)
+
+
+async def _run_state_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    state_data: dict[str, object],
+    owns_channel: bool,
+) -> tuple[object, _FakeState, _FakeMessage, int]:
+    owner_checks = 0
+
+    async def fake_user_owns_channel(*, user_id: int, channel_id: int) -> bool:
+        nonlocal owner_checks
+        owner_checks += 1
+        assert user_id == 777
+        if state_data.get("channel_id") is not None:
+            try:
+                assert channel_id == int(state_data["channel_id"])
+            except (TypeError, ValueError):
+                assert channel_id == 0
+        return owns_channel
+
+    monkeypatch.setattr(channel_access, "user_owns_channel", fake_user_owns_channel)
+
+    state = _FakeState(state_data)
+    message = _FakeMessage(777)
+    calls = 0
+
+    async def handler(event: object, data: dict[str, object]) -> str:
+        nonlocal calls
+        calls += 1
+        return "handled"
+
+    result = await ChannelOwnerStateMiddleware()(handler, message, {"state": state})
+    return result, state, message, owner_checks if calls else -owner_checks
+
+
+def test_fsm_guard_allows_messages_without_channel_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, state, message, check_marker = asyncio.run(
+        _run_state_guard(monkeypatch, state_data={"preset_key": "x"}, owns_channel=False)
+    )
+    assert result == "handled"
+    assert check_marker == 0
+    assert not state.cleared
+    assert message.answers == []
+
+
+def test_fsm_guard_allows_channel_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    result, state, message, check_marker = asyncio.run(
+        _run_state_guard(monkeypatch, state_data={"channel_id": 12}, owns_channel=True)
+    )
+    assert result == "handled"
+    assert check_marker == 1
+    assert not state.cleared
+    assert message.answers == []
+
+
+def test_fsm_guard_blocks_non_owner_and_clears_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, state, message, check_marker = asyncio.run(
+        _run_state_guard(monkeypatch, state_data={"channel_id": 12}, owns_channel=False)
+    )
+    assert result is None
+    assert check_marker == -1
+    assert state.cleared
+    assert message.answers == ["Нет доступа к этому каналу. Действие отменено."]
+
+
+def test_fsm_guard_blocks_invalid_channel_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    result, state, message, check_marker = asyncio.run(
+        _run_state_guard(
+            monkeypatch, state_data={"channel_id": "not-an-id"}, owns_channel=False
+        )
+    )
+    assert result is None
+    assert check_marker == -1
+    assert state.cleared
+    assert message.answers == ["Нет доступа к этому каналу. Действие отменено."]
 
 
 @pytest.mark.parametrize(
