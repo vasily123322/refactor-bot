@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import struct
 
 from telethon.crypto import AuthKey
@@ -84,7 +85,7 @@ def normalize_userbot_session(value: str | None, *, configured_api_id: int) -> t
         converted = pyrogram_to_telethon_session(
             value, configured_api_id=configured_api_id
         )
-    except (ValueError, struct.error, base64.binascii.Error):
+    except (ValueError, struct.error, binascii.Error):
         # If it isn't a Pyrogram session, let Telethon validate its own format.
         return value, False
     return converted, True
