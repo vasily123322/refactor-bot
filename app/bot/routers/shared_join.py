@@ -110,7 +110,7 @@ def build_shared_join_router(external_bot_id: int) -> Router:
         except Exception:
             pass
 
-    @router.message(F.text)
+    @router.message(F.text, ~F.text.startswith("/"))
     async def on_dm_text(message: Message):
         try:
             user = getattr(message, "from_user", None)

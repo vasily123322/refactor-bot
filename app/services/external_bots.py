@@ -38,7 +38,6 @@ class ExternalBotsManager:
         self._bots[ext_id] = bot
         self._dps[ext_id] = dp
         self._tasks[ext_id] = task
-        # запустим апрувер отложенных заявок для данного бота
         self._approver_tasks[ext_id] = asyncio.create_task(self._approver_loop(ext_id))
         logger.info(f"External bot started ext_id={ext_id}")
 
@@ -88,12 +87,10 @@ class ExternalBotsManager:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            # При остановке может быть TelegramNetworkError/ServerDisconnectedError — не шумим
             from aiogram.exceptions import TelegramNetworkError
 
             if not isinstance(e, TelegramNetworkError):
                 logger.error(f"External bot polling failed ext_id={ext_id}: {e}")
-            # Попробуем мягкий авто-рестарт с бэкофом, если бот всё ещё активен
             try:
                 async with AsyncSessionLocal() as session:
                     repo = ExternalBotsRepo(session)
@@ -104,11 +101,67 @@ class ExternalBotsManager:
                 self._restarts[ext_id] = self._restarts.get(ext_id, 0) + 1
                 await asyncio.sleep(delay)
                 await self.restart_one(ext_id)
+            except asyncio.CancelledError:
+                raise
             except Exception:
-                pass
+                logger.exception("External bot auto-restart failed ext_id={}", ext_id)
+
+    async def _approve_pending_item(
+        self,
+        ext_id: int,
+        channel_id: int,
+        jr,
+        *,
+        ch_repo,
+        subs_repo,
+        jr_repo,
+        session,
+    ) -> bool:
+        """Approve one solved pending request and persist state only on success."""
+        if (
+            jr.challenge_type
+            and jr.attempts_left is not None
+            and int(jr.attempts_left) > 0
+        ):
+            return False
+
+        ch = await ch_repo.get_by_id(channel_id)
+        bot = self._bots.get(ext_id)
+        if not ch or not bot:
+            return False
+
+        try:
+            await bot.approve_chat_join_request(
+                chat_id=int(ch.tg_chat_id), user_id=int(jr.user_id)
+            )
+        except Exception:
+            logger.exception(
+                "Delayed join approve failed ext_id={} channel_id={} user_id={}",
+                ext_id,
+                channel_id,
+                jr.user_id,
+            )
+            return False
+
+        try:
+            await subs_repo.add(channel_id, jr.user_id, None, None)
+            payload = dict(getattr(jr, "challenge_payload", {}) or {})
+            utm = payload.get("utm")
+            if utm:
+                await subs_repo.add_tag(channel_id, jr.user_id, str(utm))
+            await jr_repo.set_status(channel_id, jr.user_id, "approved")
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            logger.exception(
+                "Delayed join DB update failed after Telegram approval channel_id={} user_id={}",
+                channel_id,
+                jr.user_id,
+            )
+            return False
+        return True
 
     async def _approver_loop(self, ext_id: int) -> None:
-        # Простая реализация: каждые 30с принимаем до N заявок со статусом pending и challenge solved (attempts_left==0) в режимах отложенного приема (mode==1)
         from app.core.db import AsyncSessionLocal
         from app.repositories.external_bots import ChannelBotsRepo
         from app.repositories.join_requests import JoinRequestsRepo
@@ -118,13 +171,10 @@ class ExternalBotsManager:
         while True:
             try:
                 await asyncio.sleep(30)
-                a_sync = AsyncSessionLocal
-                async with a_sync() as session:
-                    ChannelBotsRepo(session)
+                async with AsyncSessionLocal() as session:
                     jr_repo = JoinRequestsRepo(session)
                     ch_repo = ChannelsRepo(session)
                     subs_repo = SubscribersRepo(session)
-                    # Список каналов, привязанных к этому внешнему боту, в режиме delayed (1)
                     from sqlalchemy import select
                     from app.domain.models import ChannelBot
 
@@ -135,38 +185,19 @@ class ExternalBotsManager:
                     )
                     channels = list(res.scalars().all())
                     for cb in channels:
-                        cid = cb.channel_id
+                        cid = int(cb.channel_id)
                         items = await jr_repo.list_pending(cid, limit=10)
                         for jr in items:
-                            # Только если челендж пройден (attempts_left==0) или челенджа нет
-                            if (
-                                jr.challenge_type
-                                and (jr.attempts_left is not None)
-                                and (jr.attempts_left > 0)
-                            ):
-                                continue
-                            ch = await ch_repo.get_by_id(cid)
-                            if not ch:
-                                continue
-                            bot = self._bots.get(ext_id)
-                            if not bot:
-                                continue
-                            with contextlib.suppress(Exception):
-                                await bot.approve_chat_join_request(
-                                    chat_id=int(ch.tg_chat_id), user_id=jr.user_id
-                                )
-                        with contextlib.suppress(Exception):
-                            await subs_repo.add(cid, jr.user_id, None, None)
-                            # добавим utm-тег, если он сохранён в заявке
-                            try:
-                                pp = dict(getattr(jr, "challenge_payload", {}) or {})
-                                utm = pp.get("utm")
-                                if utm:
-                                    await subs_repo.add_tag(cid, jr.user_id, str(utm))
-                            except Exception:
-                                pass
-                            await jr_repo.set_status(cid, jr.user_id, "approved")
+                            await self._approve_pending_item(
+                                ext_id,
+                                cid,
+                                jr,
+                                ch_repo=ch_repo,
+                                subs_repo=subs_repo,
+                                jr_repo=jr_repo,
+                                session=session,
+                            )
             except asyncio.CancelledError:
                 break
             except Exception:
-                continue
+                logger.exception("External bot delayed approver tick failed ext_id={}", ext_id)
