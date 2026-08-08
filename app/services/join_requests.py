@@ -11,6 +11,10 @@ from app.domain.models import JoinRequest
 from app.repositories.channels import ChannelsRepo
 from app.repositories.external_bots import ChannelBotsRepo
 from app.repositories.subscribers import SubscribersRepo
+from app.services.join_query_decisions import (
+    answer_join_query,
+    resolve_immediate_join_decision,
+)
 
 
 class JoinRequestsService:
@@ -87,6 +91,8 @@ class JoinRequestsService:
 
         # whitelist
         if (wl_u or wl_i) and not ((uname and uname in wl_u) or (user_id in wl_i)):
+            if not await resolve_immediate_join_decision(event, "decline"):
+                return
             await self.session.add(
                 JoinRequest(channel_id=ch.id, user_id=user_id, status="rejected")
             )
@@ -98,6 +104,8 @@ class JoinRequestsService:
 
         # blacklist
         if (uname and uname in bl_u) or (user_id in bl_i):
+            if not await resolve_immediate_join_decision(event, "decline"):
+                return
             await self.session.add(
                 JoinRequest(channel_id=ch.id, user_id=user_id, status="rejected")
             )
@@ -107,12 +115,19 @@ class JoinRequestsService:
 
         # stop words
         if any(sw in fullname for sw in stopw):
+            if not await resolve_immediate_join_decision(event, "decline"):
+                return
             await self.session.add(
                 JoinRequest(channel_id=ch.id, user_id=user_id, status="rejected")
             )
             await self.session.commit()
             await self._write_modlog(ch.id, "reject", user_id, {"reason": "stop_word"})
             return
+
+        # Bot API 10.1 query processors must answer within 10 seconds.
+        # Challenges/manual moderation stay pending after an explicit queue result.
+        if (mode != 0 or require_mode != 0) and getattr(event, "query_id", None):
+            await answer_join_query(event, "queue")
 
         # Mode 0 (auto) with optional DM requirement
         if mode == 0:
@@ -235,10 +250,8 @@ class JoinRequestsService:
                         await event.bot.send_message(user_id, text)
                 return
 
-            with suppress(Exception):
-                await event.bot.approve_chat_join_request(
-                    chat_id=chat_id, user_id=user_id
-                )
+            if not await resolve_immediate_join_decision(event, "approve"):
+                return
             await self._write_modlog(ch.id, "approve", user_id, {"mode": "auto"})
             from app.services.subscribers import save_subscriber_preference
 
