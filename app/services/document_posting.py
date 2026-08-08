@@ -15,7 +15,10 @@ class DocumentPostingService(PostingService):
         if plan.kind == "classic":
             if plan.classic_payload is None:
                 raise TelegramRenderError("classic renderer returned no payload")
-            return await self.send_now(int(chat_id), dict(plan.classic_payload))
+            result = await self.send_now(int(chat_id), dict(plan.classic_payload))
+            if not result:
+                raise TelegramRenderError("classic document could not be delivered")
+            return [int(value) for value in result]
 
         if plan.rich_message is None:
             raise TelegramRenderError("rich renderer returned no InputRichMessage")
@@ -29,19 +32,14 @@ class DocumentPostingService(PostingService):
         )
         return [int(message.message_id)]
 
-    async def _dispatch(
-        self,
-        pl: dict[str, Any],
-        tg_chat_id: int,
-        ch_settings=None,
-    ) -> list[int]:
-        if str(pl.get("type") or "") != "rich_document":
-            return await super()._dispatch(pl, tg_chat_id, ch_settings)
+    async def _dispatch(self, channel_id: int, payload: dict[str, Any]) -> list[int]:
+        if str(payload.get("type") or "") != "rich_document":
+            return await super()._dispatch(channel_id, payload)
 
-        raw_document = pl.get("post_document")
+        raw_document = payload.get("post_document")
         if not isinstance(raw_document, dict):
             raise TelegramRenderError("rich_document task requires post_document")
         document = PostDocument.from_dict(raw_document)
         if document.mode != "rich":
             raise TelegramRenderError("rich_document task requires rich PostDocument")
-        return await self.send_document(int(tg_chat_id), document)
+        return await self.send_document(int(channel_id), document)
