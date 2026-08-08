@@ -69,7 +69,6 @@ class AIGenerationService:
         Returns:
                 dict с ключами: success, text, tokens_used, error
         """
-        # Получаем настройки ИИ канала
         ai_settings = await self.ai_repo.get_or_create(channel_id)
 
         if not ai_settings.enabled:
@@ -80,11 +79,9 @@ class AIGenerationService:
                 "tokens_used": 0,
             }
 
-        # Эффективные лимиты по плану (Free/Pro) и предзапросная проверка
         eff_day, eff_month, req_cap = await self._effective_limits(
             ai_settings, channel_id
         )
-        # В Pro дневной лимит отключён; для Free — применим, если задан
         if eff_day is not None and int(ai_settings.tokens_used_day or 0) >= int(
             eff_day
         ):
@@ -104,19 +101,15 @@ class AIGenerationService:
                 "tokens_used": 0,
             }
 
-        # Получаем промпт (из пресета или кастомный)
         system_prompt, user_prompt = await self._build_prompts(
             ai_settings, topic, extra_vars
         )
 
-        # Применим кэп на запрос
         if (ai_settings.max_tokens or 0) > int(req_cap):
             ai_settings.max_tokens = int(req_cap)
-        # Выбор модели: базовая или пер-режимная (from_scratch для обычной генерации)
         chosen_model = self._pick_model(ai_settings, mode="from_scratch")
         base_url, api_key = self._resolve_model_credentials(chosen_model)
 
-        # Память диалога (если переданы user_id и prompt_key в extra_vars)
         user_id = extra_vars.get("user_id")
         prompt_key = extra_vars.get("prompt_key")
         if user_id and prompt_key:
@@ -155,7 +148,6 @@ class AIGenerationService:
                     tokens=0,
                 )
         else:
-            # Генерация без памяти
             result = await self._call_openrouter(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -170,11 +162,9 @@ class AIGenerationService:
         if not result["success"]:
             return result
 
-        # Обновляем счётчик токенов
         tokens_used = result.get("tokens_used", 0)
         if tokens_used > 0:
             await self.ai_repo.increment_tokens(channel_id, tokens_used)
-            # Нотификация 80% месячной квоты
             try:
                 is_pro = await self._is_pro_channel(channel_id)
                 if is_pro:
@@ -192,7 +182,6 @@ class AIGenerationService:
             except Exception:
                 pass
 
-        # Пост-обработка: применяем модерацию, если включена
         text = result["text"]
         if ai_settings.moderation_enabled:
             text = await self._moderate_text(text, ai_settings)
@@ -204,7 +193,6 @@ class AIGenerationService:
             "error": None,
         }
 
-    # --- Unified pipeline helpers ---
     async def build_prompt(
         self,
         channel_id: int,
@@ -216,14 +204,9 @@ class AIGenerationService:
         instruction: str | None = None,
         extra: dict | None = None,
     ) -> tuple[dict, str, str, str]:
-        """Собрать контекст и промпты под конкретный режим.
-
-        Возвращает кортеж: (ai_settings_dict, chosen_model, system_prompt, user_prompt).
-        """
         extra = extra or {}
         ai_settings = await self.ai_repo.get_or_create(channel_id)
         if mode == "from_link":
-            # для ссылок instruction берём из стандартной карты
             inst = instruction or self._default_instruction_by_mode(
                 extra.get("link_mode") or "summary"
             )
@@ -252,7 +235,6 @@ class AIGenerationService:
             )
             chosen_model = self._pick_model(ai_settings, mode="rewrite")
         else:
-            # default: from_scratch
             system_prompt, user_prompt = await self._build_prompts(
                 ai_settings, topic, extra
             )
@@ -269,9 +251,6 @@ class AIGenerationService:
         user_id: int | None = None,
         prompt_key: str | None = None,
     ) -> dict:
-        """Единый вызов LLM с учётом памяти диалога и апдейта токенов."""
-
-        # восстановим объект-подобный интерфейс для полей
         class _Obj:
             def __init__(self, d: dict):
                 self.__dict__.update(d)
@@ -328,7 +307,6 @@ class AIGenerationService:
                 base_url=base_url,
                 api_key=api_key,
             )
-        # учёт токенов при успехе
         if result.get("success"):
             cid = int(
                 getattr(aset, "channel_id", 0) or ai_settings.get("channel_id", 0) or 0
@@ -340,8 +318,6 @@ class AIGenerationService:
         return result
 
     async def postprocess(self, text: str, *, ai_settings: dict) -> str:
-        """Единая пост-обработка (модерация, прочее)."""
-
         class _Obj:
             def __init__(self, d: dict):
                 self.__dict__.update(d)
@@ -364,7 +340,6 @@ class AIGenerationService:
         user_id: int | None = None,
         prompt_key: str | None = None,
     ) -> dict:
-        """Унифицированный пайплайн: build_prompt → generate_with_model → postprocess."""
         ai_settings, model, system_prompt, user_prompt = await self.build_prompt(
             channel_id,
             mode=mode,
@@ -389,12 +364,10 @@ class AIGenerationService:
         return res
 
     async def _is_pro_channel(self, channel_id: int) -> bool:
-        """Определить план канала по владельцу (Client.is_premium)."""
         try:
             async with self.session.bind.connect() as _:
                 pass
         except Exception:
-            # session может быть уже валидной; продолжаем
             pass
         try:
             repo = ChannelsRepo(self.session)
@@ -409,7 +382,6 @@ class AIGenerationService:
     async def _build_prompts(
         self, ai_settings, topic: str, extra_vars: dict
     ) -> tuple[str, str]:
-        """Делегирует сборку промптов в PromptBuilder."""
         return await self.prompt_builder.build(
             ai_settings, topic=topic, extra_vars=extra_vars
         )
@@ -426,7 +398,6 @@ class AIGenerationService:
         base_url: str | None = None,
         api_key: str | None = None,
     ) -> dict:
-        """Вызов OpenRouter API для генерации текста."""
         api_key = api_key or settings.openrouter_api_key
         base_url = base_url or settings.openrouter_base_url
         if not api_key:
@@ -453,15 +424,12 @@ class AIGenerationService:
         )
 
     async def _moderate_text(self, text: str, ai_settings) -> str:
-        """Применить модерацию к сгенерированному тексту."""
-
         if ai_settings.forbidden_words:
             text_lower = text.lower()
             for word in ai_settings.forbidden_words:
                 if word.lower() in text_lower:
                     text = text.replace(word, "***")
                     logger.warning(f"⚠️ Модерация: заменено запрещённое слово '{word}'")
-
         return text
 
     async def generate_from_link(
@@ -474,15 +442,10 @@ class AIGenerationService:
         user_id: int | None = None,
         prompt_key: str | None = None,
     ) -> dict:
-        """Генерация поста из ссылки (парсинг + саммари/рерайт)."""
-
-        # Получаем настройки
         ai_settings = await self.ai_repo.get_or_create(channel_id)
-        # Эффективные лимиты и кэп на запрос
         eff_day, eff_month, req_cap = await self._effective_limits(
             ai_settings, channel_id
         )
-        # Дневной лимит в Pro отключён — используем только месячный
         if eff_month is not None and int(ai_settings.tokens_used_month or 0) >= int(
             eff_month
         ):
@@ -494,12 +457,9 @@ class AIGenerationService:
             }
         if (ai_settings.max_tokens or 0) > int(req_cap):
             ai_settings.max_tokens = int(req_cap)
-        # Лимит на Free: 3 саммари/сутки
         is_pro = await self._is_pro_channel(channel_id)
         if not is_pro:
-            # используем простейший счётчик в памяти БД через conversations summary_tokens как хранилище
             try:
-                # заведём специальный prompt_key для счётчика суточных саммари
                 from datetime import datetime, timezone
 
                 day_key = datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -508,7 +468,6 @@ class AIGenerationService:
                     prompt_key=f"summary_day_{day_key}",
                     channel_id=channel_id,
                 )
-                # считаем количество записей assistant за сегодня как прокси (не идеально, но дёшево)
                 recent = await self.conv_repo.list_recent_by_tokens(
                     conv_id, max_tokens=10
                 )
@@ -525,7 +484,6 @@ class AIGenerationService:
         if ai_settings.preset_id:
             await self.presets_repo.get_by_id(ai_settings.preset_id)
 
-        # Парсим контент по URL
         try:
             from app.services.http.fetcher import fetch_html
 
@@ -548,7 +506,6 @@ class AIGenerationService:
                 "error": f"Не удалось загрузить страницу: {str(e)}",
             }
 
-        # Извлекаем текст из HTML
         try:
             article_text = extract_article_text(
                 html_content, max_len=int(settings.content_extract_max_len)
@@ -562,10 +519,7 @@ class AIGenerationService:
                 "error": f"Не удалось извлечь текст: {str(e)}",
             }
 
-        # Инструкция по режиму
         instruction = self._default_instruction_by_mode(mode)
-
-        # Собираем промпт через билдер с учётом пресета/кастома
         system_prompt, user_prompt = await self._build_prompts(
             ai_settings,
             topic="",
@@ -577,11 +531,9 @@ class AIGenerationService:
             },
         )
 
-        # Выбор модели с учётом режима
         chosen_model = self._pick_model(ai_settings, mode=mode)
         base_url, api_key = self._resolve_model_credentials(chosen_model)
 
-        # Память диалога при наличии user_id/prompt_key
         if user_id and prompt_key:
             messages = [{"role": "system", "content": system_prompt}]
             conv_id = await self.conv_repo.get_or_create(
@@ -633,7 +585,6 @@ class AIGenerationService:
             await self.ai_repo.increment_tokens(
                 channel_id, result.get("tokens_used", 0)
             )
-            # Для счётчика саммари на Free — отметим успешную генерацию
             if not is_pro:
                 try:
                     from datetime import datetime, timezone
@@ -664,10 +615,7 @@ class AIGenerationService:
         user_id: int | None = None,
         prompt_key: str | None = None,
     ) -> dict:
-        """Улучшение существующего текста."""
-
         ai_settings = await self.ai_repo.get_or_create(channel_id)
-        # Эффективные лимиты и кэп
         eff_day, eff_month, req_cap = await self._effective_limits(
             ai_settings, channel_id
         )
@@ -692,7 +640,6 @@ class AIGenerationService:
         if (ai_settings.max_tokens or 0) > int(req_cap):
             ai_settings.max_tokens = int(req_cap)
 
-        # Собираем промпт через билдер с учётом пресета/кастома
         system_prompt, user_prompt = await self._build_prompts(
             ai_settings,
             topic="",
@@ -703,19 +650,14 @@ class AIGenerationService:
             },
         )
 
-        # Выбор модели: по умолчанию считаем режим "rewrite" для улучшения текста
         chosen_model = self._pick_model(ai_settings, mode="rewrite")
         base_url, api_key = self._resolve_model_credentials(chosen_model)
 
-        # Подготовка диалога (если передан user_id и prompt_key)
-        messages = [
-            {"role": "system", "content": system_prompt},
-        ]
+        messages = [{"role": "system", "content": system_prompt}]
         if user_id and prompt_key:
             conv_id = await self.conv_repo.get_or_create(
                 user_id=user_id, prompt_key=prompt_key, channel_id=channel_id
             )
-            # бюджет токенов на историю
             budget = max(512, int((ai_settings.max_tokens or 2000) * 0.7))
             summary, summary_tokens = await self.conv_repo.get_summary(conv_id)
             if summary:
@@ -726,13 +668,10 @@ class AIGenerationService:
                 conv_id, max_tokens=budget - int(summary_tokens or 0)
             )
             messages.extend(recent)
-            # текущий вход
             messages.append({"role": "user", "content": user_prompt})
-            # Запишем вход в историю заранее
             await self.conv_repo.append(
                 conv_id, role="user", content=user_prompt, tokens=0
             )
-            # Вызов модели
             result = await self._call_openrouter_messages(
                 messages,
                 model=chosen_model,
@@ -748,7 +687,6 @@ class AIGenerationService:
                     conv_id, role="assistant", content=answer, tokens=0
                 )
         else:
-            # Без памяти диалога — обычный вызов
             result = await self._call_openrouter(
                 system_prompt,
                 user_prompt,
@@ -781,7 +719,6 @@ class AIGenerationService:
         api_key: str | None = None,
         request_id: str | None = None,
     ) -> dict:
-        """Вызов OpenRouter с произвольным списком сообщений (для памяти диалога)."""
         api_key = api_key or settings.openrouter_api_key
         base_url = base_url or settings.openrouter_base_url
         if not api_key:
@@ -802,11 +739,9 @@ class AIGenerationService:
             api_key=api_key,
             request_id=req_id,
         )
-        if res.get("success"):
-            return res
+        return res
 
     def _pick_model(self, ai_settings, mode: str) -> str:
-        """Вернуть модель с учётом пер-режимных overrides в filters['ai_models']."""
         try:
             filters = dict(getattr(ai_settings, "filters", {}) or {})
             ai_models = dict(filters.get("ai_models", {}) or {})
@@ -821,7 +756,6 @@ class AIGenerationService:
     def _resolve_model_credentials(
         self, model_code: str
     ) -> tuple[str | None, str | None]:
-        """Вернуть (base_url, api_key) для конкретной модели из AI_MODELS_JSON; иначе дефолты settings."""
         raw = (settings.ai_models_json or "").strip()
         if not raw:
             return settings.openrouter_base_url, settings.openrouter_api_key
@@ -835,7 +769,6 @@ class AIGenerationService:
                             it.get("api_key") or settings.openrouter_api_key,
                         )
             elif isinstance(data, dict):
-                # {code: label}
                 return settings.openrouter_base_url, settings.openrouter_api_key
         except Exception:
             pass
@@ -844,12 +777,9 @@ class AIGenerationService:
     async def _effective_limits(
         self, ai_settings, channel_id: int
     ) -> tuple[int | None, int | None, int]:
-        """Вернуть (дневной лимит, месячный лимит, кап на запрос) с учётом плана и настроек канала."""
         is_pro = await self._is_pro_channel(channel_id)
-        # Плановые значения по умолчанию
         plan_day = None if is_pro else 5_000
         plan_month = 2_000_000 if is_pro else 50_000
-        # Если в БД явно задан лимит — используем его, иначе плановый
         eff_day = (
             int(ai_settings.tokens_limit_day)
             if getattr(ai_settings, "tokens_limit_day", None)
@@ -860,7 +790,6 @@ class AIGenerationService:
             if getattr(ai_settings, "tokens_limit_month", None)
             else plan_month
         )
-        # Кэп на запрос
         req_cap = 4096 if is_pro else 1024
         return eff_day, eff_month, req_cap
 
