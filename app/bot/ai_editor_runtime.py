@@ -13,6 +13,12 @@ from app.services.llm.openrouter_client import ChatResult
 
 
 _MEDIA_TYPES = {"photo", "video", "animation", "audio", "voice", "album"}
+_AI_IMPROVE_PREFIX = "ai_improve_"
+
+
+def improve_action_name(callback_data: str) -> str:
+    value = str(callback_data or "")
+    return value[len(_AI_IMPROVE_PREFIX) :] if value.startswith(_AI_IMPROVE_PREFIX) else value
 
 
 def ai_result_actions_kb() -> InlineKeyboardMarkup:
