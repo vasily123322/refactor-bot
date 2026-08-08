@@ -11,6 +11,7 @@ from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.services.content import LegacyPayloadError, legacy_payload_from_document
+from app.services.scheduling import as_utc
 
 
 class PublicationBridgeError(RuntimeError):
@@ -73,7 +74,10 @@ class LegacyPublicationBridge:
         except LegacyPayloadError as exc:
             raise PublicationBridgeError(str(exc)) from exc
 
-        when = scheduled_at or datetime.now(timezone.utc)
+        # Keep one canonical timestamp contract across SQLite/PostgreSQL and the
+        # existing scheduler. SQLite may deserialize timezone=True columns as naive,
+        # so all consumers must normalize persisted values with the same helper.
+        when = as_utc(scheduled_at or datetime.now(timezone.utc))
         rule = dict(repeat_rule or {})
         if rule.get("enabled"):
             seconds = int(rule.get("seconds") or 0)
