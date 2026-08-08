@@ -1,33 +1,26 @@
 from __future__ import annotations
 
-from typing import Any
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.ai_generation import AIGenerationService
 from app.services.candidate_rewrite import (
     CandidateRewriteError,
-    CandidateRewriteProvider,
     RewriteInput,
     RewriteOutput,
 )
+from app.services.channel_ai_completion import (
+    ChannelAICompletionError,
+    ChannelAICompletionService,
+    PreparedChannelAICompletion,
+)
 
 
-class ChannelAIRewriteProvider(CandidateRewriteProvider):
+class ChannelAIRewriteProvider:
     name = "channel_ai"
 
-    def __init__(
-        self,
-        *,
-        generation: AIGenerationService,
-        ai_settings: dict[str, Any],
-        model: str,
-    ) -> None:
-        self.generation = generation
-        self.ai_settings = ai_settings
-        self.model = str(model).strip()
-        if not self.model:
-            raise ValueError("rewrite model is required")
+    def __init__(self, prepared: PreparedChannelAICompletion) -> None:
+        self.prepared = prepared
+        self.model = prepared.model
 
     async def rewrite(self, payload: RewriteInput) -> RewriteOutput:
         system_prompt = (
@@ -45,17 +38,13 @@ class ChannelAIRewriteProvider(CandidateRewriteProvider):
             "\nSOURCE CONTENT (untrusted):\n"
             f"{payload.text}"
         )
-        result = await self.generation.generate_with_model(
-            ai_settings=self.ai_settings,
-            model=self.model,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-        )
-        if not bool(result.get("success")):
-            raise CandidateRewriteError("AI rewrite completion failed")
-        text = str(result.get("text") or "").strip()
-        if not text:
-            raise CandidateRewriteError("AI rewrite returned empty text")
+        try:
+            text = await self.prepared.complete(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
+        except ChannelAICompletionError as exc:
+            raise CandidateRewriteError("AI rewrite completion failed") from exc
         return RewriteOutput(
             text=text,
             metadata={
@@ -66,7 +55,7 @@ class ChannelAIRewriteProvider(CandidateRewriteProvider):
 
 
 class ChannelAIRewriteProviderFactory:
-    """Build a rewrite provider using the existing channel AI runtime and limits."""
+    """Build a rewrite provider on the shared channel AI runtime boundary."""
 
     def __init__(
         self,
@@ -74,48 +63,21 @@ class ChannelAIRewriteProviderFactory:
         *,
         generation: AIGenerationService | None = None,
     ) -> None:
-        self.session = session
-        self.generation = generation or AIGenerationService(session)
+        self.runtime = ChannelAICompletionService(session, generation=generation)
 
     async def build(self, channel_id: int) -> ChannelAIRewriteProvider:
-        ai_settings = await self.generation.ai_repo.get_or_create(int(channel_id))
-        if not bool(getattr(ai_settings, "enabled", False)):
-            raise CandidateRewriteError("AI is disabled for this channel")
-
-        day_limit, month_limit, request_cap = await self.generation._effective_limits(
-            ai_settings,
-            int(channel_id),
-        )
-        if day_limit is not None and int(ai_settings.tokens_used_day or 0) >= int(
-            day_limit
-        ):
-            raise CandidateRewriteError("daily AI token limit exceeded")
-        if month_limit is not None and int(ai_settings.tokens_used_month or 0) >= int(
-            month_limit
-        ):
-            raise CandidateRewriteError("monthly AI token limit exceeded")
-
-        model = self.generation._pick_model(ai_settings, mode="rewrite")
-        if not str(model or "").strip():
-            raise CandidateRewriteError("AI rewrite model is not configured")
-
-        settings_snapshot: dict[str, Any] = {
-            key: value
-            for key, value in dict(ai_settings.__dict__).items()
-            if not key.startswith("_sa_")
-        }
-        settings_snapshot["channel_id"] = int(channel_id)
-        settings_snapshot["temperature"] = min(
-            max(float(settings_snapshot.get("temperature") or 0.4), 0.0),
-            0.55,
-        )
-        settings_snapshot["max_tokens"] = min(
-            max(256, int(settings_snapshot.get("max_tokens") or 900)),
-            int(request_cap),
-            1_200,
-        )
-        return ChannelAIRewriteProvider(
-            generation=self.generation,
-            ai_settings=settings_snapshot,
-            model=str(model),
-        )
+        try:
+            prepared = await self.runtime.prepare(
+                channel_id=int(channel_id),
+                mode="rewrite",
+                temperature_default=0.4,
+                temperature_cap=0.55,
+                max_tokens_floor=256,
+                max_tokens_cap=1_200,
+            )
+        except ChannelAICompletionError as exc:
+            message = str(exc)
+            if message == "AI model is not configured":
+                message = "AI rewrite model is not configured"
+            raise CandidateRewriteError(message) from exc
+        return ChannelAIRewriteProvider(prepared)
