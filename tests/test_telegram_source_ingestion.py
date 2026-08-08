@@ -35,17 +35,19 @@ class _Gateway:
 
     async def get_chat_history(self, target: str | int, *, limit: int = 100):
         assert limit == 100
-        yield UserbotMessage(
-            id=11,
-            chat=self.chat,
-            text="First Telegram post",
-            date=datetime(2026, 8, 8, 8, 0, tzinfo=timezone.utc),
-        )
+        # Telethon returns history newest-first; the connector's last_document_at
+        # must remain the maximum source timestamp rather than the last iterated row.
         yield UserbotMessage(
             id=12,
             chat=self.chat,
             text="Second Telegram post",
             date=datetime(2026, 8, 8, 9, 0),
+        )
+        yield UserbotMessage(
+            id=11,
+            chat=self.chat,
+            text="First Telegram post",
+            date=datetime(2026, 8, 8, 8, 0, tzinfo=timezone.utc),
         )
         yield UserbotMessage(id=13, chat=self.chat, text=None, caption=None)
 
@@ -96,6 +98,10 @@ def test_telegram_ingestion_is_idempotent_and_creates_public_message_links() -> 
                 assert all(row.suggested_action == "summarize" for row in candidates)
                 assert connector.auth_state == "ready"
                 assert connector.status == "healthy"
+                assert connector.last_document_at is not None
+                assert as_utc(connector.last_document_at) == datetime(
+                    2026, 8, 8, 9, 0, tzinfo=timezone.utc
+                )
         finally:
             await engine.dispose()
 
