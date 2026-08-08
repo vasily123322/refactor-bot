@@ -23,6 +23,7 @@ from app.workers.ai_auto_tasks import AIAutoTasksWorker
 from app.workers.grab_poll import GrabPoller
 from app.workers.publication_reconciler import PublicationReconcilerWorker
 from app.workers.reliable_scheduler import Scheduler
+from app.workers.source_ingestion import SourceIngestionWorker
 
 try:
     import app.userbot.listener  # noqa: F401 ensure userbot handlers are registered
@@ -79,6 +80,7 @@ async def run_bot() -> None:
     userbot_started = False
     scheduler = None
     publication_reconciler = None
+    source_ingestion = None
     poller = None
     ai_auto_worker = None
 
@@ -114,6 +116,12 @@ async def run_bot() -> None:
         publication_reconciler = PublicationReconcilerWorker(interval_seconds=5)
         await publication_reconciler.start()
 
+        source_ingestion = SourceIngestionWorker(
+            interval_seconds=60,
+            session_factory=AsyncSessionLocal,
+        )
+        await source_ingestion.start()
+
         poller = GrabPoller(interval_seconds=5)
         await poller.start()
 
@@ -137,6 +145,8 @@ async def run_bot() -> None:
             await _safe_stop("AI auto tasks worker", ai_auto_worker.stop)
         if poller is not None:
             await _safe_stop("grab poller", poller.stop)
+        if source_ingestion is not None:
+            await _safe_stop("source ingestion", source_ingestion.stop)
         if publication_reconciler is not None:
             await _safe_stop("publication reconciler", publication_reconciler.stop)
         if scheduler is not None:
