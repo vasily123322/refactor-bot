@@ -76,6 +76,14 @@ export type CandidateEnrichmentResult = {
   output: Record<string, unknown>;
 };
 
+export type LocalBatchEnrichmentResult = {
+  selected: number;
+  completed: number;
+  reused: number;
+  skipped_busy: number;
+  failed: number;
+};
+
 export const studioApi = {
   me: () => request<StudioUser>('/api/studio/me'),
   channels: () => request<Channel[]>('/api/studio/channels'),
@@ -178,5 +186,10 @@ export const studioApi = {
     request<CandidateEnrichmentResult>(
       `/api/studio/channels/${channelId}/candidates/${candidateId}/enrich/ai`,
       { method: 'POST', body: JSON.stringify({}) },
+    ),
+  enrichCandidatesLocalBatch: (channelId: number, limit = 25) =>
+    request<LocalBatchEnrichmentResult>(
+      `/api/studio/channels/${channelId}/candidates/enrich/local-batch`,
+      { method: 'POST', body: JSON.stringify({ limit }) },
     ),
 };
