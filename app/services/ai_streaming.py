@@ -3,7 +3,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
+from loguru import logger
+
+from app.core.config import settings
 from app.services.ai_generation import AIGenerationService
+from app.services.extractors.html import extract_article_text
 from app.services.llm.openrouter_client import ChatResult, ChatStreamEvent
 
 
@@ -18,8 +22,8 @@ def _error_result(message: str) -> ChatResult:
     }
 
 
-def _float_setting(settings: dict[str, Any], key: str, default: float) -> float:
-    value = settings.get(key)
+def _float_setting(settings_dict: dict[str, Any], key: str, default: float) -> float:
+    value = settings_dict.get(key)
     return float(default if value is None else value)
 
 
@@ -60,6 +64,7 @@ class InteractiveAIStreamingService:
         mode: str,
         topic: str = "",
         original_text: str = "",
+        url: str = "",
         instruction: str | None = None,
         extra: dict[str, Any] | None = None,
         user_id: int | None = None,
@@ -76,6 +81,7 @@ class InteractiveAIStreamingService:
                 mode=mode,
                 topic=topic,
                 original_text=original_text,
+                url=url,
                 instruction=instruction,
                 extra=extra,
             )
@@ -174,3 +180,67 @@ class InteractiveAIStreamingService:
             await self.generation.ai_repo.increment_tokens(channel_id, used)
         await self.session.commit()
         yield {"type": "done", "result": terminal}
+
+    async def stream_from_link(
+        self,
+        *,
+        channel_id: int,
+        url: str,
+        mode: str = "summary",
+        user_id: int | None = None,
+        prompt_key: str | None = None,
+        force_custom: bool = False,
+    ) -> AsyncIterator[ChatStreamEvent]:
+        """Fetch an article safely, extract text, then stream its LLM transform."""
+        guard_error, _ = await self._guard(channel_id)
+        if guard_error is not None:
+            yield {"type": "error", "result": guard_error}
+            return
+
+        normalized_mode = str(mode or "summary").lower().strip()
+        if normalized_mode not in {"summary", "rewrite", "paraphrase"}:
+            normalized_mode = "summary"
+
+        try:
+            from app.services.http.fetcher import fetch_html
+
+            html_content = await fetch_html(
+                url,
+                timeout_seconds=settings.http_fetch_timeout_seconds,
+                max_retries=settings.http_fetch_max_retries,
+                backoff_initial=settings.http_fetch_backoff_initial,
+                backoff_max=settings.http_fetch_backoff_max,
+                user_agent=settings.http_fetch_user_agent,
+            )
+            article_text = extract_article_text(
+                html_content,
+                max_len=int(settings.content_extract_max_len),
+            )
+        except Exception as exc:
+            logger.warning("Interactive AI link fetch failed url={} error={!r}", url, exc)
+            yield {
+                "type": "error",
+                "result": _error_result(f"Не удалось загрузить страницу: {exc}"),
+            }
+            return
+
+        if not article_text.strip():
+            yield {
+                "type": "error",
+                "result": _error_result("Не удалось извлечь текст статьи"),
+            }
+            return
+
+        async for event in self.stream_pipeline(
+            channel_id=channel_id,
+            mode="from_link",
+            url=url,
+            extra={
+                "article_text": article_text,
+                "link_mode": normalized_mode,
+                "force_custom": bool(force_custom),
+            },
+            user_id=user_id,
+            prompt_key=prompt_key,
+        ):
+            yield event
