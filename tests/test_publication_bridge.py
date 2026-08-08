@@ -13,6 +13,7 @@ from app.domain.models import PostTask
 from app.domain.publishing.models import PublicationAttempt, ScheduleEntry
 from app.repositories.content import ContentRepo
 from app.services.publication_bridge import LegacyPublicationBridge, PublicationBridgeError
+from app.services.scheduling import as_utc
 
 
 def test_publication_bridge_queues_content_on_existing_scheduler() -> None:
@@ -46,7 +47,9 @@ def test_publication_bridge_queues_content_on_existing_scheduler() -> None:
 
                 task = await session.get(PostTask, publication.legacy_post_task_id)
                 assert task is not None
-                assert task.scheduled_at == when
+                # SQLite drops tzinfo for timezone=True columns; the runtime contract
+                # normalizes persisted values with the same helper as the scheduler.
+                assert as_utc(task.scheduled_at) == when
                 assert task.payload["text"] == "Publish me"
                 assert task.payload["repeat_on"] is True
                 assert task.payload["repeat_seconds"] == 3600
@@ -56,6 +59,7 @@ def test_publication_bridge_queues_content_on_existing_scheduler() -> None:
 
                 schedule = await session.get(ScheduleEntry, publication.schedule_entry_id)
                 assert schedule is not None
+                assert as_utc(schedule.scheduled_at) == when
                 assert schedule.content_item_id == item.id
                 assert schedule.content_revision == 1
                 assert schedule.repeat_rule["seconds"] == 3600
