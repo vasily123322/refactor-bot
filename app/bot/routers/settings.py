@@ -1493,8 +1493,7 @@ async def rp_bot_token_receive(message: Message, state: FSMContext):
                 bot_html = (
                     f'<a href="{bot_link}">@{bot_username}</a>' if bot_link else "бот"
                 )
-                # Добавим сам токен в лог, как просили
-                text_log = f"пользователь {user_html} добавил бот {bot_html} с токеном: <code>{token}</code> в канал\nКанал/чат: "
+                text_log = f"пользователь {user_html} добавил бот {bot_html} в канал\nКанал/чат: "
                 if chan_link:
                     text_log += f'<a href="{chan_link}">перейти</a>'
                 else:
