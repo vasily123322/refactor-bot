@@ -263,13 +263,10 @@ def _render_rich_block(block: Mapping[str, Any]) -> object:
             is_open=(bool(block.get("is_open")) if "is_open" in block else None),
         )
     if block_type == "math":
-        formula = str(block.get("formula") or block.get("content") or "").strip()
-        if not formula:
-            raise TelegramRenderError("rich math block requires formula")
-        return InputRichBlockMathematicalExpression(
-            formula=formula,
-            size=_positive_size(block.get("size"), field="math.size", default=1),
-        )
+        expression = str(block.get("formula") or block.get("expression") or block.get("content") or "").strip()
+        if not expression:
+            raise TelegramRenderError("rich math block requires expression")
+        return InputRichBlockMathematicalExpression(expression=expression)
     if block_type == "anchor":
         name = str(block.get("name") or "").strip()
         if not name:
