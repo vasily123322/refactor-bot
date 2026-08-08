@@ -20,6 +20,7 @@ from app.services.posting import PostingService
 from app.userbot.client import app as userbot
 from app.workers.ai_auto_tasks import AIAutoTasksWorker
 from app.workers.grab_poll import GrabPoller
+from app.workers.publication_reconciler import PublicationReconcilerWorker
 from app.workers.reliable_scheduler import Scheduler
 
 try:
@@ -75,6 +76,7 @@ async def run_bot() -> None:
     ext_mgr = ExternalBotsManager()
     userbot_started = False
     scheduler = None
+    publication_reconciler = None
     poller = None
     ai_auto_worker = None
 
@@ -105,6 +107,9 @@ async def run_bot() -> None:
         scheduler = Scheduler(AsyncSessionLocal, posting)
         await scheduler.start()
 
+        publication_reconciler = PublicationReconcilerWorker(interval_seconds=5)
+        await publication_reconciler.start()
+
         poller = GrabPoller(interval_seconds=5)
         await poller.start()
 
@@ -125,6 +130,8 @@ async def run_bot() -> None:
             await _safe_stop("AI auto tasks worker", ai_auto_worker.stop)
         if poller is not None:
             await _safe_stop("grab poller", poller.stop)
+        if publication_reconciler is not None:
+            await _safe_stop("publication reconciler", publication_reconciler.stop)
         if scheduler is not None:
             await _safe_stop("scheduler", scheduler.stop)
 

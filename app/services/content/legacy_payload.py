@@ -48,18 +48,30 @@ _RESERVED_FIELDS = _CONTENT_FIELDS | {"type", "buttons"}
 def document_from_legacy_payload(payload: Mapping[str, Any]) -> PostDocument:
     """Convert the current editor/scheduler payload into PostDocument v1.
 
-    Runtime/scheduling fields are intentionally not promoted to first-class document
-    fields. They are preserved under metadata.legacy_payload_extra so the adapter is
-    lossless during the migration period while the planner/publication domains are
-    being separated from content.
+    Known classic payloads get a structured block. Unknown current/future payload
+    types are stored as opaque `legacy` blocks so migrations and knowledge/history
+    views remain lossless while publication still fails closed until a renderer exists.
+    Runtime/scheduling fields supplied by the caller remain in legacy_payload_extra.
     """
     if not isinstance(payload, Mapping):
         raise LegacyPayloadError("legacy payload must be an object")
 
     source = deepcopy(dict(payload))
     legacy_type = str(source.get("type") or "text")
+
     if legacy_type not in CLASSIC_BLOCK_TYPES:
-        raise LegacyPayloadError(f"unsupported legacy payload type: {legacy_type!r}")
+        return PostDocument(
+            mode="classic",
+            blocks=[
+                {
+                    "id": "b_1",
+                    "type": "legacy",
+                    "legacy_type": legacy_type,
+                    "payload": source,
+                }
+            ],
+            metadata={"legacy_type": legacy_type, "opaque_legacy": True},
+        )
 
     block: dict[str, Any] = {"id": "b_1", "type": legacy_type}
     for key in _CONTENT_FIELDS:
@@ -90,9 +102,9 @@ def document_from_legacy_payload(payload: Mapping[str, Any]) -> PostDocument:
 def legacy_payload_from_document(document: PostDocument | Mapping[str, Any]) -> dict[str, Any]:
     """Render a classic PostDocument back to the current PostTask payload shape.
 
-    This adapter intentionally rejects rich/multi-block documents until a dedicated
-    Telegram renderer is introduced. Failing loudly is safer than silently dropping
-    blocks during the compatibility phase.
+    This adapter intentionally rejects rich/multi-block/opaque documents until a
+    dedicated Telegram renderer exists. Failing loudly is safer than silently
+    dropping blocks during the compatibility phase.
     """
     doc = document if isinstance(document, PostDocument) else PostDocument.from_dict(document)
     doc.validate()
@@ -106,6 +118,10 @@ def legacy_payload_from_document(document: PostDocument | Mapping[str, Any]) -> 
 
     block = deepcopy(doc.blocks[0])
     block_type = block.get("type")
+    if block_type == "legacy":
+        raise LegacyPayloadError(
+            f"opaque legacy payload type {block.get('legacy_type')!r} requires a renderer"
+        )
     if block_type not in CLASSIC_BLOCK_TYPES:
         raise LegacyPayloadError(f"unsupported classic block type: {block_type!r}")
 

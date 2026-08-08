@@ -44,7 +44,10 @@ RICH_BLOCK_TYPES = frozenset(
     }
 )
 
-SUPPORTED_BLOCK_TYPES = CLASSIC_BLOCK_TYPES | RICH_BLOCK_TYPES
+# Opaque migration blocks keep old/future payloads losslessly readable without
+# pretending the new publisher already knows how to render them.
+OPAQUE_BLOCK_TYPES = frozenset({"legacy"})
+SUPPORTED_BLOCK_TYPES = CLASSIC_BLOCK_TYPES | RICH_BLOCK_TYPES | OPAQUE_BLOCK_TYPES
 SUPPORTED_MODES = frozenset({"classic", "rich"})
 
 
@@ -152,6 +155,13 @@ class PostDocument:
                     raise PostDocumentError(
                         f"rich text block {block_id} content must be text or an array"
                     )
+            if block_type == "legacy":
+                if not isinstance(block.get("legacy_type"), str):
+                    raise PostDocumentError(
+                        f"legacy block {block_id} requires legacy_type"
+                    )
+                if not isinstance(block.get("payload"), dict):
+                    raise PostDocumentError(f"legacy block {block_id} requires payload")
 
         buttons = self.telegram.get("buttons")
         if buttons is not None and not isinstance(buttons, list):
@@ -166,6 +176,9 @@ class PostDocument:
                 text = block.get("text") or ""
             elif block_type in CLASSIC_BLOCK_TYPES:
                 text = block.get("caption") or ""
+            elif block_type == "legacy":
+                payload = block.get("payload") or {}
+                text = payload.get("text") or payload.get("caption") or ""
             else:
                 content = block.get("content") or ""
                 if isinstance(content, list):
