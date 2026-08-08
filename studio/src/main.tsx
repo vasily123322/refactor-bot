@@ -4,6 +4,7 @@ import ReactDOM from 'react-dom/client';
 
 import App from './App';
 import './rich.css';
+import './source-settings.css';
 import './sources.css';
 import './styles.css';
 import { initTelegram } from './telegram';
