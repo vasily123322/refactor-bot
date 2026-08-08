@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from typing import Any, Protocol
 
 from sqlalchemy import select
@@ -59,6 +60,45 @@ def _bounded(value: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _comparison_text(value: str) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def _validate_independent_rewrite(
+    *,
+    source_text: str,
+    generated: str,
+    source_url: str | None,
+) -> None:
+    """Fail closed on obvious copy/mirror output before it becomes publishable.
+
+    This is intentionally conservative rather than a semantic originality score. It
+    catches exact/near-verbatim model failures and prevents the model from injecting
+    the source URL that the application owns as deterministic attribution.
+    """
+
+    source = _comparison_text(source_text)
+    rewrite = _comparison_text(generated)
+    if not source or not rewrite:
+        return
+    if source == rewrite:
+        raise CandidateRewriteError("rewrite is too similar to source")
+
+    if source_url and source_url.casefold() in generated.casefold():
+        raise CandidateRewriteError("rewrite must not include source attribution")
+
+    if len(source) >= 120 and source in rewrite:
+        raise CandidateRewriteError("rewrite contains verbatim source text")
+
+    if min(len(source), len(rewrite)) >= 160:
+        matcher = SequenceMatcher(a=source, b=rewrite, autojunk=False)
+        if matcher.ratio() >= 0.82:
+            raise CandidateRewriteError("rewrite is too similar to source")
+        longest = matcher.find_longest_match(0, len(source), 0, len(rewrite)).size
+        if longest >= 220:
+            raise CandidateRewriteError("rewrite contains a long verbatim passage")
 
 
 def candidate_rewrite_input_hash(
@@ -236,6 +276,11 @@ class CandidateRewriteService:
             generated = _bounded(output.text, _MAX_REWRITE_OUTPUT_CHARS)
             if not generated:
                 raise CandidateRewriteError("rewrite provider returned empty text")
+            _validate_independent_rewrite(
+                source_text=text,
+                generated=generated,
+                source_url=document.source_url,
+            )
             output_meta = dict(output.metadata or {})
         except Exception as exc:
             run = await self.session.get(CandidateRewriteRun, int(run.id))
