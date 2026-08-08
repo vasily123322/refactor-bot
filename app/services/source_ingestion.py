@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -132,6 +133,16 @@ def _entry_link(node: ET.Element) -> str | None:
     return None
 
 
+def _safe_reference_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip()
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    return normalized
+
+
 def _parse_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -168,8 +179,9 @@ def _rss_entries(xml_text: str, *, limit: int = MAX_FEED_ENTRIES) -> list[dict[s
     entries: list[dict[str, Any]] = []
     for node in nodes[: max(1, min(int(limit), MAX_FEED_ENTRIES))]:
         title = _first_text(node, {"title"})
-        link = _entry_link(node)
-        external_id = _first_text(node, {"guid", "id"}) or link
+        raw_link = _entry_link(node)
+        link = _safe_reference_url(raw_link)
+        external_id = _first_text(node, {"guid", "id"}) or raw_link
         body = _first_text(node, {"content", "encoded", "description", "summary"}) or ""
         content = _clean_html(body)
         if title and title not in content:
