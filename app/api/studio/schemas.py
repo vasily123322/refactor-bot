@@ -63,6 +63,17 @@ class PreviewResponse(BaseModel):
     reason: str | None = None
 
 
+class TelegramPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document: dict[str, Any]
+    replace_message_ids: list[int] = Field(default_factory=list, max_length=50)
+
+
+class TelegramPreviewResponse(BaseModel):
+    message_ids: list[int]
+
+
 class ScheduleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
