@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
@@ -10,20 +11,24 @@ from app.core.db import AsyncSessionLocal
 from app.domain.models import Channel, Client
 
 
-_PROTECTED_PREFIXES = (
-    "ai_toggle_",
-    "ai_forbidden_",
-    "neu_moder_",
+_CHANNEL_CALLBACK_PATTERNS = (
+    re.compile(r"^ai_toggle_[a-z0-9_]+_(?P<channel_id>\d+)$"),
+    re.compile(r"^ai_forbidden_[a-z0-9_]+_(?P<channel_id>\d+)$"),
+    re.compile(r"^ai_hashtags_count_(?P<channel_id>\d+)$"),
+    re.compile(r"^ai_set_hashtags_count_(?P<channel_id>\d+)_\d+$"),
+    re.compile(r"^neu_(?:moder|tags)_(?P<channel_id>\d+)$"),
+    re.compile(r"^settings_neuropost_(?P<channel_id>\d+)$"),
 )
 
 
 def _channel_id_from_callback(data: str | None) -> int | None:
-    if not data or not data.startswith(_PROTECTED_PREFIXES):
+    if not data:
         return None
-    try:
-        return int(data.rsplit("_", 1)[1])
-    except (IndexError, TypeError, ValueError):
-        return None
+    for pattern in _CHANNEL_CALLBACK_PATTERNS:
+        match = pattern.fullmatch(data)
+        if match:
+            return int(match.group("channel_id"))
+    return None
 
 
 class ChannelOwnerMiddleware(BaseMiddleware):
