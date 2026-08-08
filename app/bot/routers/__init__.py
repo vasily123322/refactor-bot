@@ -11,6 +11,7 @@ from .admin import router as admin_commands
 from .tz import router as tz_commands
 from .sources import router as sources_commands
 from .moderation import router as moderation_commands
+from .ai_result_actions import router as ai_result_actions_commands
 from app.core.settings_channel_access import SettingsChannelOwnerMiddleware
 
 # Реестр роутеров: start/menu отдельно, остальное в main.py
@@ -27,4 +28,5 @@ main_router.include_router(admin_commands)
 main_router.include_router(tz_commands)
 main_router.include_router(sources_commands)
 main_router.include_router(moderation_commands)
+main_router.include_router(ai_result_actions_commands)
 main_router.include_router(main_commands)
