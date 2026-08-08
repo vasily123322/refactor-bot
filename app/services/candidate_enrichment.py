@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from sqlalchemy import and_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.sources.enrichment import CandidateEnrichmentRun
@@ -160,25 +160,51 @@ class CandidateEnrichmentService:
         *,
         channel_id: int,
         candidate_id: int,
+        for_update: bool = False,
+        refresh: bool = False,
     ) -> tuple[ContentCandidate, SourceDocument]:
-        row = (
-            await self.session.execute(
-                select(ContentCandidate, SourceDocument)
-                .join(
-                    SourceDocument,
-                    SourceDocument.id == ContentCandidate.source_document_id,
-                )
-                .where(
-                    ContentCandidate.id == int(candidate_id),
-                    ContentCandidate.channel_id == int(channel_id),
-                    SourceDocument.channel_id == int(channel_id),
-                )
+        stmt = (
+            select(ContentCandidate, SourceDocument)
+            .join(
+                SourceDocument,
+                SourceDocument.id == ContentCandidate.source_document_id,
             )
-        ).one_or_none()
+            .where(
+                ContentCandidate.id == int(candidate_id),
+                ContentCandidate.channel_id == int(channel_id),
+                SourceDocument.channel_id == int(channel_id),
+            )
+        )
+        if for_update:
+            stmt = stmt.with_for_update()
+        if refresh:
+            stmt = stmt.execution_options(populate_existing=True)
+        row = (await self.session.execute(stmt)).one_or_none()
         if row is None:
             raise CandidateEnrichmentError("candidate not found")
         candidate, document = row
         return candidate, document
+
+    async def _apply_completed(
+        self,
+        *,
+        candidate: ContentCandidate,
+        run: CandidateEnrichmentRun,
+        provider_name: str,
+        model_name: str,
+    ) -> CandidateEnrichmentResult:
+        candidate.summary = run.summary
+        candidate.topic = run.topic
+        candidate.score = run.score
+        candidate.meta = {
+            **dict(candidate.meta or {}),
+            "enrichment_run_id": int(run.id),
+            "enrichment_provider": provider_name,
+            "enrichment_model": model_name,
+        }
+        await self.session.commit()
+        await self.session.refresh(candidate)
+        return CandidateEnrichmentResult(candidate, run, True)
 
     async def enrich(
         self,
@@ -187,14 +213,24 @@ class CandidateEnrichmentService:
         candidate_id: int,
         provider: CandidateEnrichmentProvider,
     ) -> CandidateEnrichmentResult:
+        provider_name = _bounded(str(provider.name), 64)
+        model_name = _bounded(str(provider.model), 191)
+        if not provider_name or not model_name:
+            raise CandidateEnrichmentError("enrichment provider identity is required")
+
+        # Serialize the decision to reuse/create a run for this candidate. The
+        # transaction is committed before the provider call, so no DB lock is
+        # held while external work is running.
         candidate, document = await self._load(
             channel_id=channel_id,
             candidate_id=candidate_id,
+            for_update=True,
+            refresh=True,
         )
-        input_hash = _input_hash(document, candidate)
-        provider_name = _bounded(str(provider.name), 64)
-        model_name = _bounded(str(provider.model), 191)
+        if str(candidate.status or "new") != "new":
+            raise CandidateEnrichmentError("candidate is no longer active")
 
+        input_hash = _input_hash(document, candidate)
         completed = (
             await self.session.execute(
                 select(CandidateEnrichmentRun)
@@ -210,18 +246,12 @@ class CandidateEnrichmentService:
             )
         ).scalar_one_or_none()
         if completed is not None:
-            candidate.summary = completed.summary
-            candidate.topic = completed.topic
-            candidate.score = completed.score
-            candidate.meta = {
-                **dict(candidate.meta or {}),
-                "enrichment_run_id": int(completed.id),
-                "enrichment_provider": provider_name,
-                "enrichment_model": model_name,
-            }
-            await self.session.commit()
-            await self.session.refresh(candidate)
-            return CandidateEnrichmentResult(candidate, completed, True)
+            return await self._apply_completed(
+                candidate=candidate,
+                run=completed,
+                provider_name=provider_name,
+                model_name=model_name,
+            )
 
         running = (
             await self.session.execute(
@@ -235,6 +265,7 @@ class CandidateEnrichmentService:
             )
         ).scalar_one_or_none()
         if running is not None:
+            await self.session.rollback()
             raise CandidateEnrichmentBusy("candidate enrichment is already running")
 
         text = _bounded(str(document.content or ""), _MAX_ENRICHMENT_INPUT_CHARS)
@@ -284,17 +315,34 @@ class CandidateEnrichmentService:
         run = await self.session.get(CandidateEnrichmentRun, int(run.id))
         if run is None:
             raise CandidateEnrichmentError("enrichment run disappeared")
-        candidate = await self.session.get(ContentCandidate, int(candidate.id))
-        if candidate is None or int(candidate.channel_id) != int(channel_id):
-            raise CandidateEnrichmentError("candidate disappeared")
+        candidate, document = await self._load(
+            channel_id=channel_id,
+            candidate_id=candidate_id,
+            for_update=True,
+            refresh=True,
+        )
 
-        run.status = "completed"
         run.summary = output.summary
         run.topic = output.topic
         run.score = output.score
-        run.output = dict(output.metadata or {})
         run.error = None
         run.finished_at = datetime.now(timezone.utc)
+        output_meta = dict(output.metadata or {})
+
+        if str(candidate.status or "new") != "new":
+            run.status = "discarded"
+            run.output = {**output_meta, "discard_reason": "candidate_not_active"}
+            await self.session.commit()
+            raise CandidateEnrichmentError("candidate is no longer active")
+
+        if _input_hash(document, candidate) != input_hash:
+            run.status = "stale"
+            run.output = {**output_meta, "discard_reason": "source_snapshot_changed"}
+            await self.session.commit()
+            raise CandidateEnrichmentError("source changed during enrichment")
+
+        run.status = "completed"
+        run.output = output_meta
         candidate.summary = output.summary
         candidate.topic = output.topic
         candidate.score = output.score

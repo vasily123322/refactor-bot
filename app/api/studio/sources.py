@@ -18,6 +18,11 @@ from app.repositories.sources_v2 import SourcesRepo
 from app.services.legacy_source_mirror import LegacySourceMirror
 from app.services.source_doctor import SourceDoctor
 from app.services.source_ingestion import SourceIngestionError, SourceIngestionService
+from app.services.source_lifecycle import (
+    SourceLifecycleError,
+    SourceLifecyclePatch,
+    SourceLifecycleService,
+)
 from app.services.telegram_source_ingestion import TelegramSourceIngestionService
 from app.userbot.client import app as userbot
 
@@ -39,6 +44,21 @@ class SourceCreateRequest(BaseModel):
         "rewrite_with_attribution",
         "mirror_authorized",
     ] = "reference_only"
+
+
+class SourceSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    mode: Literal["summary", "rewrite"] | None = None
+    citation_enabled: bool | None = None
+    reuse_policy: Literal[
+        "reference_only",
+        "summarize",
+        "quote_with_attribution",
+        "rewrite_with_attribution",
+        "mirror_authorized",
+    ] | None = None
 
 
 class SourceResponse(BaseModel):
@@ -238,6 +258,32 @@ async def create_source(
     except Exception:
         await session.rollback()
         raise
+    return _response(row)
+
+
+@router.post(
+    "/channels/{channel_id}/sources/{connector_id}/settings",
+    response_model=SourceResponse,
+)
+async def update_source_settings(
+    channel_id: int,
+    connector_id: int,
+    request: SourceSettingsRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> SourceResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    patch = SourceLifecyclePatch(**request.model_dump(exclude_none=True))
+    try:
+        row = await SourceLifecycleService(session).update(
+            channel_id=channel_id,
+            connector_id=connector_id,
+            patch=patch,
+        )
+    except SourceLifecycleError as exc:
+        if str(exc) == "source not found":
+            raise HTTPException(status_code=404, detail="Source not found") from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _response(row)
 
 
