@@ -16,11 +16,11 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.core.db import AsyncSessionLocal
-from app.domain.models import AIAutoTask, Channel, Client
+from app.domain.ai_auto_task import AIAutoTask
+from app.domain.models import Channel, Client
 from app.repositories.ai_auto_tasks import AIAutoTaskRepo
 from app.bot.bot_instance import bot as tg_bot
 
-# Task type constants
 TASK_DAILY_TOPICS = "daily_topics"
 TASK_EVENING_DIGEST = "evening_digest"
 TASK_WEEKLY_IDEAS = "weekly_ideas"
@@ -40,9 +40,9 @@ TASK_DEFAULT_TIMES = {
 }
 
 TASK_DEFAULT_DAY = {
-    TASK_DAILY_TOPICS: None,  # every day
-    TASK_EVENING_DIGEST: None,  # every day
-    TASK_WEEKLY_IDEAS: 0,  # Monday
+    TASK_DAILY_TOPICS: None,
+    TASK_EVENING_DIGEST: None,
+    TASK_WEEKLY_IDEAS: 0,
 }
 
 
@@ -60,20 +60,16 @@ def _is_due(task: AIAutoTask, now: datetime) -> bool:
     task_hour, task_minute = _parse_time(task.run_at or "10:00")
     now_utc = now.astimezone(timezone.utc)
 
-    # Check if we already ran this minute
     if task.last_run_at:
         last = task.last_run_at
         if last.tzinfo is None:
             last = last.replace(tzinfo=timezone.utc)
-        # Don't run again within the same minute
         if (now_utc - last) < timedelta(minutes=1):
             return False
 
-    # Check time match
     if now_utc.hour != task_hour or now_utc.minute != task_minute:
         return False
 
-    # Check day of week for weekly tasks
     if task.schedule == "weekly" and task.day_of_week is not None:
         if now_utc.weekday() != task.day_of_week:
             return False
@@ -88,15 +84,16 @@ async def _run_daily_topics(task: AIAutoTask) -> str:
 
     async with AsyncSessionLocal() as session:
         ai_repo = ChannelAISettingsRepo(session)
-        st = await ai_repo.get_or_create(task.channel_id)
+        await ai_repo.get_or_create(task.channel_id)
         service = AIGenerationService(session)
 
         result = await service.run_pipeline(
             channel_id=task.channel_id,
             mode="from_scratch",
-            topic="Предложи 3 интересные темы для постов в этом канале. "
-                  "Каждая тема — одним предложением. "
-                  "Нумеруй: 1. 2. 3.",
+            topic=(
+                "Предложи 3 интересные темы для постов в этом канале. "
+                "Каждая тема — одним предложением. Нумеруй: 1. 2. 3."
+            ),
             user_id=0,
             prompt_key="auto_daily_topics",
         )
@@ -109,25 +106,25 @@ async def _run_daily_topics(task: AIAutoTask) -> str:
 async def _run_evening_digest(task: AIAutoTask) -> str:
     """Generate an evening digest from channel sources."""
     try:
-        from app.services.llm.source_digest import build_source_digest_context, build_source_digest_instruction
+        from app.services.llm.source_digest import build_source_digest_instruction
         from app.services.ai_generation import AIGenerationService
-        from app.repositories.ai_settings import ChannelAISettingsRepo
+        from app.repositories.ai_settings import ChannelAISettingsRepo, AISourcesRepo
 
         async with AsyncSessionLocal() as session:
-            from app.repositories.ai_settings import AISourcesRepo
             sources = await AISourcesRepo(session).list_by_channel(task.channel_id)
 
         if not sources:
             return "📰 У канала нет источников для дайджеста."
 
         from app.bot.routers.sources import _collect_digest_source_items
+
         items = await _collect_digest_source_items(sources)
         if not items:
             return "📰 Нет новых материалов для дайджеста."
 
         async with AsyncSessionLocal() as session:
             ai_repo = ChannelAISettingsRepo(session)
-            st = await ai_repo.get_or_create(task.channel_id)
+            await ai_repo.get_or_create(task.channel_id)
             service = AIGenerationService(session)
 
             instruction = build_source_digest_instruction(
@@ -158,15 +155,16 @@ async def _run_weekly_ideas(task: AIAutoTask) -> str:
 
     async with AsyncSessionLocal() as session:
         ai_repo = ChannelAISettingsRepo(session)
-        st = await ai_repo.get_or_create(task.channel_id)
+        await ai_repo.get_or_create(task.channel_id)
         service = AIGenerationService(session)
 
         result = await service.run_pipeline(
             channel_id=task.channel_id,
             mode="from_scratch",
-            topic="Проанализируй канал и предложи 5 лучших идей для постов на следующую неделю. "
-                  "Каждая идея — кратко, одним предложением. "
-                  "Нумеруй: 1. 2. 3. 4. 5.",
+            topic=(
+                "Проанализируй канал и предложи 5 лучших идей для постов на следующую неделю. "
+                "Каждая идея — кратко, одним предложением. Нумеруй: 1. 2. 3. 4. 5."
+            ),
             user_id=0,
             prompt_key="auto_weekly_ideas",
         )
@@ -217,9 +215,8 @@ class AIAutoTasksWorker:
         now = datetime.now(timezone.utc)
 
         async with AsyncSessionLocal() as session:
-            # Fetch all enabled tasks
             result = await session.execute(
-                select(AIAutoTask).where(AIAutoTask.enabled == True)
+                select(AIAutoTask).where(AIAutoTask.enabled.is_(True))
             )
             tasks = list(result.scalars().all())
 
@@ -244,10 +241,10 @@ class AIAutoTasksWorker:
                     f"for channel {task.channel_id}"
                 )
             finally:
-                # Update last_run_at
                 async with AsyncSessionLocal() as session:
                     repo = AIAutoTaskRepo(session)
                     await repo.update_last_run(task.channel_id, task.task_type, now)
+                    await session.commit()
 
     async def _send_to_owner(self, channel_id: int, text: str) -> None:
         """Send the result to the channel owner."""
