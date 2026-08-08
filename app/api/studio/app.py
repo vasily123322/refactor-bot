@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.studio.auth import StudioPrincipal, require_studio_principal
 from app.api.studio.config import StudioConfig, studio_config
+from app.api.studio.planner import router as planner_router
 from app.api.studio.schemas import (
     ChannelResponse,
     ContentCreateRequest,
@@ -79,6 +80,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
         docs_url="/docs" if cfg.enabled else None,
         redoc_url=None,
     )
+    app.include_router(planner_router)
 
     if cfg.cors_origins:
         app.add_middleware(
