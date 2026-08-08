@@ -1,0 +1,224 @@
+import { useCallback, useEffect, useState } from 'react';
+
+import { StudioApiError, studioApi } from './api';
+import type { Channel, ContentCandidateView } from './types';
+
+function errorMessage(error: unknown): string {
+  if (error instanceof StudioApiError || error instanceof Error) return error.message;
+  return 'Неизвестная ошибка';
+}
+
+function dateLabel(value: string | null): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('ru', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
+function actionLabel(action: string | null): string {
+  switch (action) {
+    case 'summarize': return 'Суммаризировать';
+    case 'rewrite': return 'Переписать';
+    case 'mirror': return 'Разрешённый mirror';
+    case 'review': return 'Проверить права';
+    case 'research': return 'Исследовать';
+    default: return action || 'Проверить';
+  }
+}
+
+function scoreLabel(score: number | null): string | null {
+  if (score === null || !Number.isFinite(score)) return null;
+  return `${Math.round(Math.max(0, Math.min(1, score)) * 100)}%`;
+}
+
+export function InboxPanel({
+  channel,
+  onOpenContent,
+}: {
+  channel: Channel | null;
+  onOpenContent: (contentId: number) => void;
+}) {
+  const [candidates, setCandidates] = useState<ContentCandidateView[]>([]);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!channel) {
+      setCandidates([]);
+      return;
+    }
+    setCandidates(await studioApi.candidates(channel.id));
+  }, [channel]);
+
+  useEffect(() => {
+    setError(null);
+    setNotice(null);
+    void load().catch((reason) => setError(errorMessage(reason)));
+  }, [load]);
+
+  const run = async (key: string, action: () => Promise<void>) => {
+    setBusyId(key);
+    setError(null);
+    try {
+      await action();
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const enrichBatch = () =>
+    run('batch-local', async () => {
+      const result = await studioApi.enrichCandidatesLocalBatch(channel!.id, 50);
+      await load();
+      setNotice(
+        `Local batch: выбрано ${result.selected}, новых ${result.completed}, reused ${result.reused}, failed ${result.failed}`,
+      );
+    });
+
+  const enrichLocal = (candidate: ContentCandidateView) =>
+    run(`enrich-local:${candidate.id}`, async () => {
+      const result = await studioApi.enrichCandidateLocal(channel!.id, candidate.id);
+      setCandidates((current) =>
+        current.map((row) =>
+          row.id === candidate.id
+            ? { ...row, summary: result.summary, topic: result.topic, score: result.score }
+            : row,
+        ),
+      );
+      setNotice(
+        result.reused_existing
+          ? `Local enrichment #${result.run_id}: использован сохранённый результат`
+          : `Local enrichment #${result.run_id}: готов`,
+      );
+    });
+
+  const enrichAI = (candidate: ContentCandidateView) =>
+    run(`enrich-ai:${candidate.id}`, async () => {
+      const result = await studioApi.enrichCandidateAI(channel!.id, candidate.id);
+      setCandidates((current) =>
+        current.map((row) =>
+          row.id === candidate.id
+            ? { ...row, summary: result.summary, topic: result.topic, score: result.score }
+            : row,
+        ),
+      );
+      setNotice(
+        result.reused_existing
+          ? `AI enrichment #${result.run_id}: использован сохранённый результат`
+          : `AI enrichment #${result.run_id}: ${result.model || result.provider}`,
+      );
+    });
+
+  const dismiss = (candidate: ContentCandidateView) =>
+    run(`dismiss:${candidate.id}`, async () => {
+      await studioApi.dismissCandidate(channel!.id, candidate.id);
+      setCandidates((current) => current.filter((row) => row.id !== candidate.id));
+    });
+
+  const acceptDraft = (candidate: ContentCandidateView) =>
+    run(`draft:${candidate.id}`, async () => {
+      const draft = await studioApi.candidateDraft(channel!.id, candidate.id);
+      setCandidates((current) => current.filter((row) => row.id !== candidate.id));
+      onOpenContent(draft.id);
+    });
+
+  if (!channel) {
+    return <div className="sources-empty-page">Выберите канал, чтобы открыть Inbox.</div>;
+  }
+
+  return (
+    <div className="sources-page inbox-page">
+      <header className="sources-topbar">
+        <div>
+          <small className="eyebrow">{channel.title || channel.tg_chat_id}</small>
+          <h1>Inbox</h1>
+          <p>Нормализованные кандидаты из Telegram/RSS/Web: анализ → enrichment → policy-safe draft.</p>
+        </div>
+        <div className="top-actions">
+          <button className="button secondary" onClick={() => void load()} disabled={busyId !== null}>↻ Обновить</button>
+          <button
+            className="button secondary"
+            onClick={() => void enrichBatch()}
+            disabled={busyId !== null || candidates.length === 0}
+            title="Deterministic local enrichment, без AI-токенов"
+          >
+            {busyId === 'batch-local' ? 'Анализ…' : 'Local batch'}
+          </button>
+        </div>
+      </header>
+
+      {error && <div className="banner error" role="alert">{error}<button onClick={() => setError(null)}>×</button></div>}
+      {notice && <div className="banner success">{notice}<button onClick={() => setNotice(null)}>×</button></div>}
+
+      <section className="sources-inbox-card inbox-standalone-card">
+        <div className="panel-heading">
+          <div><h2>Новые кандидаты</h2><small>{candidates.length} в очереди редактора</small></div>
+        </div>
+        <div className="candidate-list">
+          {candidates.length === 0 && (
+            <div className="empty-state">Inbox пуст. Источники и ingestion worker добавят новые материалы сюда.</div>
+          )}
+          {candidates.map((candidate) => {
+            const score = scoreLabel(candidate.score);
+            return (
+              <article key={candidate.id} className="candidate-card">
+                <div className="candidate-head">
+                  <span className="candidate-action">{actionLabel(candidate.suggested_action)}</span>
+                  <span className="candidate-policy">{candidate.reuse_policy}</span>
+                  {score && <span className="candidate-policy">score {score}</span>}
+                </div>
+                <h3>{candidate.topic || candidate.source_title || `Материал #${candidate.source_document_id}`}</h3>
+                <p>{candidate.summary || candidate.excerpt}</p>
+                <div className="candidate-footer">
+                  <span>{dateLabel(candidate.published_at || candidate.fetched_at)}</span>
+                  <div>
+                    {candidate.source_url && (
+                      <a className="button secondary compact" href={candidate.source_url} target="_blank" rel="noreferrer">Источник ↗</a>
+                    )}
+                    <button
+                      className="button secondary compact"
+                      disabled={busyId !== null}
+                      onClick={() => void enrichLocal(candidate)}
+                    >
+                      {busyId === `enrich-local:${candidate.id}` ? 'Анализ…' : 'Local'}
+                    </button>
+                    <button
+                      className="button secondary compact"
+                      disabled={busyId !== null}
+                      title="Использует AI-настройки и лимиты выбранного канала"
+                      onClick={() => void enrichAI(candidate)}
+                    >
+                      {busyId === `enrich-ai:${candidate.id}` ? 'AI…' : '✨ AI'}
+                    </button>
+                    <button
+                      className="button primary compact"
+                      disabled={busyId !== null}
+                      onClick={() => void acceptDraft(candidate)}
+                    >
+                      {busyId === `draft:${candidate.id}` ? 'Создаю…' : 'В черновик'}
+                    </button>
+                    <button
+                      className="button secondary compact"
+                      disabled={busyId !== null}
+                      onClick={() => void dismiss(candidate)}
+                    >
+                      Скрыть
+                    </button>
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </section>
+    </div>
+  );
+}
