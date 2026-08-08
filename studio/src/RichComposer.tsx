@@ -36,7 +36,7 @@ function newBlock(type: string): PostBlock {
     case 'divider':
       return { id, type };
     case 'math':
-      return { id, type, formula: '', size: 1 };
+      return { id, type, formula: '' };
     case 'anchor':
       return { id, type, name: '' };
     default:
@@ -188,25 +188,14 @@ function BlockEditor({
         {block.type === 'divider' && <div className="rich-divider-preview" />}
 
         {block.type === 'math' && (
-          <div className="rich-math-grid">
-            <label>
-              <span>Формула</span>
-              <textarea
-                value={textValue(block.formula)}
-                onChange={(event) => onPatch({ formula: event.target.value })}
-                placeholder="E=mc^2"
-              />
-            </label>
-            <label>
-              <span>Размер</span>
-              <select
-                value={numberValue(block.size, 1)}
-                onChange={(event) => onPatch({ size: Number(event.target.value) })}
-              >
-                {[1, 2, 3, 4, 5, 6].map((size) => <option key={size} value={size}>{size}</option>)}
-              </select>
-            </label>
-          </div>
+          <label className="rich-field-label">
+            <span>LaTeX expression</span>
+            <textarea
+              value={textValue(block.formula)}
+              onChange={(event) => onPatch({ formula: event.target.value })}
+              placeholder="E=mc^2"
+            />
+          </label>
         )}
 
         {block.type === 'anchor' && (
