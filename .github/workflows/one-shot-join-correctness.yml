@@ -48,7 +48,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app/bot/routers/shared_join.py app/services/join_requests.py .github/workflows/one-shot-join-correctness.yml
+          git add -A
           git diff --cached --check
           git commit -m 'fix join routing and captcha payload'
           git push origin HEAD:${{ github.event.pull_request.head.ref }}
