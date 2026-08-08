@@ -75,6 +75,10 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
     async def _cancel_bg_tasks():
         events.append("bg-cancel")
 
+    async def _register_commands(bot):
+        events.append("commands-register")
+        return True
+
     monkeypatch.setattr(dispatcher, "engine", _FakeEngine())
     monkeypatch.setattr(dispatcher, "create_dispatcher", _create_dispatcher)
     monkeypatch.setattr(dispatcher, "ExternalBotsManager", _FakeExternalBotsManager)
@@ -83,6 +87,7 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
     monkeypatch.setattr(dispatcher, "GrabPoller", _worker_class("grab-poller"))
     monkeypatch.setattr(dispatcher, "AIAutoTasksWorker", _worker_class("ai-auto"))
     monkeypatch.setattr(dispatcher, "PostingService", lambda *args, **kwargs: object())
+    monkeypatch.setattr(dispatcher, "register_bot_commands", _register_commands)
     monkeypatch.setattr(
         dispatcher, "init_db_if_needed_sync", lambda: events.append("db-sync")
     )
@@ -97,6 +102,7 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
         "db-sync",
         "db-create",
         "router-include",
+        "commands-register",
         "external-start",
         "userbot-start",
         "scheduler-start",
@@ -113,6 +119,7 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
     }
     assert required.issubset(events)
 
+    assert events.index("commands-register") < events.index("polling")
     assert events.index("scheduler-start") < events.index("scheduler-stop")
     assert events.index("grab-poller-start") < events.index("grab-poller-stop")
     assert events.index("ai-auto-start") < events.index("ai-auto-stop")
