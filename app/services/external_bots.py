@@ -163,7 +163,6 @@ class ExternalBotsManager:
 
     async def _approver_loop(self, ext_id: int) -> None:
         from app.core.db import AsyncSessionLocal
-        from app.repositories.external_bots import ChannelBotsRepo
         from app.repositories.join_requests import JoinRequestsRepo
         from app.repositories.channels import ChannelsRepo
         from app.repositories.subscribers import SubscribersRepo

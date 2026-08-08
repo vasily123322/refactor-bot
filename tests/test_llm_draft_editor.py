@@ -1,10 +1,8 @@
 """Tests for app/services/llm/draft_editor.py."""
 
-import pytest
 
 from app.services.llm.draft_editor import (
     DRAFT_EDIT_ACTIONS,
-    DraftEditAction,
     build_extra_system_note,
     build_instruction_for,
     get_action,

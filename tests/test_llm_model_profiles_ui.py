@@ -1,5 +1,4 @@
 from app.services.llm.model_profiles import (
-    AI_MODEL_PROFILES,
     build_model_profile_button_rows,
     build_model_profile_menu_text,
     build_model_profile_set_message,

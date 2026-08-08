@@ -2991,7 +2991,6 @@ async def handle_ai_topic_input(message: Message, state: FSMContext):
 
     # Успешная генерация - обновляем payload поста
     generated_text = result["text"]
-    tokens_used = result.get("tokens_used", 0)
 
     # Обновляем payload с новым текстом
     payload = data.get("payload", {})
@@ -3120,7 +3119,6 @@ async def handle_ai_link_input(message: Message, state: FSMContext):
 
         # Обновляем payload
         generated_text = result["text"]
-        tokens_used = result.get("tokens_used", 0)
 
         payload = data.get("payload", {})
         if payload.get("type") in {
@@ -3297,7 +3295,6 @@ async def cb_ai_improve_action(callback: CallbackQuery, state: FSMContext):
 
         # Обновляем payload
         improved_text = result["text"]
-        tokens_used = result.get("tokens_used", 0)
 
         if payload.get("type") == "text":
             payload["text"] = improved_text

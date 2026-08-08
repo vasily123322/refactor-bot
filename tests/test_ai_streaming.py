@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 from app.bot.ai_draft_stream import render_ai_stream_to_draft
 from app.services.ai_streaming import _float_setting

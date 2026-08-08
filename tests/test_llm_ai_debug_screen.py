@@ -1,6 +1,5 @@
 """Tests for app/services/llm/ai_debug_screen.py."""
 
-import pytest
 from types import SimpleNamespace
 
 from app.services.llm.ai_debug_screen import build_ai_debug_screen
