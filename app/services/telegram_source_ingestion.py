@@ -7,7 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.sources.models import SourceConnector
 from app.repositories.sources_v2 import SourcesRepo
-from app.services.source_ingestion import MAX_SOURCE_DOCUMENT_CHARS, IngestionResult, SourceIngestionError
+from app.services.source_ingestion import (
+    MAX_SOURCE_DOCUMENT_CHARS,
+    IngestionResult,
+    SourceIngestionError,
+)
 from app.userbot.client import UserbotChat, UserbotMessage, app as userbot
 
 
@@ -16,9 +20,7 @@ class TelegramSourceGateway(Protocol):
 
     async def join_chat(self, target: str | int): ...
 
-    def get_chat_history(
-        self, target: str | int, *, limit: int = 100
-    ): ...
+    def get_chat_history(self, target: str | int, *, limit: int = 100): ...
 
 
 def _normalize_message_date(value: datetime | None) -> datetime | None:
@@ -99,6 +101,7 @@ class TelegramSourceIngestionService:
         seen = 0
         created_count = 0
         candidate_count = 0
+        latest_published_at: datetime | None = None
         try:
             async for message in self.gateway.get_chat_history(
                 str(connector.value),
@@ -110,13 +113,18 @@ class TelegramSourceIngestionService:
                     # posts are intentionally deferred to the media attachment adapter.
                     continue
                 seen += 1
+                published_at = _normalize_message_date(message.date)
+                if published_at is not None and (
+                    latest_published_at is None or published_at > latest_published_at
+                ):
+                    latest_published_at = published_at
                 document, created = await self.repo.upsert_document(
                     connector=connector,
                     external_id=f"telegram:{int(chat.id)}:{int(message.id)}",
                     content=text,
                     source_url=_message_url(chat, int(message.id)),
                     title=chat.title,
-                    published_at=_normalize_message_date(message.date),
+                    published_at=published_at,
                     metadata={
                         "connector_kind": "telegram",
                         "telegram_chat_id": int(chat.id),
@@ -159,6 +167,8 @@ class TelegramSourceIngestionService:
             )
         else:
             connector.auth_state = "ready"
+            if latest_published_at is not None:
+                connector.last_document_at = latest_published_at
             await self.session.commit()
 
         return IngestionResult(
