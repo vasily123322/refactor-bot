@@ -16,6 +16,7 @@ from loguru import logger  # type: ignore[import-not-found]
 
 MAX_REDIRECTS = 5
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
 
 def _should_retry_status(status_code: int) -> bool:
@@ -59,8 +60,6 @@ async def validate_public_http_url(url: str) -> None:
             raise ValueError("Приватные и локальные IP запрещены")
         return
     except ValueError as exc:
-        # If this is a literal IP, propagate the policy rejection. If it is a
-        # hostname, resolve it below.
         try:
             ipaddress.ip_address(hostname)
         except ValueError:
@@ -86,14 +85,50 @@ async def _get_with_safe_redirects(client: httpx.AsyncClient, url: str) -> httpx
     current_url = url
     for _ in range(MAX_REDIRECTS + 1):
         await validate_public_http_url(current_url)
-        response = await client.get(current_url, follow_redirects=False)
-        if response.status_code not in {301, 302, 303, 307, 308}:
+        request = client.build_request("GET", current_url)
+        response = await client.send(request, stream=True)
+        if response.status_code not in _REDIRECT_STATUSES:
             return response
+
         location = response.headers.get("location")
         if not location:
             return response
-        current_url = urljoin(str(response.request.url), location)
+
+        next_url = urljoin(str(response.request.url), location)
+        await response.aclose()
+        current_url = next_url
+
     raise RuntimeError("Слишком много HTTP redirect")
+
+
+async def _read_limited_body(
+    response: httpx.Response, *, limit: int = MAX_RESPONSE_BYTES
+) -> bytes:
+    content_length = response.headers.get("content-length")
+    if content_length:
+        try:
+            declared_size = int(content_length)
+        except (TypeError, ValueError):
+            declared_size = None
+        if declared_size is not None and declared_size > limit:
+            raise ValueError("Ответ страницы слишком большой")
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        total += len(chunk)
+        if total > limit:
+            raise ValueError("Ответ страницы слишком большой")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _decode_body(response: httpx.Response, body: bytes) -> str:
+    encoding = response.encoding or "utf-8"
+    try:
+        return body.decode(encoding, errors="replace")
+    except LookupError:
+        return body.decode("utf-8", errors="replace")
 
 
 async def fetch_html(
@@ -119,33 +154,40 @@ async def fetch_html(
                 timeout=float(timeout_seconds), headers=headers
             ) as client:
                 resp = await _get_with_safe_redirects(client, url)
-            dur_ms = int((time.monotonic() - start_ts) * 1000)
+                try:
+                    body = await _read_limited_body(resp)
+                finally:
+                    await resp.aclose()
 
-            content_length = resp.headers.get("content-length")
-            if content_length and int(content_length) > MAX_RESPONSE_BYTES:
-                raise ValueError("Ответ страницы слишком большой")
-            if len(resp.content) > MAX_RESPONSE_BYTES:
-                raise ValueError("Ответ страницы слишком большой")
+            dur_ms = int((time.monotonic() - start_ts) * 1000)
+            text = _decode_body(resp, body)
 
             if resp.is_success:
                 logger.info(
-                    f"HTTP fetch ok req_id={req_id} dur_ms={dur_ms} status={resp.status_code}"
+                    f"HTTP fetch ok req_id={req_id} dur_ms={dur_ms} status={resp.status_code} bytes={len(body)}"
                 )
-                return resp.text
+                return text
 
             status = resp.status_code
+            error_msg = f"HTTP {status}: {text[:200]}"
             if not _should_retry_status(status):
-                error_msg = f"HTTP {status}: {resp.text[:200]}"
                 logger.error(
                     f"HTTP fetch fail req_id={req_id} dur_ms={dur_ms} status={status}"
                 )
-                raise httpx.HTTPStatusError(
-                    error_msg, request=resp.request, response=resp
-                )
-            last_error = f"HTTP {status}"
+                last_error = error_msg
+                break
+
+            last_error = error_msg
             logger.warning(
                 f"HTTP fetch transient req_id={req_id} dur_ms={dur_ms} status={status} attempt={attempt}/{attempts}"
             )
+        except ValueError as e:
+            dur_ms = int((time.monotonic() - start_ts) * 1000)
+            last_error = str(e)
+            logger.warning(
+                f"HTTP fetch rejected req_id={req_id} dur_ms={dur_ms} error={str(e)}"
+            )
+            break
         except (httpx.TimeoutException, httpx.TransportError) as e:
             dur_ms = int((time.monotonic() - start_ts) * 1000)
             last_error = f"transport: {str(e)}"
@@ -166,5 +208,5 @@ async def fetch_html(
             with contextlib.suppress(Exception):
                 await asyncio.sleep(delay)
 
-    logger.error(f"HTTP fetch failed after retries req_id={req_id}: {last_error}")
+    logger.error(f"HTTP fetch failed req_id={req_id}: {last_error}")
     raise RuntimeError(last_error or "fetch failed")
