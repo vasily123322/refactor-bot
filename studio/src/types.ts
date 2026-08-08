@@ -83,6 +83,25 @@ export type Publication = {
   legacy_post_task_id: number | null;
 };
 
+export type PlannerEntry = {
+  schedule_id: number;
+  channel_id: number;
+  content_item_id: number;
+  content_revision: number;
+  content_title: string | null;
+  content_kind: string;
+  scheduled_at: string;
+  timezone: string | null;
+  schedule_status: string;
+  repeat_rule: Record<string, unknown>;
+  publication_id: number | null;
+  publication_status: string | null;
+  telegram_message_ids: number[] | null;
+  result_link: string | null;
+  last_error: string | null;
+  legacy_post_task_id: number | null;
+};
+
 export const emptyTextDocument = (): PostDocument => ({
   schema_version: 1,
   mode: 'classic',
