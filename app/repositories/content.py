@@ -174,7 +174,11 @@ class ContentRepo:
             if status is not None:
                 item.status = str(status)
             await self.session.commit()
+            # Both rows can contain server-generated/onupdate values. Refresh them
+            # explicitly so API/service callers never trigger implicit async IO from
+            # plain attribute access (MissingGreenlet under AsyncSession).
             await self.session.refresh(row)
+            await self.session.refresh(item)
             return row
         except Exception:
             await self.session.rollback()
