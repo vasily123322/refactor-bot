@@ -2,6 +2,7 @@ import { AppRoot } from '@telegram-apps/telegram-ui';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
+import { TelegramComposer } from './TelegramComposer';
 import type {
   Channel,
   ContentDetail,
@@ -9,7 +10,7 @@ import type {
   PostDocument,
   StudioUser,
 } from './types';
-import { documentText, emptyTextDocument, withDocumentText } from './types';
+import { documentText, emptyTextDocument } from './types';
 
 function shortDate(value: string | null): string {
   if (!value) return '—';
@@ -58,8 +59,8 @@ function TelegramSimulator({
         </article>
       </div>
       <div className="preview-note">
-        Visual preview. Для проверки реального Telegram renderer используйте кнопку
-        «Посмотреть в Telegram».
+        Visual preview показывает геометрию и текст. Кнопка «В Telegram» проверяет
+        форматирование тем же Bot API renderer, что используется при публикации.
       </div>
     </div>
   );
@@ -254,8 +255,8 @@ export default function App() {
   };
 
   const text = documentText(document);
-  const editText = (value: string) => {
-    setDocument((current) => withDocumentText(current, value));
+  const editDocument = (next: PostDocument) => {
+    setDocument(next);
     setDirty(true);
   };
 
@@ -339,23 +340,9 @@ export default function App() {
                   {dirty ? 'Сохранить версию' : 'Сохранено'}
                 </button>
               </div>
-              <div className="format-toolbar" aria-label="Форматирование">
-                <button disabled><strong>B</strong></button>
-                <button disabled><em>I</em></button>
-                <button disabled>U</button>
-                <button disabled>❞</button>
-                <span className="toolbar-spacer" />
-                <span>Classic Post</span>
-              </div>
-              <textarea
-                className="composer"
-                value={text}
-                onChange={(event) => editText(event.target.value)}
-                placeholder="Напишите пост или вставьте материал…"
-                spellCheck
-              />
+              <TelegramComposer document={document} onChange={editDocument} />
               <footer className="editor-footer">
-                <span>{text.length} символов</span>
+                <span>{text.length} UTF-16 единиц · Telegram limit: 4096 для text</span>
                 <span>{dirty ? '● Есть несохранённые изменения' : '✓ Версия сохранена'}</span>
               </footer>
             </section>
