@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.sources.models import ContentCandidate
@@ -24,7 +24,7 @@ class LocalBatchEnrichmentResult:
 
 
 class LocalBatchEnrichmentService:
-    """Enrich incomplete active Inbox candidates without external AI/token spend."""
+    """Enrich untouched active Inbox candidates without external AI/token spend."""
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -38,11 +38,11 @@ class LocalBatchEnrichmentService:
                     .where(
                         ContentCandidate.channel_id == int(channel_id),
                         ContentCandidate.status == "new",
-                        or_(
-                            ContentCandidate.summary.is_(None),
-                            ContentCandidate.topic.is_(None),
-                            ContentCandidate.score.is_(None),
-                        ),
+                        # Every enrichment provider is required to produce a non-empty
+                        # summary. Using this as the untouched sentinel prevents a local
+                        # batch from replacing an existing AI result merely because its
+                        # optional topic/score is null.
+                        ContentCandidate.summary.is_(None),
                     )
                     .order_by(ContentCandidate.created_at.asc(), ContentCandidate.id.asc())
                     .limit(bounded_limit)
