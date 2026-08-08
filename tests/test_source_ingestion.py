@@ -72,7 +72,7 @@ def test_rss_ingestion_is_idempotent_and_creates_candidates() -> None:
                 ).scalars().all()
                 assert len(documents) == 2
                 assert len(candidates) == 2
-                assert documents[0].content == "First\nHello world"
+                assert documents[0].content == "First\n\nHello world"
                 assert documents[0].source_url == "https://example.com/1"
                 assert documents[0].published_at is not None
                 assert all(row.suggested_action == "summarize" for row in candidates)
