@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.models import AISource, GrabSource
+from app.domain.models import AISource
 from app.domain.sources.models import SourceConnector
 from app.repositories.sources_v2 import SourcesRepo
 
@@ -34,7 +34,7 @@ _ALLOWED_REUSE_POLICIES = frozenset(
 
 
 class SourceLifecycleService:
-    """Update normalized source state and its legacy compatibility projections atomically."""
+    """Update normalized source state and editable legacy AI projection atomically."""
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -50,6 +50,16 @@ class SourceLifecycleService:
         connector = await self.repo.get_connector_for_channel(connector_id, channel_id)
         if connector is None:
             raise SourceLifecycleError("source not found")
+
+        # Legacy GrabSource has no persisted enabled/mode/citation state. Such rows
+        # are mirrored into Sources v2 for observability only; accepting lifecycle
+        # writes here would make Studio claim a change that the legacy grab runtime
+        # cannot persist or honor.
+        if (
+            connector.legacy_grab_source_id is not None
+            and connector.legacy_ai_source_id is None
+        ):
+            raise SourceLifecycleError("legacy grab source is read-only")
 
         if patch.mode is not None and patch.mode not in _ALLOWED_MODES:
             raise SourceLifecycleError("unsupported source mode")
@@ -80,14 +90,6 @@ class SourceLifecycleService:
                 legacy_ai.mode = patch.mode
             if patch.citation_enabled is not None:
                 legacy_ai.citation_enabled = bool(patch.citation_enabled)
-
-        legacy_grab = (
-            await self.session.get(GrabSource, int(connector.legacy_grab_source_id))
-            if connector.legacy_grab_source_id is not None
-            else None
-        )
-        if legacy_grab is not None and patch.enabled is not None:
-            legacy_grab.enabled = bool(patch.enabled)
 
         try:
             await self.session.commit()
