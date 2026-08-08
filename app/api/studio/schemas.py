@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class StudioUserResponse(BaseModel):
+    tg_user_id: int
+    username: str | None
+    full_name: str | None
+
+
+class ChannelResponse(BaseModel):
+    id: int
+    tg_chat_id: int
+    title: str | None
+    is_active: bool
+
+
+class ContentCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document: dict[str, Any]
+    title: str | None = Field(default=None, max_length=255)
+    kind: Literal["post", "story", "digest"] = "post"
+
+
+class ContentRevisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document: dict[str, Any]
+    source: str = Field(default="studio", min_length=1, max_length=32)
+    status: Literal["draft", "ready", "approved", "archived"] | None = None
+
+
+class ContentSummaryResponse(BaseModel):
+    id: int
+    channel_id: int
+    kind: str
+    status: str
+    title: str | None
+    current_revision: int
+    updated_at: datetime | None
+
+
+class ContentDetailResponse(ContentSummaryResponse):
+    document: dict[str, Any]
+
+
+class PreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document: dict[str, Any]
+
+
+class PreviewResponse(BaseModel):
+    mode: str
+    primary_text: str
+    legacy_payload: dict[str, Any] | None
+    publishable_via_legacy: bool
+    reason: str | None = None
+
+
+class ScheduleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scheduled_at: datetime | None = None
+    content_revision: int | None = Field(default=None, ge=1)
+    timezone: str | None = Field(default=None, max_length=64)
+    repeat_seconds: int | None = Field(default=None, ge=60, le=31_536_000)
+    runtime_options: dict[str, Any] = Field(default_factory=dict)
+
+
+class PublicationResponse(BaseModel):
+    id: int
+    content_item_id: int
+    content_revision: int
+    channel_id: int
+    status: str
+    schedule_entry_id: int | None
+    legacy_post_task_id: int | None
