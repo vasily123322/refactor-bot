@@ -9,7 +9,7 @@ from app.repositories.sources_v2 import SourcesRepo
 from app.services.candidate_enrichment_batch import LocalBatchEnrichmentService
 
 
-def test_local_batch_enriches_only_active_incomplete_candidates() -> None:
+def test_local_batch_enriches_only_active_untouched_candidates() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         try:
@@ -69,6 +69,51 @@ def test_local_batch_enriches_only_active_incomplete_candidates() -> None:
                 )
                 assert second.selected == 0
                 assert second.completed == 0
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_local_batch_never_overwrites_existing_summary_when_optional_score_is_null() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                repo = SourcesRepo(session)
+                connector = await repo.create_connector(
+                    channel_id=303,
+                    kind="rss",
+                    value="https://example.com/303.xml",
+                )
+                document, _ = await repo.upsert_document(
+                    connector=connector,
+                    external_id="pre-enriched",
+                    title="Existing AI topic",
+                    content="Original body that local enrichment must not replace.",
+                )
+                candidate = await repo.ensure_candidate(
+                    source_document_id=document.id,
+                    channel_id=303,
+                    suggested_action="summarize",
+                )
+                candidate.summary = "Existing AI summary"
+                candidate.topic = "Existing AI topic"
+                candidate.score = None
+                await session.commit()
+
+                result = await LocalBatchEnrichmentService(session).run(
+                    channel_id=303,
+                    limit=100,
+                )
+                assert result.selected == 0
+                await session.refresh(candidate)
+                assert candidate.summary == "Existing AI summary"
+                assert candidate.topic == "Existing AI topic"
+                assert candidate.score is None
         finally:
             await engine.dispose()
 
