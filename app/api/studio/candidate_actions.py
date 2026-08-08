@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.studio.auth import StudioPrincipal, require_studio_principal
@@ -21,6 +21,7 @@ from app.services.candidate_enrichment import (
     LocalCandidateEnricher,
 )
 from app.services.candidate_enrichment_ai import ChannelAIEnrichmentProviderFactory
+from app.services.candidate_enrichment_batch import LocalBatchEnrichmentService
 
 
 router = APIRouter(prefix="/api/studio", tags=["inbox"])
@@ -38,6 +39,18 @@ class CandidateEnrichmentResponse(BaseModel):
     model: str | None
     reused_existing: bool
     output: dict[str, Any]
+
+
+class LocalBatchEnrichmentRequest(BaseModel):
+    limit: int = Field(default=25, ge=1, le=100)
+
+
+class LocalBatchEnrichmentResponse(BaseModel):
+    selected: int
+    completed: int
+    reused: int
+    skipped_busy: int
+    failed: int
 
 
 async def _session_dependency() -> AsyncIterator[AsyncSession]:
@@ -118,6 +131,30 @@ async def create_candidate_draft(
         current_revision=int(item.current_revision or 0),
         updated_at=item.updated_at,
         document=result.document.to_dict(),
+    )
+
+
+@router.post(
+    "/channels/{channel_id}/candidates/enrich/local-batch",
+    response_model=LocalBatchEnrichmentResponse,
+)
+async def enrich_candidates_local_batch(
+    channel_id: int,
+    request: LocalBatchEnrichmentRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> LocalBatchEnrichmentResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    result = await LocalBatchEnrichmentService(session).run(
+        channel_id=channel_id,
+        limit=request.limit,
+    )
+    return LocalBatchEnrichmentResponse(
+        selected=result.selected,
+        completed=result.completed,
+        reused=result.reused,
+        skipped_busy=result.skipped_busy,
+        failed=result.failed,
     )
 
 
