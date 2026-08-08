@@ -1,6 +1,6 @@
 aiogram~=3.30.0
-pyrogram>=2.0.106
-TgCrypto>=1.2.5
+Telethon~=1.44.0
+python-socks[asyncio]>=2.5,<3
 loguru>=0.7.2
 redis>=5.0,<9
 pydantic>=2.6

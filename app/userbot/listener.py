@@ -1,5 +1,4 @@
 from loguru import logger
-from pyrogram import filters
 from app.userbot.client import app
 from app.core.db import AsyncSessionLocal
 from app.repositories.ai_settings import AISourcesRepo
@@ -13,7 +12,7 @@ import hashlib
 logger.info("listener: module loaded")
 
 
-@app.on_message(filters.command(["ping"]))
+@app.on_command(["ping"])
 async def _ping_handler(_, message):
     try:
         await message.reply_text("pong")
@@ -21,7 +20,7 @@ async def _ping_handler(_, message):
         logger.warning(f"userbot listener ping error: {e}")
 
 
-@app.on_message(filters.channel)
+@app.on_channel_post()
 async def _on_channel_post(client, message):
     """Реагируем на новые посты в каналах и прокидываем их в целевые каналы
     согласно таблице ai_sources (тип telegram).

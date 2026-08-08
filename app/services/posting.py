@@ -18,17 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.repositories.posts import PostsRepo
 import os
 import asyncio
-from app.userbot.client import app as userbot
 import re as _re
-
-try:
-    from pyrogram.types import (
-        InlineKeyboardMarkup as PInlineKeyboardMarkup,
-        InlineKeyboardButton as PInlineKeyboardButton,
-    )
-except Exception:
-    PInlineKeyboardMarkup = None
-    PInlineKeyboardButton = None
 
 
 class PostingService:
@@ -213,25 +203,6 @@ class PostingService:
                 )
             rows.append(row_btns)
         return InlineKeyboardMarkup(inline_keyboard=rows)
-
-    def _build_userbot_reply_markup(self, payload: dict):
-        """Build Pyrogram InlineKeyboardMarkup from payload buttons if available."""
-        if PInlineKeyboardMarkup is None or PInlineKeyboardButton is None:
-            return None
-        buttons = payload.get("buttons")
-        if not buttons:
-            return None
-        rows = []
-        for row in buttons:
-            row_btns = []
-            for btn in row:
-                row_btns.append(
-                    PInlineKeyboardButton(
-                        text=btn.get("text", "Button"), url=btn.get("url")
-                    )
-                )
-            rows.append(row_btns)
-        return PInlineKeyboardMarkup(rows)
 
     async def _ensure_local_file(
         self, file_id: str, suggested_ext: str = "mp4"
@@ -474,46 +445,7 @@ class PostingService:
             # Two modes: pair mode (video_note + text message) OR convert to video
             file_id = payload.get("file_id")
             pair_mode = payload.get("vn_pair", True)
-            use_userbot = payload.get(
-                "use_userbot", True
-            )  # по умолчанию пробуем через userbot
-            if pair_mode and use_userbot and userbot is not None:
-                try:
-                    logger.info(
-                        "dispatch: video_note via userbot pair -> download and send"
-                    )
-                    # Download video_note locally and send through userbot
-                    local_path = (
-                        await self._ensure_local_file(file_id, suggested_ext="mp4")
-                        if file_id
-                        else None
-                    )
-                    if local_path is None:
-                        raise RuntimeError(
-                            "userbot pair: failed to prepare local video_note file"
-                        )
-                    m1 = await userbot.send_video_note(
-                        chat_id=channel_id,
-                        video_note=local_path,
-                        disable_notification=silent,
-                    )
-                    text = payload.get("caption") or ""
-                    if text or payload.get("buttons"):
-                        p_markup = self._build_userbot_reply_markup(payload)
-                        await userbot.send_message(
-                            chat_id=channel_id,
-                            text=text,
-                            reply_markup=p_markup,
-                            disable_web_page_preview=True,
-                            parse_mode="markdown",
-                            disable_notification=silent,
-                        )
-                    return [m1.id] if hasattr(m1, "id") else []
-                except Exception as e:
-                    logger.warning(
-                        f"dispatch: userbot pair failed, fallback to bot: {e}"
-                    )
-            # Fallbacks: aiogram pair mode or conversion
+            # Publication uses the supported Bot API transport. MTProto is reserved for source-reading features.
             if pair_mode:
                 logger.info(
                     "dispatch: video_note pair mode -> send video_note + message via bot"
