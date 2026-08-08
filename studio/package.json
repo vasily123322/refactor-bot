@@ -1,0 +1,27 @@
+{
+  "name": "refactor-bot-telegram-studio",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@telegram-apps/telegram-ui": "2.1.13",
+    "@tma.js/sdk-react": "3.0.23",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.24",
+    "@types/react-dom": "18.3.7",
+    "@vitejs/plugin-react-swc": "4.3.2",
+    "typescript": "5.9.2",
+    "vite": "8.0.16"
+  }
+}
