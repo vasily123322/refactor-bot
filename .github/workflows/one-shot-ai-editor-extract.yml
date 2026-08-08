@@ -61,6 +61,7 @@ jobs:
           )
           init_path.write_text(init_text)
           PY
+          ruff check app tests scripts --fix
           ruff check app tests scripts
           python -m compileall -q app tests scripts
           git rm .github/workflows/one-shot-ai-editor-extract.yml
