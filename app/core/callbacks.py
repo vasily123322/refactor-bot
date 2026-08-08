@@ -7,6 +7,9 @@ class CB(str, Enum):
     GM_MY_CHANNELS = "gm_my_channels"
     GM_MY_DATABASE = "gm_my_database"
     GM_CREATE_POST = "gm_create_post"
+    GM_DRAFT = "gm_draft"
+    GM_EDIT_POST = "gm_edit_post"
+    GM_SETTINGS = "gm_settings"
     GM_TIME_POST = "gm_time_post_world"
     GM_GLOBAL_MENU = "gm_global_menu"
 
