@@ -1,5 +1,6 @@
 from aiogram import Router
 from .main import router as main_commands
+from .ai_editor import router as ai_editor_commands
 from .start import router as start_commands
 from .commands import router as command_shortcuts
 from .navigation import router as navigation_commands
@@ -30,5 +31,6 @@ main_router.include_router(admin_commands)
 main_router.include_router(tz_commands)
 main_router.include_router(sources_commands)
 main_router.include_router(moderation_commands)
+main_router.include_router(ai_editor_commands)
 main_router.include_router(ai_result_actions_commands)
 main_router.include_router(main_commands)
