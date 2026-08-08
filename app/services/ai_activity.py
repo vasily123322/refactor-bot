@@ -52,6 +52,15 @@ def _counts(rows) -> dict[str, int]:
     return {str(status): int(count) for status, count in rows}
 
 
+def _run_sort_key(run: AIActivityRun) -> tuple[float, int]:
+    moment = run.created_at or run.started_at
+    try:
+        timestamp = float(moment.timestamp()) if moment is not None else 0.0
+    except (OverflowError, OSError, ValueError):
+        timestamp = 0.0
+    return timestamp, run.id
+
+
 class AIActivityService:
     """Read-only channel AI usage and durable run provenance.
 
@@ -177,13 +186,7 @@ class AIActivityService:
             )
             for row in rewrite_rows
         )
-        runs.sort(
-            key=lambda row: (
-                row.created_at or row.started_at or datetime.min,
-                row.id,
-            ),
-            reverse=True,
-        )
+        runs.sort(key=_run_sort_key, reverse=True)
         return AIActivitySnapshot(
             usage=usage,
             enrichment_counts=enrichment_counts,
