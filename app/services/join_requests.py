@@ -18,6 +18,16 @@ class JoinRequestsService:
         self.bot = bot
         self.session = session
 
+    @staticmethod
+    def _build_challenge_payload(require_mode: int) -> dict | None:
+        if int(require_mode) != 2:
+            return None
+        import random
+
+        a = random.randint(2, 9)
+        b = random.randint(2, 9)
+        return {"a": a, "b": b, "answer": str(a + b)}
+
     async def _write_modlog(
         self, channel_id: int, action: str, user_id: int, meta: dict | None = None
     ) -> None:
@@ -163,7 +173,7 @@ class JoinRequestsService:
                         if require_mode == 2
                         else ("keyword" if require_mode == 3 else "simple")
                     ),
-                    challenge_payload=None,
+                    challenge_payload=self._build_challenge_payload(require_mode),
                     expires_at=(datetime.now(timezone.utc) + timedelta(minutes=15)),
                     attempts_left=3,
                     invite_link=invite,
