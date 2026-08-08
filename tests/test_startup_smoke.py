@@ -87,7 +87,9 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
         dispatcher, "init_db_if_needed_sync", lambda: events.append("db-sync")
     )
     monkeypatch.setattr(dispatcher, "cancel_bg_tasks", _cancel_bg_tasks)
-    monkeypatch.setattr(dispatcher.settings, "get_ai_models_config", lambda: {})
+    monkeypatch.setattr(
+        type(dispatcher.settings), "get_ai_models_config", lambda self: {}
+    )
 
     asyncio.run(dispatcher.run_bot())
 
