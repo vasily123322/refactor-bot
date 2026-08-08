@@ -45,6 +45,8 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Scan tracked files for secrets
         run: python scripts/secret_scan.py
+      - name: Ruff correctness gate
+        run: ruff check app tests scripts
       - name: Compile Python sources
         run: python -m compileall -q app tests scripts
       - name: Run full test suite

@@ -1,9 +1,7 @@
 """Tests for AI auto-tasks: worker logic, UI helpers, repository."""
 
-import pytest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services.llm.auto_tasks_ui import (
     build_auto_tasks_menu_text,

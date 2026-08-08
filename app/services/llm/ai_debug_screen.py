@@ -83,8 +83,6 @@ def build_ai_debug_screen(ai_settings: Any, *, channel_name: str = "") -> str:
     elif not memory_lines:
         memory_lines.append("Память не заполнена")
 
-    memory_text = "\n".join(memory_lines)
-
     # --- Other settings ---
     other_lines: list[str] = []
     if getattr(ai_settings, "temperature", None) is not None:
@@ -97,41 +95,41 @@ def build_ai_debug_screen(ai_settings: Any, *, channel_name: str = "") -> str:
     other_text = "\n".join(other_lines) if other_lines else "—"
 
     # --- Compose ---
-    header = f"🧠 Что влияет на генерацию"
+    header = "🧠 Что влияет на генерацию"
     if channel_name:
         header += f" ({channel_name})"
 
     parts = [
         f"**{header}**\n",
-        f"━━━━━━━━━━━━━━━━━━━━━",
-        f"",
-        f"💡 **Промпт**",
+        "━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "💡 **Промпт**",
         f"  {prompt_label}",
-        f"",
-        f"🤖 **Модель**",
+        "",
+        "🤖 **Модель**",
         f"  • Профиль: {model_title}",
     ]
     if model_desc:
         parts.append(f"  • {model_desc}")
 
     parts += [
-        f"",
-        f"📋 **Профиль публикации**",
+        "",
+        "📋 **Профиль публикации**",
         f"  • {pub_title}",
     ]
     if pub_desc:
         parts.append(f"  • {pub_desc}")
 
     parts += [
-        f"",
-        f"🧩 **Память канала**",
+        "",
+        "🧩 **Память канала**",
     ]
     for line in memory_lines:
         parts.append(f"  • {line}" if not line.startswith("  ") else line)
 
     parts += [
-        f"",
-        f"⚙️ **Дополнительно**",
+        "",
+        "⚙️ **Дополнительно**",
         f"  {other_text}",
     ]
 
