@@ -1,9 +1,11 @@
 import asyncio
 
+import httpx
 import pytest
 
+from app.core.channel_access import _channel_id_from_callback
 from app.repositories.conversations import scoped_prompt_key
-from app.services.http.fetcher import validate_public_http_url
+from app.services.http.fetcher import _read_limited_body, validate_public_http_url
 
 
 def test_scoped_prompt_key_separates_channels() -> None:
@@ -22,6 +24,24 @@ def test_scoped_prompt_key_respects_database_limit() -> None:
 
 
 @pytest.mark.parametrize(
+    ("callback_data", "expected_channel_id"),
+    [
+        ("ai_toggle_moderation_12", 12),
+        ("ai_forbidden_clear_12", 12),
+        ("ai_hashtags_count_12", 12),
+        ("ai_set_hashtags_count_12_7", 12),
+        ("neu_tags_12", 12),
+        ("settings_neuropost_12", 12),
+        ("unrelated_12", None),
+    ],
+)
+def test_channel_callback_parser(
+    callback_data: str, expected_channel_id: int | None
+) -> None:
+    assert _channel_id_from_callback(callback_data) == expected_channel_id
+
+
+@pytest.mark.parametrize(
     "url",
     [
         "http://127.0.0.1/admin",
@@ -34,3 +54,9 @@ def test_scoped_prompt_key_respects_database_limit() -> None:
 def test_ssrf_validator_rejects_local_and_non_http_urls(url: str) -> None:
     with pytest.raises(ValueError):
         asyncio.run(validate_public_http_url(url))
+
+
+def test_streaming_body_limit_rejects_oversized_response() -> None:
+    response = httpx.Response(200, content=b"x" * 16)
+    with pytest.raises(ValueError, match="слишком большой"):
+        asyncio.run(_read_limited_body(response, limit=8))
