@@ -62,6 +62,20 @@ export type CreateSourceInput = {
     | 'mirror_authorized';
 };
 
+export type CandidateEnrichmentResult = {
+  candidate_id: number;
+  candidate_status: string;
+  summary: string | null;
+  topic: string | null;
+  score: number | null;
+  run_id: number;
+  run_status: string;
+  provider: string;
+  model: string | null;
+  reused_existing: boolean;
+  output: Record<string, unknown>;
+};
+
 export const studioApi = {
   me: () => request<StudioUser>('/api/studio/me'),
   channels: () => request<Channel[]>('/api/studio/channels'),
@@ -153,6 +167,16 @@ export const studioApi = {
   candidateDraft: (channelId: number, candidateId: number) =>
     request<ContentDetail>(
       `/api/studio/channels/${channelId}/candidates/${candidateId}/draft`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  enrichCandidateLocal: (channelId: number, candidateId: number) =>
+    request<CandidateEnrichmentResult>(
+      `/api/studio/channels/${channelId}/candidates/${candidateId}/enrich/local`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  enrichCandidateAI: (channelId: number, candidateId: number) =>
+    request<CandidateEnrichmentResult>(
+      `/api/studio/channels/${channelId}/candidates/${candidateId}/enrich/ai`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
 };
