@@ -1,0 +1,9 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+# Explicit selection is intentional. Ruff 0.16 enables a much larger default
+# ruleset; the first repository-wide gate focuses on Python correctness and
+# import/syntax hazards without turning this PR into a style rewrite.
+select = ["E4", "E7", "E9", "F"]
