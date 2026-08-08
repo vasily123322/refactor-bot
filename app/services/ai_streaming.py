@@ -18,6 +18,11 @@ def _error_result(message: str) -> ChatResult:
     }
 
 
+def _float_setting(settings: dict[str, Any], key: str, default: float) -> float:
+    value = settings.get(key)
+    return float(default if value is None else value)
+
+
 class InteractiveAIStreamingService:
     """Interactive streaming orchestration for Telegram editor actions.
 
@@ -125,8 +130,8 @@ class InteractiveAIStreamingService:
         async for event in self.generation.llm.stream_chat(
             messages=messages,  # type: ignore[arg-type]
             model=model,
-            temperature=float(ai_settings.get("temperature") or 0.7),
-            top_p=float(ai_settings.get("top_p") or 1.0),
+            temperature=_float_setting(ai_settings, "temperature", 0.7),
+            top_p=_float_setting(ai_settings, "top_p", 1.0),
             max_tokens=max_tokens,
             base_url=str(base_url),
             api_key=str(api_key),
