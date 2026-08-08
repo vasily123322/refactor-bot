@@ -1,0 +1,83 @@
+name: One-shot Telethon migration edits
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.ref == 'agent/userbot-hydrogram'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Apply exact migration edits
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # Listener decorators: keep business logic unchanged, replace only
+          # Pyrogram-specific registration surface.
+          path = Path('app/userbot/listener.py')
+          text = path.read_text()
+          assert text.count('from pyrogram import filters\n') == 1
+          text = text.replace('from pyrogram import filters\n', '', 1)
+          assert text.count('@app.on_message(filters.command(["ping"]))') == 1
+          text = text.replace('@app.on_message(filters.command(["ping"]))', '@app.on_command(["ping"])', 1)
+          assert text.count('@app.on_message(filters.channel)') == 1
+          text = text.replace('@app.on_message(filters.channel)', '@app.on_channel_post()', 1)
+          path.write_text(text)
+
+          # Posting must use Bot API only. MTProto is a source-reading concern.
+          path = Path('app/services/posting.py')
+          text = path.read_text()
+          assert text.count('from app.userbot.client import app as userbot\n') == 1
+          text = text.replace('from app.userbot.client import app as userbot\n', '', 1)
+
+          block_start = text.index('try:\n    from pyrogram.types import (')
+          block_end = text.index('\n\n\nclass PostingService:', block_start)
+          text = text[:block_start] + text[block_end + 2:]
+
+          method_start = text.index('    def _build_userbot_reply_markup(self, payload: dict):')
+          method_end = text.index('    async def _ensure_local_file(', method_start)
+          text = text[:method_start] + text[method_end:]
+
+          branch_start = text.index('            use_userbot = payload.get(', text.index('elif type_ == "video_note":'))
+          branch_end_marker = '            # Fallbacks: aiogram pair mode or conversion\n'
+          branch_end = text.index(branch_end_marker, branch_start) + len(branch_end_marker)
+          replacement = (
+              '            # Publication uses the supported Bot API transport. '\
+              'MTProto is reserved for source-reading features.\n'
+          )
+          text = text[:branch_start] + replacement + text[branch_end:]
+          path.write_text(text)
+
+          # Runtime dependencies.
+          path = Path('requirements.txt')
+          text = path.read_text()
+          assert 'pyrogram>=2.0.106\n' in text
+          assert 'TgCrypto>=1.2.5\n' in text
+          text = text.replace('pyrogram>=2.0.106\nTgCrypto>=1.2.5\n', 'Telethon~=1.44.0\npython-socks[asyncio]>=2.5,<3\n', 1)
+          path.write_text(text)
+
+          path = Path('.env.example')
+          text = path.read_text()
+          text = text.replace('Telegram userbot / Pyrogram', 'Telegram userbot / Telethon')
+          text = text.replace('Pyrogram will use HTTP CONNECT.', 'Telethon/python-socks will use HTTP CONNECT.')
+          path.write_text(text)
+          PY
+          git rm .github/workflows/one-shot-userbot-audit.yml
+          git rm .github/workflows/one-shot-telethon-migration.yml
+      - name: Commit exact changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'modernize userbot transport to Telethon'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
