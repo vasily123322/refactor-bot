@@ -1,4 +1,5 @@
-import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import type { FormEvent } from 'react';
 
 import { StudioApiError, studioApi, type CreateSourceInput } from './api';
 import type { Channel, ContentCandidateView, SourceConnectorView } from './types';
@@ -208,7 +209,8 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
           <div className="source-list">
             {sources.length === 0 && <div className="empty-state">Источников пока нет.</div>}
             {sources.map((source) => {
-              const httpIngest = ['rss', 'url', 'web'].includes(source.kind);
+              const canIngest = ['rss', 'url', 'web', 'telegram'].includes(source.kind);
+              const ingestLabel = source.kind === 'telegram' ? 'MTProto ingest' : 'Ingest now';
               return (
                 <article key={source.id} className="source-card">
                   <div className="source-card-head">
@@ -236,11 +238,11 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
                     </button>
                     <button
                       className="button secondary compact"
-                      disabled={busyId !== null || !httpIngest}
-                      title={httpIngest ? 'Получить новые документы сейчас' : 'Telegram ingestion будет через MTProto adapter'}
+                      disabled={busyId !== null || !canIngest}
+                      title={source.kind === 'telegram' ? 'Получить историю через userbot MTProto session' : 'Получить новые документы сейчас'}
                       onClick={() => void ingest(source)}
                     >
-                      {httpIngest ? (busyId === `ingest:${source.id}` ? 'Читаю…' : 'Ingest now') : 'MTProto'}
+                      {busyId === `ingest:${source.id}` ? 'Читаю…' : ingestLabel}
                     </button>
                   </div>
                 </article>
