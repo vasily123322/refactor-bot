@@ -2,6 +2,7 @@ import { AppRoot } from '@telegram-apps/telegram-ui';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
+import { PlannerPanel } from './PlannerPanel';
 import { TelegramComposer } from './TelegramComposer';
 import type {
   Channel,
@@ -11,6 +12,8 @@ import type {
   StudioUser,
 } from './types';
 import { documentText, emptyTextDocument } from './types';
+
+type StudioView = 'content' | 'planner';
 
 function shortDate(value: string | null): string {
   if (!value) return '—';
@@ -70,12 +73,16 @@ function Sidebar({
   user,
   channels,
   selectedChannelId,
+  activeView,
   onSelectChannel,
+  onView,
 }: {
   user: StudioUser | null;
   channels: Channel[];
   selectedChannelId: number | null;
+  activeView: StudioView;
   onSelectChannel: (id: number) => void;
+  onView: (view: StudioView) => void;
 }) {
   return (
     <aside className="sidebar">
@@ -88,8 +95,18 @@ function Sidebar({
       </div>
 
       <nav className="primary-nav" aria-label="Навигация Studio">
-        <button className="nav-item nav-item-active">✍️ Контент</button>
-        <button className="nav-item" disabled title="Следующий этап">📅 Планер</button>
+        <button
+          className={activeView === 'content' ? 'nav-item nav-item-active' : 'nav-item'}
+          onClick={() => onView('content')}
+        >
+          ✍️ Контент
+        </button>
+        <button
+          className={activeView === 'planner' ? 'nav-item nav-item-active' : 'nav-item'}
+          onClick={() => onView('planner')}
+        >
+          📅 Планер
+        </button>
         <button className="nav-item" disabled title="Следующий этап">📥 Входящие</button>
         <button className="nav-item" disabled title="Следующий этап">🔎 Источники</button>
         <button className="nav-item" disabled title="Следующий этап">✨ AI Studio</button>
@@ -120,6 +137,7 @@ function Sidebar({
 }
 
 export default function App() {
+  const [view, setView] = useState<StudioView>('content');
   const [user, setUser] = useState<StudioUser | null>(null);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState<number | null>(null);
@@ -166,12 +184,13 @@ export default function App() {
     void loadItems(selectedChannelId).catch((reason) => setError(errorMessage(reason)));
   }, [loadItems, selectedChannelId]);
 
-  const openItem = async (item: ContentSummary) => {
+  const openContentById = async (contentId: number) => {
     if (selectedChannelId === null) return;
+    setView('content');
     setBusy(true);
     setError(null);
     try {
-      const detail = await studioApi.contentItem(selectedChannelId, item.id);
+      const detail = await studioApi.contentItem(selectedChannelId, contentId);
       setSelected(detail);
       setDocument(detail.document);
       setDirty(false);
@@ -182,6 +201,8 @@ export default function App() {
       setBusy(false);
     }
   };
+
+  const openItem = async (item: ContentSummary) => openContentById(item.id);
 
   const createDraft = async () => {
     if (selectedChannelId === null) return;
@@ -267,97 +288,105 @@ export default function App() {
           user={user}
           channels={channels}
           selectedChannelId={selectedChannelId}
+          activeView={view}
           onSelectChannel={setSelectedChannelId}
+          onView={setView}
         />
 
-        <main className="workspace">
-          <header className="topbar">
-            <div>
-              <small className="eyebrow">{channel?.title || 'Telegram Studio'}</small>
-              <h1>{selected ? selected.title || `Пост #${selected.id}` : 'Контент'}</h1>
-            </div>
-            <div className="top-actions">
-              <button className="button secondary" onClick={createDraft} disabled={busy || !channel}>
-                + Новый пост
-              </button>
-              <button className="button secondary" onClick={exactPreview} disabled={busy}>
-                👁 В Telegram
-              </button>
-              <button className="button primary" onClick={publishNow} disabled={busy || !selected}>
-                Опубликовать
-              </button>
-            </div>
-          </header>
-
-          {error && (
-            <div className="banner error" role="alert">
-              {error}
-              <button onClick={() => setError(null)}>×</button>
-            </div>
-          )}
-          {notice && (
-            <div className="banner success">
-              {notice}
-              <button onClick={() => setNotice(null)}>×</button>
-            </div>
-          )}
-
-          <div className="studio-grid">
-            <section className="content-panel">
-              <div className="panel-heading">
-                <div>
-                  <h2>Публикации</h2>
-                  <small>{items.length} объектов в Content domain</small>
-                </div>
+        {view === 'planner' ? (
+          <main className="workspace planner-page">
+            <PlannerPanel channel={channel} onOpenContent={(id) => void openContentById(id)} />
+          </main>
+        ) : (
+          <main className="workspace">
+            <header className="topbar">
+              <div>
+                <small className="eyebrow">{channel?.title || 'Telegram Studio'}</small>
+                <h1>{selected ? selected.title || `Пост #${selected.id}` : 'Контент'}</h1>
               </div>
-              <div className="content-list">
-                {items.length === 0 && <div className="empty-state">Создайте первый пост.</div>}
-                {items.map((item) => (
-                  <button
-                    key={item.id}
-                    className={selected?.id === item.id ? 'content-row selected' : 'content-row'}
-                    onClick={() => void openItem(item)}
-                  >
-                    <span>
-                      <strong>{item.title || `Пост #${item.id}`}</strong>
-                      <small>{shortDate(item.updated_at)} · v{item.current_revision}</small>
-                    </span>
-                    <span className={`status status-${item.status}`}>{item.status}</span>
-                  </button>
-                ))}
-              </div>
-            </section>
-
-            <section className="editor-panel">
-              <div className="panel-heading editor-heading">
-                <div>
-                  <h2>Composer</h2>
-                  <small>
-                    {selected ? `Content #${selected.id} · revision ${selected.current_revision}` : 'Новый документ'}
-                  </small>
-                </div>
-                <button className="button primary compact" onClick={save} disabled={busy || !selected || !dirty}>
-                  {dirty ? 'Сохранить версию' : 'Сохранено'}
+              <div className="top-actions">
+                <button className="button secondary" onClick={createDraft} disabled={busy || !channel}>
+                  + Новый пост
+                </button>
+                <button className="button secondary" onClick={exactPreview} disabled={busy}>
+                  👁 В Telegram
+                </button>
+                <button className="button primary" onClick={publishNow} disabled={busy || !selected}>
+                  Опубликовать
                 </button>
               </div>
-              <TelegramComposer document={document} onChange={editDocument} />
-              <footer className="editor-footer">
-                <span>{text.length} UTF-16 единиц · Telegram limit: 4096 для text</span>
-                <span>{dirty ? '● Есть несохранённые изменения' : '✓ Версия сохранена'}</span>
-              </footer>
-            </section>
+            </header>
 
-            <section className="preview-panel">
-              <div className="panel-heading">
-                <div>
-                  <h2>Telegram Preview</h2>
-                  <small>Visual + exact Bot API</small>
-                </div>
+            {error && (
+              <div className="banner error" role="alert">
+                {error}
+                <button onClick={() => setError(null)}>×</button>
               </div>
-              <TelegramSimulator document={document} channel={channel} />
-            </section>
-          </div>
-        </main>
+            )}
+            {notice && (
+              <div className="banner success">
+                {notice}
+                <button onClick={() => setNotice(null)}>×</button>
+              </div>
+            )}
+
+            <div className="studio-grid">
+              <section className="content-panel">
+                <div className="panel-heading">
+                  <div>
+                    <h2>Публикации</h2>
+                    <small>{items.length} объектов в Content domain</small>
+                  </div>
+                </div>
+                <div className="content-list">
+                  {items.length === 0 && <div className="empty-state">Создайте первый пост.</div>}
+                  {items.map((item) => (
+                    <button
+                      key={item.id}
+                      className={selected?.id === item.id ? 'content-row selected' : 'content-row'}
+                      onClick={() => void openItem(item)}
+                    >
+                      <span>
+                        <strong>{item.title || `Пост #${item.id}`}</strong>
+                        <small>{shortDate(item.updated_at)} · v{item.current_revision}</small>
+                      </span>
+                      <span className={`status status-${item.status}`}>{item.status}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section className="editor-panel">
+                <div className="panel-heading editor-heading">
+                  <div>
+                    <h2>Composer</h2>
+                    <small>
+                      {selected ? `Content #${selected.id} · revision ${selected.current_revision}` : 'Новый документ'}
+                    </small>
+                  </div>
+                  <button className="button primary compact" onClick={save} disabled={busy || !selected || !dirty}>
+                    {dirty ? 'Сохранить версию' : 'Сохранено'}
+                  </button>
+                </div>
+                <TelegramComposer document={document} onChange={editDocument} />
+                <footer className="editor-footer">
+                  <span>{text.length} UTF-16 единиц · Telegram limit: 4096 для text</span>
+                  <span>{dirty ? '● Есть несохранённые изменения' : '✓ Версия сохранена'}</span>
+                </footer>
+              </section>
+
+              <section className="preview-panel">
+                <div className="panel-heading">
+                  <div>
+                    <h2>Telegram Preview</h2>
+                    <small>Visual + exact Bot API</small>
+                  </div>
+                </div>
+                <TelegramSimulator document={document} channel={channel} />
+              </section>
+            </div>
+          </main>
+        )}
       </div>
       {busy && <div className="busy-indicator" aria-label="Выполняется операция" />}
     </AppRoot>
