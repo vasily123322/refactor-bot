@@ -92,3 +92,29 @@ class PublicationResponse(BaseModel):
     status: str
     schedule_entry_id: int | None
     legacy_post_task_id: int | None
+
+
+class PlannerEntryResponse(BaseModel):
+    schedule_id: int
+    channel_id: int
+    content_item_id: int
+    content_revision: int
+    content_title: str | None
+    content_kind: str
+    scheduled_at: datetime
+    timezone: str | None
+    schedule_status: str
+    repeat_rule: dict[str, Any]
+    publication_id: int | None
+    publication_status: str | None
+    telegram_message_ids: list[int] | None
+    result_link: str | None
+    last_error: str | None
+    legacy_post_task_id: int | None
+
+
+class PlannerRescheduleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scheduled_at: datetime
+    timezone: str | None = Field(default=None, max_length=64)

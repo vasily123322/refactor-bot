@@ -3,6 +3,7 @@ import type {
   Channel,
   ContentDetail,
   ContentSummary,
+  PlannerEntry,
   PostDocument,
   Publication,
   StudioUser,
@@ -76,6 +77,35 @@ export const studioApi = {
   publishNow: (channelId: number, contentId: number) =>
     request<Publication>(
       `/api/studio/channels/${channelId}/content/${contentId}/schedule`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  planner: (channelId: number, start: Date, end: Date) => {
+    const query = new URLSearchParams({
+      start: start.toISOString(),
+      end: end.toISOString(),
+      limit: '500',
+    });
+    return request<PlannerEntry[]>(`/api/studio/channels/${channelId}/planner?${query}`);
+  },
+  reschedule: (
+    channelId: number,
+    scheduleId: number,
+    scheduledAt: Date,
+    timezone?: string,
+  ) =>
+    request<PlannerEntry>(
+      `/api/studio/channels/${channelId}/planner/${scheduleId}/reschedule`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          scheduled_at: scheduledAt.toISOString(),
+          timezone: timezone || null,
+        }),
+      },
+    ),
+  cancelSchedule: (channelId: number, scheduleId: number) =>
+    request<PlannerEntry>(
+      `/api/studio/channels/${channelId}/planner/${scheduleId}/cancel`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
 };
