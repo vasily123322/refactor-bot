@@ -3,10 +3,10 @@ import contextlib
 from typing import Dict
 from loguru import logger
 from aiogram import Dispatcher, Bot
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from app.core.db import AsyncSessionLocal
+from app.core.fsm_storage import build_fsm_storage
 from app.repositories.external_bots import ExternalBotsRepo
 from app.bot.routers.join_requests_ext import build_router_for_external_bot
 
@@ -32,7 +32,7 @@ class ExternalBotsManager:
         if ext_id in self._tasks:
             return
         bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-        dp = Dispatcher(storage=MemoryStorage())
+        dp = Dispatcher(storage=build_fsm_storage())
         dp.include_router(build_router_for_external_bot(ext_id))
         task = asyncio.create_task(self._poll(dp, bot, ext_id))
         self._bots[ext_id] = bot
