@@ -10,5 +10,6 @@ from app.domain.content import models as _content_models  # noqa: F401
 from app.domain.publishing import models as _publishing_models  # noqa: F401
 from app.domain.sources import enrichment as _source_enrichment_models  # noqa: F401
 from app.domain.sources import models as _sources_models  # noqa: F401
+from app.domain.sources import rewrite as _source_rewrite_models  # noqa: F401
 
 __all__: list[str] = []
