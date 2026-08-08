@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content import PostDocument
@@ -40,7 +41,12 @@ def _clip(value: str, limit: int) -> tuple[str, bool]:
     return text[: max(0, limit - 1)].rstrip() + "…", True
 
 
-def _draft_text(*, policy: str, document: SourceDocument, summary: str | None) -> tuple[str, bool]:
+def _draft_text(
+    *,
+    policy: str,
+    document: SourceDocument,
+    summary: str | None,
+) -> tuple[str, bool]:
     title = (document.title or "Материал из источника").strip()
     source = _source_label(document)
     body = str(document.content or "").strip()
@@ -64,8 +70,12 @@ def _draft_text(*, policy: str, document: SourceDocument, summary: str | None) -
 
     task = {
         "summarize": "Задача: подготовить краткое изложение своими словами.",
-        "rewrite_with_attribution": "Задача: подготовить самостоятельный текст по материалу с attribution.",
-        "reference_only": "Задача: использовать источник только как reference для собственного текста.",
+        "rewrite_with_attribution": (
+            "Задача: подготовить самостоятельный текст по материалу с attribution."
+        ),
+        "reference_only": (
+            "Задача: использовать источник только как reference для собственного текста."
+        ),
     }.get(policy, "Задача: проверить материал и подготовить самостоятельный текст.")
     text = f"{title}\n\n{source}\n\n{task}\n\nЗаметки:\n"
     return _clip(text, _MAX_DRAFT_TEXT)
@@ -93,26 +103,14 @@ class CandidateDraftService:
             item = await self.session.get(ContentItem, int(candidate.content_item_id))
             if item is None or int(item.channel_id) != int(channel_id):
                 raise CandidateDraftError("candidate draft link is inconsistent")
-            revision = await self.session.get(
-                ContentRevision,
-                {
-                    "content_item_id": int(item.id),
-                    "revision": int(item.current_revision),
-                },
-            )
-            if revision is None:
-                # ContentRevision has a surrogate primary key, so fetch through the
-                # stable document representation stored in candidate metadata below.
-                from sqlalchemy import select
-
-                revision = (
-                    await self.session.execute(
-                        select(ContentRevision).where(
-                            ContentRevision.content_item_id == int(item.id),
-                            ContentRevision.revision == int(item.current_revision),
-                        )
+            revision = (
+                await self.session.execute(
+                    select(ContentRevision).where(
+                        ContentRevision.content_item_id == int(item.id),
+                        ContentRevision.revision == int(item.current_revision),
                     )
-                ).scalar_one_or_none()
+                )
+            ).scalar_one_or_none()
             if revision is None:
                 raise CandidateDraftError("candidate draft has no current revision")
             return CandidateDraftResult(
@@ -121,7 +119,9 @@ class CandidateDraftService:
                 reused_existing=True,
             )
 
-        source_document = await self.session.get(SourceDocument, int(candidate.source_document_id))
+        source_document = await self.session.get(
+            SourceDocument, int(candidate.source_document_id)
+        )
         if source_document is None or int(source_document.channel_id) != int(channel_id):
             raise CandidateDraftError("candidate source document not found")
         connector = await self.sources.get_connector_for_channel(
@@ -154,7 +154,9 @@ class CandidateDraftService:
             channel_id=int(channel_id),
             kind="post",
             status="draft",
-            title=(candidate.topic or source_document.title or f"Inbox #{candidate.id}")[:255],
+            title=(
+                candidate.topic or source_document.title or f"Inbox #{candidate.id}"
+            )[:255],
             current_revision=0,
             meta={
                 "created_from": "source_candidate",
