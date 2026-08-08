@@ -23,6 +23,7 @@ jobs:
       API_ID: "123456"
       API_HASH: "0123456789abcdef0123456789abcdef"
       DB_URL: "sqlite+aiosqlite:///:memory:"
+      PYTHONPATH: "."
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
