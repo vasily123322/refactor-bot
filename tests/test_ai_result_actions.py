@@ -8,6 +8,7 @@ from app.bot.ai_editor_runtime import (
     apply_generated_text,
     improve_action_name,
     request_prompt_key,
+    run_editor_ai_request,
 )
 from app.bot.editor_preview import delete_tracked_preview_messages
 from app.core.callbacks import CB
@@ -39,6 +40,7 @@ def test_ai_result_keyboard_exposes_retry_reset_and_editor() -> None:
         CB.AI_RESET_HISTORY.value,
         CB.AI_BACK_TO_PREVIEW.value,
     ]
+    assert len(set(callbacks)) == 3
 
 
 def test_ai_result_summary_uses_usage_breakdown_when_available() -> None:
@@ -61,6 +63,23 @@ def test_request_prompt_key_handles_missing_request() -> None:
     assert request_prompt_key(None) is None
     assert request_prompt_key({}) is None
     assert request_prompt_key({"prompt_key": "ai_text"}) == "ai_text"
+
+
+def test_unknown_editor_ai_request_fails_without_network_call() -> None:
+    async def run() -> None:
+        result = await run_editor_ai_request(
+            object(),
+            session=object(),  # type: ignore[arg-type]
+            request={"kind": "unknown"},
+            channel_id=1,
+            user_id=2,
+            chat_id=3,
+            seed=4,
+        )
+        assert result["success"] is False
+        assert "Неизвестный" in str(result["error"])
+
+    asyncio.run(run())
 
 
 def test_preview_cleanup_deduplicates_tracked_message_ids() -> None:
