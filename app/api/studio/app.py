@@ -24,6 +24,7 @@ from app.api.studio.schemas import (
     TelegramPreviewRequest,
     TelegramPreviewResponse,
 )
+from app.api.studio.sources import router as sources_router
 from app.bot.bot_instance import bot as tg_bot
 from app.core.db import AsyncSessionLocal
 from app.domain.content import PostDocument, PostDocumentError
@@ -81,6 +82,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
         redoc_url=None,
     )
     app.include_router(planner_router)
+    app.include_router(sources_router)
 
     if cfg.cors_origins:
         app.add_middleware(
@@ -101,10 +103,24 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
             "post_document_schema_version": 1,
             "document_modes": ["classic", "rich"],
             "legacy_publisher": True,
-            "rich_publisher": False,
+            "rich_publisher": True,
+            "rich_blocks": [
+                "paragraph",
+                "heading",
+                "divider",
+                "quote",
+                "pull_quote",
+                "list",
+                "details",
+                "math",
+                "anchor",
+            ],
+            "rich_media_attachments": False,
             "exact_telegram_preview": True,
             "revisions": True,
             "planner": True,
+            "sources_v2": True,
+            "source_kinds": ["telegram", "rss", "url"],
         }
 
     @app.get("/api/studio/me", response_model=StudioUserResponse)
