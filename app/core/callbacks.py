@@ -2,6 +2,17 @@ from enum import Enum
 
 
 class CB(str, Enum):
+    """Stable callback-data values.
+
+    `str, Enum` uses Enum.__str__ on Python 3.10/3.12, so interpolating a
+    member into an f-string would otherwise produce `CB.MEMBER` instead of the
+    wire value. Returning `.value` here keeps direct callback_data assignments
+    and dynamically formatted/prefixed callbacks consistent across runtimes.
+    """
+
+    def __str__(self) -> str:
+        return self.value
+
     # Global menu
     GM_ADD_CHANNEL = "gm_adding_channels"
     GM_MY_CHANNELS = "gm_my_channels"
