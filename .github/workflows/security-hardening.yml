@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "app/core/channel_access.py"
+      - "app/core/url_security.py"
+      - "app/repositories/ai_settings.py"
       - "app/repositories/conversations.py"
       - "app/services/http/fetcher.py"
       - "tests/test_security_hardening.py"
