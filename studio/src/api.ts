@@ -150,4 +150,9 @@ export const studioApi = {
       `/api/studio/channels/${channelId}/candidates/${candidateId}/dismiss`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
+  candidateDraft: (channelId: number, candidateId: number) =>
+    request<ContentDetail>(
+      `/api/studio/channels/${channelId}/candidates/${candidateId}/draft`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
 };
