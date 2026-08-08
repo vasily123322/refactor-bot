@@ -8,9 +8,15 @@ from .content_plan import router as content_plan_commands
 from .settings import router as settings_commands
 from .admin import router as admin_commands
 from .tz import router as tz_commands
-from .sources import router as sources_commands
+from . import sources as sources_module
 from .moderation import router as moderation_commands
 from app.core.settings_channel_access import SettingsChannelOwnerMiddleware
+from app.services.source_fetch import fetch_public_source_text
+
+# sources.py still contains a legacy aiohttp helper. Bind the runtime digest path to
+# the central SSRF-safe fetcher without rewriting the large router module.
+sources_module._fetch_url_source_text = fetch_public_source_text
+sources_commands = sources_module.router
 
 # Реестр роутеров: start/menu отдельно, остальное в main.py
 main_router = Router()
