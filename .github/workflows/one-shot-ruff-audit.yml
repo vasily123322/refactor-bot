@@ -1,21 +1,35 @@
-name: One-shot Ruff audit
+name: One-shot Ruff safe fixes
 
 on:
   pull_request:
     types: [opened, reopened, synchronize]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  audit:
+  fix:
     if: github.event.pull_request.head.ref == 'agent/ruff-quality-gate'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: pip install ruff==0.16.0
-      - name: Ruff correctness audit
-        run: ruff check app tests scripts --output-format concise || true
+      - name: Apply safe Ruff fixes
+        run: |
+          ruff check app tests scripts --fix
+          ruff check app tests scripts --output-format concise || true
+          git rm .github/workflows/one-shot-ruff-audit.yml
+      - name: Commit safe fixes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'quality apply safe Ruff fixes'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
