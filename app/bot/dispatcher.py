@@ -5,6 +5,7 @@ from aiogram import Dispatcher
 from loguru import logger
 
 from app.bot.bot_instance import bot
+from app.bot.commands import register_bot_commands
 from app.bot.routers import main_router
 from app.core.bg_tasks import cancel_all as cancel_bg_tasks
 from app.core.channel_access import ChannelOwnerMiddleware, ChannelOwnerStateMiddleware
@@ -78,6 +79,7 @@ async def run_bot() -> None:
     ai_auto_worker = None
 
     try:
+        await register_bot_commands(bot)
         await ext_mgr.start_all()
 
         logger.info("Boot: starting userbot...")
