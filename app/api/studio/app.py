@@ -20,7 +20,10 @@ from app.api.studio.schemas import (
     PublicationResponse,
     ScheduleRequest,
     StudioUserResponse,
+    TelegramPreviewRequest,
+    TelegramPreviewResponse,
 )
+from app.bot.bot_instance import bot as tg_bot
 from app.core.db import AsyncSessionLocal
 from app.domain.content import PostDocument, PostDocumentError
 from app.repositories.channels import ChannelsRepo
@@ -28,6 +31,7 @@ from app.repositories.clients import ClientsRepo
 from app.repositories.content import ContentNotFoundError, ContentRepo
 from app.services.content import LegacyPayloadError, legacy_payload_from_document
 from app.services.publication_bridge import LegacyPublicationBridge, PublicationBridgeError
+from app.services.telegram_preview import TelegramPreviewError, TelegramPreviewService
 
 
 async def _session_dependency() -> AsyncIterator[AsyncSession]:
@@ -96,6 +100,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
             "document_modes": ["classic", "rich"],
             "legacy_publisher": True,
             "rich_publisher": False,
+            "exact_telegram_preview": True,
             "revisions": True,
             "planner": True,
         }
@@ -257,6 +262,28 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
                 publishable_via_legacy=False,
                 reason=str(exc),
             )
+
+    @app.post(
+        "/api/studio/preview/telegram",
+        response_model=TelegramPreviewResponse,
+    )
+    async def exact_telegram_preview(
+        request: TelegramPreviewRequest,
+        principal: PrincipalDep,
+    ) -> TelegramPreviewResponse:
+        try:
+            document = PostDocument.from_dict(request.document)
+        except PostDocumentError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            message_ids = await TelegramPreviewService(tg_bot, AsyncSessionLocal).send(
+                tg_user_id=principal.tg_user_id,
+                document=document,
+                replace_message_ids=request.replace_message_ids,
+            )
+        except TelegramPreviewError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return TelegramPreviewResponse(message_ids=message_ids)
 
     @app.post(
         "/api/studio/channels/{channel_id}/content/{content_item_id}/schedule",
