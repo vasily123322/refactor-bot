@@ -9,6 +9,7 @@ from app.domain.content import PostDocument
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.sources.models import ContentCandidate, SourceDocument
 from app.repositories.sources_v2 import SourcesRepo
+from app.services.candidate_rewrite import current_candidate_rewrite_run
 
 
 class CandidateDraftError(RuntimeError):
@@ -53,6 +54,7 @@ def _draft_text(
     policy: str,
     document: SourceDocument,
     summary: str | None,
+    generated_rewrite: str | None = None,
 ) -> tuple[str, bool]:
     title = (document.title or "Материал из источника").strip()
     source = _source_label(document)
@@ -72,6 +74,9 @@ def _draft_text(
 
     if policy == "summarize" and summary:
         return _body_with_source(summary.strip(), source)
+
+    if policy == "rewrite_with_attribution" and generated_rewrite:
+        return _body_with_source(generated_rewrite, source)
 
     task = {
         "summarize": "Задача: подготовить краткое изложение своими словами.",
@@ -145,10 +150,19 @@ class CandidateDraftService:
             raise CandidateDraftError("candidate source connector not found")
 
         policy = str(connector.reuse_policy or "reference_only")
+        rewrite_run = None
+        if policy == "rewrite_with_attribution":
+            rewrite_run = await current_candidate_rewrite_run(
+                self.session,
+                candidate=candidate,
+                document=source_document,
+                reuse_policy=policy,
+            )
         text, truncated = _draft_text(
             policy=policy,
             document=source_document,
             summary=candidate.summary,
+            generated_rewrite=(rewrite_run.text if rewrite_run is not None else None),
         )
         document = PostDocument(
             blocks=[{"id": "b1", "type": "text", "text": text, "entities": []}],
@@ -160,6 +174,13 @@ class CandidateDraftService:
                 "reuse_policy": policy,
                 "suggested_action": candidate.suggested_action,
                 "source_body_truncated": bool(truncated),
+                "rewrite_run_id": (
+                    int(rewrite_run.id) if rewrite_run is not None else None
+                ),
+                "rewrite_provider": (
+                    str(rewrite_run.provider) if rewrite_run is not None else None
+                ),
+                "rewrite_model": rewrite_run.model if rewrite_run is not None else None,
             },
         )
         document.validate()
@@ -176,6 +197,9 @@ class CandidateDraftService:
                 "created_from": "source_candidate",
                 "source_candidate_id": int(candidate.id),
                 "reuse_policy": policy,
+                "rewrite_run_id": (
+                    int(rewrite_run.id) if rewrite_run is not None else None
+                ),
             },
         )
         self.session.add(item)
@@ -187,7 +211,12 @@ class CandidateDraftService:
                 document=document.to_dict(),
                 source="source_candidate",
                 created_by_tg_user_id=created_by_tg_user_id,
-                meta={"source_document_id": int(source_document.id)},
+                meta={
+                    "source_document_id": int(source_document.id),
+                    "rewrite_run_id": (
+                        int(rewrite_run.id) if rewrite_run is not None else None
+                    ),
+                },
             )
             self.session.add(revision)
             item.current_revision = 1
