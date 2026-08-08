@@ -103,8 +103,10 @@ class TelegramSourceIngestionService:
         candidate_count = 0
         latest_published_at: datetime | None = None
         try:
+            # Read by the resolved peer id. Private invite URLs are valid join targets
+            # but are not reliable history lookup identifiers after the join completes.
             async for message in self.gateway.get_chat_history(
-                str(connector.value),
+                int(chat.id),
                 limit=self.history_limit,
             ):
                 text = _message_text(message)
