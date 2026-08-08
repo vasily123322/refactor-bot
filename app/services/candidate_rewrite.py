@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.sources.models import ContentCandidate, SourceConnector, SourceDocument
 from app.domain.sources.rewrite import CandidateRewriteRun
+from app.services.ai_run_leases import ai_run_lease_expired, abandon_expired_ai_run
 
 
 _MAX_REWRITE_INPUT_CHARS = 12_000
@@ -72,12 +73,7 @@ def _validate_independent_rewrite(
     generated: str,
     source_url: str | None,
 ) -> None:
-    """Fail closed on obvious copy/mirror output before it becomes publishable.
-
-    This is intentionally conservative rather than a semantic originality score. It
-    catches exact/near-verbatim model failures and prevents the model from injecting
-    the source URL that the application owns as deterministic attribution.
-    """
+    """Fail closed on obvious copy/mirror output before it becomes publishable."""
 
     source = _comparison_text(source_text)
     rewrite = _comparison_text(generated)
@@ -180,6 +176,16 @@ class CandidateRewriteService:
             raise CandidateRewriteError("candidate not found")
         return row[0], row[1], row[2]
 
+    async def _refresh_run(self, run_id: int) -> CandidateRewriteRun:
+        run = await self.session.get(CandidateRewriteRun, int(run_id))
+        if run is None:
+            raise CandidateRewriteError("rewrite run disappeared")
+        await self.session.refresh(run)
+        return run
+
+    async def _release_read_lock(self) -> None:
+        await self.session.commit()
+
     async def rewrite(
         self,
         *,
@@ -230,20 +236,26 @@ class CandidateRewriteService:
             await self.session.refresh(candidate)
             return CandidateRewriteResult(candidate, completed, True)
 
-        running = (
-            await self.session.execute(
-                select(CandidateRewriteRun.id).where(
-                    CandidateRewriteRun.candidate_id == int(candidate.id),
-                    CandidateRewriteRun.provider == provider_name,
-                    CandidateRewriteRun.model == model_name,
-                    CandidateRewriteRun.input_hash == input_hash,
-                    CandidateRewriteRun.status == "running",
+        running_rows = list(
+            (
+                await self.session.execute(
+                    select(CandidateRewriteRun)
+                    .where(
+                        CandidateRewriteRun.candidate_id == int(candidate.id),
+                        CandidateRewriteRun.provider == provider_name,
+                        CandidateRewriteRun.model == model_name,
+                        CandidateRewriteRun.input_hash == input_hash,
+                        CandidateRewriteRun.status == "running",
+                    )
+                    .order_by(CandidateRewriteRun.id.desc())
                 )
-            )
-        ).scalar_one_or_none()
-        if running is not None:
-            await self.session.rollback()
+            ).scalars().all()
+        )
+        if any(not ai_run_lease_expired(row.started_at) for row in running_rows):
+            await self._release_read_lock()
             raise CandidateRewriteBusy("candidate rewrite is already running")
+        for stale_run in running_rows:
+            abandon_expired_ai_run(stale_run)
 
         text = _bounded(str(document.content or ""), _MAX_REWRITE_INPUT_CHARS)
         payload = RewriteInput(
@@ -283,54 +295,63 @@ class CandidateRewriteService:
             )
             output_meta = dict(output.metadata or {})
         except Exception as exc:
-            run = await self.session.get(CandidateRewriteRun, int(run.id))
-            if run is not None:
-                run.status = "failed"
-                run.error = type(exc).__name__
-                run.finished_at = datetime.now(timezone.utc)
-                await self.session.commit()
+            await self._load(
+                channel_id=channel_id,
+                candidate_id=candidate_id,
+                for_update=True,
+                refresh=True,
+            )
+            persisted = await self._refresh_run(run.id)
+            if str(persisted.status) != "running":
+                await self._release_read_lock()
+                raise CandidateRewriteError("rewrite run is no longer active") from exc
+            persisted.status = "failed"
+            persisted.error = type(exc).__name__
+            persisted.finished_at = datetime.now(timezone.utc)
+            await self.session.commit()
             if isinstance(exc, CandidateRewriteError):
                 raise
             raise CandidateRewriteError("candidate rewrite failed") from exc
 
-        run = await self.session.get(CandidateRewriteRun, int(run.id))
-        if run is None:
-            raise CandidateRewriteError("rewrite run disappeared")
         candidate, document, connector = await self._load(
             channel_id=channel_id,
             candidate_id=candidate_id,
             for_update=True,
             refresh=True,
         )
+        persisted = await self._refresh_run(run.id)
+        if str(persisted.status) != "running":
+            await self._release_read_lock()
+            raise CandidateRewriteError("rewrite run is no longer active")
         current_policy = str(connector.reuse_policy or "reference_only")
 
-        run.text = generated
-        run.error = None
-        run.finished_at = datetime.now(timezone.utc)
+        persisted.text = generated
+        persisted.error = None
+        persisted.finished_at = datetime.now(timezone.utc)
         if str(candidate.status or "new") != "new":
-            run.status = "discarded"
-            run.output = {**output_meta, "discard_reason": "candidate_not_active"}
+            persisted.status = "discarded"
+            persisted.output = {**output_meta, "discard_reason": "candidate_not_active"}
             await self.session.commit()
             raise CandidateRewriteError("candidate is no longer active")
         if candidate_rewrite_input_hash(document, candidate, current_policy) != input_hash:
-            run.status = "stale"
-            run.output = {**output_meta, "discard_reason": "source_or_policy_changed"}
+            persisted.status = "stale"
+            persisted.output = {**output_meta, "discard_reason": "source_or_policy_changed"}
             await self.session.commit()
             raise CandidateRewriteError("source or policy changed during rewrite")
 
-        run.status = "completed"
-        run.output = output_meta
+        persisted.status = "completed"
+        persisted.output = output_meta
         candidate.meta = {
             **dict(candidate.meta or {}),
-            "rewrite_run_id": int(run.id),
+            "rewrite_run_id": int(persisted.id),
             "rewrite_provider": provider_name,
             "rewrite_model": model_name,
         }
         try:
             await self.session.commit()
-            await self.session.refresh(run)
+            await self.session.refresh(persisted)
             await self.session.refresh(candidate)
-            return CandidateRewriteResult(candidate, run, False)
+            return CandidateRewriteResult(candidate, persisted, False)
         except Exception:
             await self.session.rollback()
             raise
