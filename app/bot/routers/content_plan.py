@@ -23,6 +23,7 @@ from app.bot.routers.shared_plan import (
     render_calendar as _render_calendar,
 )
 from app.bot.keyboards.posting import settings_menu_kb
+from app.bot.keyboards.pagination import paginate, page_nav_row
 from app.bot.routers.shared import escape_markdown_label as _escape_markdown_label
 from app.bot.routers.shared import offset_minutes_from_tz as _offset_minutes_from_tz
 
@@ -95,6 +96,9 @@ async def _render_cp_channels_list(message_or_cb, user_id: int):
         rows.append(
             [InlineKeyboardButton(text=label, callback_data=f"cp_pick_channel_{ch.id}")]
         )
+    rows.append(
+        [InlineKeyboardButton(text="← Главное меню", callback_data=CB.GM_GLOBAL_MENU)]
+    )
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     if isinstance(message_or_cb, Message):
         await message_or_cb.answer(text, reply_markup=kb)
@@ -397,20 +401,23 @@ async def _render_content_plan(
                 post_rows.append(row_btns)
     except Exception:
         pass
-    # Ограничим размер клавиатуры, чтобы избежать "reply markup is too long"
-    max_rows = 40
-    info_row = None
+    # Compact mobile browser: keep a bounded keyboard and page through the day.
     try:
-        if len(post_rows) > max_rows:
-            info_row = [
-                InlineKeyboardButton(
-                    text=f"Показаны {max_rows} из {len(post_rows)}",
-                    callback_data="cp_day_center_nop",
-                )
-            ]
-            post_rows = post_rows[:max_rows]
+        paging_state = await state.get_data()
+        requested_page = int(paging_state.get("cp_page", 0) or 0)
     except Exception:
-        pass
+        requested_page = 0
+    post_rows, safe_page, total_pages = paginate(
+        post_rows, requested_page, page_size=8
+    )
+    if safe_page != requested_page:
+        await state.update_data(cp_page=safe_page)
+    page_nav = page_nav_row(
+        prefix="cp_page",
+        page=safe_page,
+        total_pages=total_pages,
+        noop_callback="cp_day_center_nop",
+    )
     # Кнопки навигации по датам
     prev_day = center_date - timedelta(days=1)
     next_day = center_date + timedelta(days=1)
@@ -441,12 +448,16 @@ async def _render_content_plan(
     btn_toggle = InlineKeyboardButton(
         text=btn_label, callback_data=CB.CP_TOGGLE_REPEATS
     )
-    rows_all = [[open_cal], [btn_toggle]]
+    new_post = InlineKeyboardButton(
+        text="✍️ Новый пост", callback_data=f"{CB.POST_PICK_CH_PREFIX}{channel_id}"
+    )
+    home = InlineKeyboardButton(text="🏠 Главное меню", callback_data=CB.GM_GLOBAL_MENU)
+    rows_all = [[new_post], [open_cal], [btn_toggle]]
     if post_rows:
         rows_all.extend(post_rows)
-    if info_row:
-        rows_all.append(info_row)
-    rows_all.extend([[left, center_btn, right], [back]])
+    if page_nav:
+        rows_all.append(page_nav)
+    rows_all.extend([[left, center_btn, right], [back, home]])
     kb = InlineKeyboardMarkup(inline_keyboard=rows_all)
     try:
         await callback.message.edit_text(
@@ -462,7 +473,7 @@ async def cb_cp_toggle_repeats(callback: CallbackQuery, state: FSMContext):
     try:
         data = await state.get_data()
         show = bool(data.get("cp_show_repeats", False))
-        await state.update_data(cp_show_repeats=(not show))
+        await state.update_data(cp_show_repeats=(not show), cp_page=0)
         # Перерисуем текущий день
         from datetime import datetime as _dt
 
@@ -531,7 +542,7 @@ async def cb_cp_pick_channel(callback: CallbackQuery, state: FSMContext):
                 center = now_utc
     except Exception:
         pass
-    await state.update_data(cp_channel_id=cid, cp_center=center.date().isoformat())
+    await state.update_data(cp_channel_id=cid, cp_center=center.date().isoformat(), cp_page=0)
     await _render_content_plan(callback, state, cid, center)
     await callback.answer()
 
@@ -561,7 +572,7 @@ async def cb_cp_day_shift(callback: CallbackQuery, state: FSMContext):
                     center = center.replace(tzinfo=ZoneInfo(tz_code))
     except Exception:
         pass
-    await state.update_data(cp_channel_id=cid, cp_center=center.date().isoformat())
+    await state.update_data(cp_channel_id=cid, cp_center=center.date().isoformat(), cp_page=0)
     await _render_content_plan(callback, state, cid, center)
     with suppress(TelegramBadRequest):
         await callback.answer()
@@ -570,6 +581,23 @@ async def cb_cp_day_shift(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "cp_day_center_nop")
 async def cb_cp_day_center_nop(callback: CallbackQuery):
     # Ничего не делаем, просто закрываем спиннер
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("cp_page:"))
+async def cb_cp_page(callback: CallbackQuery, state: FSMContext):
+    try:
+        page = max(0, int(callback.data.split(":", 1)[1]))
+        data = await state.get_data()
+        cid = int(data.get("cp_channel_id") or 0)
+        center_iso = data.get("cp_center")
+        if not cid or not center_iso:
+            return await callback.answer("Откройте контент-план заново", show_alert=True)
+        center = datetime.fromisoformat(str(center_iso))
+    except Exception:
+        return await callback.answer("Ошибка страницы", show_alert=False)
+    await state.update_data(cp_page=page)
+    await _render_content_plan(callback, state, cid, center)
     await callback.answer()
 
 
