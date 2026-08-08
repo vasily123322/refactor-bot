@@ -31,6 +31,11 @@ __pycache__/
 .coverage
 htmlcov/
 
+# Frontend dependencies/build output
+studio/node_modules/
+studio/dist/
+studio/.vite/
+
 # Virtual environments
 venv/
 .venv/
