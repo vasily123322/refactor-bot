@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from aiogram import Dispatcher
 from loguru import logger
 
+from app.api.studio.server import StudioServer
 from app.bot.bot_instance import bot
 from app.bot.commands import register_bot_commands
 from app.bot.routers import main_router
@@ -74,6 +75,7 @@ async def run_bot() -> None:
     dp.include_router(main_router)
 
     ext_mgr = ExternalBotsManager()
+    studio_server = StudioServer()
     userbot_started = False
     scheduler = None
     publication_reconciler = None
@@ -116,6 +118,8 @@ async def run_bot() -> None:
         ai_auto_worker = AIAutoTasksWorker()
         await ai_auto_worker.start()
 
+        await studio_server.start()
+
         logger.info("Boot: starting aiogram polling...")
         await dp.start_polling(
             bot,
@@ -126,6 +130,7 @@ async def run_bot() -> None:
         logger.exception("Bot runtime failed")
         raise
     finally:
+        await _safe_stop("Studio API", studio_server.stop)
         if ai_auto_worker is not None:
             await _safe_stop("AI auto tasks worker", ai_auto_worker.stop)
         if poller is not None:
