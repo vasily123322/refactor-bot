@@ -8,7 +8,7 @@ from loguru import logger
 from app.bot.bot_instance import bot
 from app.bot.routers import main_router
 from app.core.bg_tasks import cancel_all as cancel_bg_tasks
-from app.core.channel_access import ChannelOwnerMiddleware
+from app.core.channel_access import ChannelOwnerMiddleware, ChannelOwnerStateMiddleware
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal, Base, engine, init_db_if_needed_sync
 from app.core.errors import ErrorsMiddleware
@@ -31,6 +31,7 @@ async def create_dispatcher() -> Dispatcher:
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
     dp.message.middleware(ErrorsMiddleware())
+    dp.message.middleware(ChannelOwnerStateMiddleware())
     dp.callback_query.middleware(ErrorsMiddleware())
     dp.callback_query.middleware(ChannelOwnerMiddleware())
     return dp
