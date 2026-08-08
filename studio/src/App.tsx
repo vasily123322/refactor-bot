@@ -167,6 +167,7 @@ export default function App() {
       setDocument(detail.document);
       setDirty(false);
       setPreviewMessageIds([]);
+      await loadItems(selectedChannelId);
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
@@ -273,7 +274,10 @@ export default function App() {
           </main>
         ) : view === 'sources' ? (
           <main className="workspace sources-workspace">
-            <SourcesPanel channel={channel} />
+            <SourcesPanel
+              channel={channel}
+              onOpenContent={(id) => void openContentById(id)}
+            />
           </main>
         ) : (
           <main className="workspace">

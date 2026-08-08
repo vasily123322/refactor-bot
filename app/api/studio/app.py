@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.studio.auth import StudioPrincipal, require_studio_principal
+from app.api.studio.candidate_actions import router as candidate_actions_router
 from app.api.studio.config import StudioConfig, studio_config
 from app.api.studio.planner import router as planner_router
 from app.api.studio.schemas import (
@@ -83,6 +84,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
     )
     app.include_router(planner_router)
     app.include_router(sources_router)
+    app.include_router(candidate_actions_router)
 
     if cfg.cors_origins:
         app.add_middleware(
@@ -121,6 +123,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
             "planner": True,
             "sources_v2": True,
             "source_kinds": ["telegram", "rss", "url"],
+            "candidate_to_draft": True,
         }
 
     @app.get("/api/studio/me", response_model=StudioUserResponse)

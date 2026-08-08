@@ -39,7 +39,13 @@ function actionLabel(action: string | null): string {
   }
 }
 
-export function SourcesPanel({ channel }: { channel: Channel | null }) {
+export function SourcesPanel({
+  channel,
+  onOpenContent,
+}: {
+  channel: Channel | null;
+  onOpenContent: (contentId: number) => void;
+}) {
   const [sources, setSources] = useState<SourceConnectorView[]>([]);
   const [candidates, setCandidates] = useState<ContentCandidateView[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -126,6 +132,14 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
     run(`candidate:${candidate.id}`, async () => {
       await studioApi.dismissCandidate(channel!.id, candidate.id);
       setCandidates((current) => current.filter((row) => row.id !== candidate.id));
+    });
+
+  const acceptDraft = (candidate: ContentCandidateView) =>
+    run(`draft:${candidate.id}`, async () => {
+      const draft = await studioApi.candidateDraft(channel!.id, candidate.id);
+      setCandidates((current) => current.filter((row) => row.id !== candidate.id));
+      setNotice(`Создан черновик #${draft.id} с policy ${candidate.reuse_policy}`);
+      onOpenContent(draft.id);
     });
 
   if (!channel) {
@@ -273,6 +287,13 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
                     {candidate.source_url && (
                       <a className="button secondary compact" href={candidate.source_url} target="_blank" rel="noreferrer">Источник ↗</a>
                     )}
+                    <button
+                      className="button primary compact"
+                      disabled={busyId !== null}
+                      onClick={() => void acceptDraft(candidate)}
+                    >
+                      {busyId === `draft:${candidate.id}` ? 'Создаю…' : 'В черновик'}
+                    </button>
                     <button
                       className="button secondary compact"
                       disabled={busyId !== null}
