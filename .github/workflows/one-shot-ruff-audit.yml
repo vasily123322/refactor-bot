@@ -1,0 +1,21 @@
+name: One-shot Ruff audit
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    if: github.event.pull_request.head.ref == 'agent/ruff-quality-gate'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install ruff==0.16.0
+      - name: Ruff correctness audit
+        run: ruff check app tests scripts --output-format concise || true
