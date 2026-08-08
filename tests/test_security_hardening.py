@@ -4,8 +4,10 @@ import httpx
 import pytest
 
 from app.core.channel_access import _channel_id_from_callback
+from app.core.url_security import validate_public_http_url
+from app.repositories.ai_settings import AISourcesRepo
 from app.repositories.conversations import scoped_prompt_key
-from app.services.http.fetcher import _read_limited_body, validate_public_http_url
+from app.services.http.fetcher import _read_limited_body
 
 
 def test_scoped_prompt_key_separates_channels() -> None:
@@ -62,6 +64,17 @@ def test_channel_callback_parser(
 def test_ssrf_validator_rejects_local_and_non_http_urls(url: str) -> None:
     with pytest.raises(ValueError):
         asyncio.run(validate_public_http_url(url))
+
+
+def test_ai_source_repo_rejects_private_url() -> None:
+    with pytest.raises(ValueError):
+        asyncio.run(
+            AISourcesRepo._validate_source_value("url", "http://127.0.0.1/private")
+        )
+
+
+def test_ai_source_repo_allows_telegram_identifier_without_url_lookup() -> None:
+    asyncio.run(AISourcesRepo._validate_source_value("telegram", "@public_channel"))
 
 
 def test_streaming_body_limit_rejects_oversized_response() -> None:
