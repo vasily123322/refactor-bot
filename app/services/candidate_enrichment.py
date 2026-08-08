@@ -196,6 +196,12 @@ class CandidateEnrichmentService:
         await self.session.refresh(run)
         return run
 
+    async def _release_read_lock(self) -> None:
+        # Session configuration uses expire_on_commit=False. Commit releases the
+        # read/row-lock transaction without expiring caller-visible ORM identities;
+        # rollback would expire the whole identity map and can trigger async lazy IO.
+        await self.session.commit()
+
     async def _apply_completed(
         self,
         *,
@@ -229,9 +235,6 @@ class CandidateEnrichmentService:
         if not provider_name or not model_name:
             raise CandidateEnrichmentError("enrichment provider identity is required")
 
-        # Candidate locking serializes start/recovery decisions on PostgreSQL. The
-        # transaction is committed before provider work, so no DB lock is held while
-        # an external AI request is running.
         candidate, document = await self._load(
             channel_id=channel_id,
             candidate_id=candidate_id,
@@ -280,7 +283,7 @@ class CandidateEnrichmentService:
             ).scalars().all()
         )
         if any(not ai_run_lease_expired(row.started_at) for row in running_rows):
-            await self.session.rollback()
+            await self._release_read_lock()
             raise CandidateEnrichmentBusy("candidate enrichment is already running")
         for stale_run in running_rows:
             abandon_expired_ai_run(stale_run)
@@ -310,7 +313,6 @@ class CandidateEnrichmentService:
         )
         self.session.add(run)
         try:
-            # Expired run abandonment and replacement are committed atomically.
             await self.session.commit()
             await self.session.refresh(run)
         except Exception:
@@ -320,8 +322,6 @@ class CandidateEnrichmentService:
         try:
             output = _validate_output(await provider.enrich(payload))
         except Exception as exc:
-            # Serialize failure finalization with any recovery attempt, then re-read
-            # the run. A late provider must never overwrite an already-abandoned row.
             await self._load(
                 channel_id=channel_id,
                 candidate_id=candidate_id,
@@ -330,7 +330,7 @@ class CandidateEnrichmentService:
             )
             persisted = await self._refresh_run(run.id)
             if str(persisted.status) != "running":
-                await self.session.rollback()
+                await self._release_read_lock()
                 raise CandidateEnrichmentError(
                     "enrichment run is no longer active"
                 ) from exc
@@ -342,8 +342,6 @@ class CandidateEnrichmentService:
                 raise
             raise CandidateEnrichmentError("candidate enrichment failed") from exc
 
-        # Acquire the candidate lock before refreshing the run. Recovery uses the
-        # same lock, so after this point the status cannot change underneath us.
         candidate, document = await self._load(
             channel_id=channel_id,
             candidate_id=candidate_id,
@@ -352,7 +350,7 @@ class CandidateEnrichmentService:
         )
         persisted = await self._refresh_run(run.id)
         if str(persisted.status) != "running":
-            await self.session.rollback()
+            await self._release_read_lock()
             raise CandidateEnrichmentError("enrichment run is no longer active")
 
         persisted.summary = output.summary
