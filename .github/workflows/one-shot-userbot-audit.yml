@@ -1,0 +1,21 @@
+name: One-shot userbot audit
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    if: github.event.pull_request.head.ref == 'agent/userbot-hydrogram'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Locate Pyrogram dependencies
+        run: |
+          echo '--- pyrogram references ---'
+          git grep -n -i 'pyrogram' -- . ':!.github/workflows/one-shot-userbot-audit.yml' || true
+          echo '--- userbot references ---'
+          git grep -n 'userbot' -- app tests requirements.txt || true
