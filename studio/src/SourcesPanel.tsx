@@ -282,6 +282,9 @@ export function SourcesPanel({
             {sources.map((source) => {
               const canIngest = source.enabled && ['rss', 'url', 'web', 'telegram'].includes(source.kind);
               const ingestLabel = source.kind === 'telegram' ? 'MTProto ingest' : 'Ingest now';
+              const lifecycleEditable = !(
+                source.legacy_grab_source_id !== null && source.legacy_ai_source_id === null
+              );
               return (
                 <article
                   key={source.id}
@@ -302,11 +305,17 @@ export function SourcesPanel({
                     <span>success: {dateLabel(source.last_success_at)}</span>
                     <span>document: {dateLabel(source.last_document_at)}</span>
                   </div>
-                  <SourceSettingsControls
-                    source={source}
-                    busy={busyId === `settings:${source.id}`}
-                    onSave={(patch) => saveSettings(source, patch)}
-                  />
+                  {lifecycleEditable ? (
+                    <SourceSettingsControls
+                      source={source}
+                      busy={busyId === `settings:${source.id}`}
+                      onSave={(patch) => saveSettings(source, patch)}
+                    />
+                  ) : (
+                    <div className="source-readonly-note">
+                      Legacy GrabSource · read-only в Sources v2. Управляйте правилом через legacy grabber.
+                    </div>
+                  )}
                   <div className="source-actions">
                     <button
                       className="button secondary compact"
