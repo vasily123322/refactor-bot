@@ -1,8 +1,13 @@
-import type { JSONContent, JSONContentMark } from '@tiptap/core';
+import type { JSONContent } from '@tiptap/core';
 
 import type { PostBlock, PostDocument, TelegramEntity } from './types';
 
 export class EditorAdapterError extends Error {}
+
+type EditorMark = {
+  type: string;
+  attrs?: Record<string, unknown>;
+};
 
 type EditableSlot = {
   block: PostBlock;
@@ -43,7 +48,7 @@ function editableSlot(document: PostDocument): EditableSlot {
 }
 
 function telegramEntityFromMark(
-  mark: JSONContentMark,
+  mark: EditorMark,
   offset: number,
   length: number,
 ): TelegramEntity | null {
@@ -102,7 +107,7 @@ function editorJsonToTelegram(json: JSONContent): { text: string; entities: Tele
   let text = '';
   const entities: TelegramEntity[] = [];
 
-  const append = (value: string, marks: JSONContentMark[] = []) => {
+  const append = (value: string, marks: EditorMark[] = []) => {
     if (!value) return;
     const start = text.length;
     text += value;
@@ -134,7 +139,7 @@ function editorJsonToTelegram(json: JSONContent): { text: string; entities: Tele
         renderChildren(node.content, true);
         return;
       case 'text':
-        append(node.text ?? '', node.marks ?? []);
+        append(node.text ?? '', (node.marks ?? []) as EditorMark[]);
         return;
       case 'hardBreak':
         append('\n');
@@ -191,7 +196,7 @@ function editorJsonToTelegram(json: JSONContent): { text: string; entities: Tele
   return { text, entities: normalizeEntities(entities, text.length) };
 }
 
-function markFromEntity(entity: TelegramEntity): JSONContentMark | null {
+function markFromEntity(entity: TelegramEntity): EditorMark | null {
   switch (entity.type) {
     case 'bold':
       return { type: 'bold' };
@@ -243,7 +248,7 @@ function inlineNodes(
           entity.offset <= absoluteStart && entity.offset + entity.length >= absoluteEnd,
       )
       .map(markFromEntity)
-      .filter((mark): mark is JSONContentMark => mark !== null);
+      .filter((mark): mark is EditorMark => mark !== null);
     nodes.push({ type: 'text', text: segment, ...(marks.length ? { marks } : {}) });
   }
   return nodes;
