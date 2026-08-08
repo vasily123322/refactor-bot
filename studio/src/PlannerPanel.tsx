@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
 import type { Channel, PlannerEntry } from './types';
+import './planner.css';
 
 function startOfWeek(value: Date): Date {
   const next = new Date(value);
@@ -119,7 +120,6 @@ export function PlannerPanel({
         current.map((row) => (row.schedule_id === updated.schedule_id ? updated : row)),
       );
       setEditingId(null);
-      // The move may leave the current week; reload to keep the week truthful.
       await load();
     } catch (reason) {
       setError(errorText(reason));
