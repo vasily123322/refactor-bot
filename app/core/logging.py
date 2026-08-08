@@ -5,6 +5,8 @@ from functools import wraps
 
 from loguru import logger
 
+from app.core.redaction import redact_log_record
+
 
 def with_context_logging(handler):
     """Декоратор для логирования контекста: user_id, chat_id, callback/data."""
@@ -45,6 +47,9 @@ def setup_logging(level: str = "INFO") -> None:
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | {extra} {message}",
         level=level,
         colorize=True,
+        filter=redact_log_record,
+        backtrace=False,
+        diagnose=False,
     )
     logger.add(
         "logs/bot.log",
@@ -52,4 +57,7 @@ def setup_logging(level: str = "INFO") -> None:
         compression="zip",
         level="DEBUG",
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {extra} {message}",
+        filter=redact_log_record,
+        backtrace=False,
+        diagnose=False,
     )
