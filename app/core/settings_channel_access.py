@@ -59,23 +59,26 @@ def _grab_source_ref_from_callback(data: str | None) -> tuple[int, int | None] |
     return None
 
 
+async def _resolve_grab_source_target(
+    session: AsyncSession, source_ref: tuple[int, int | None]
+) -> int | None:
+    source_id, claimed_channel_id = source_ref
+    source = await session.get(GrabSource, source_id)
+    if source is None:
+        return None
+    target_channel_id = int(source.target_channel_id)
+    if claimed_channel_id is not None and claimed_channel_id != target_channel_id:
+        return None
+    return target_channel_id
+
+
 async def _resolve_channel_target(
     session: AsyncSession, callback_data: str | None
 ) -> tuple[bool, int | None]:
     """Return (recognized, channel_id). Recognized + None means deny."""
     source_ref = _grab_source_ref_from_callback(callback_data)
     if source_ref is not None:
-        source_id, claimed_channel_id = source_ref
-        source = await session.get(GrabSource, source_id)
-        if source is None:
-            return True, None
-        target_channel_id = int(source.target_channel_id)
-        if (
-            claimed_channel_id is not None
-            and claimed_channel_id != target_channel_id
-        ):
-            return True, None
-        return True, target_channel_id
+        return True, await _resolve_grab_source_target(session, source_ref)
 
     direct_channel_id = _direct_channel_id_from_callback(callback_data)
     if direct_channel_id is not None:
@@ -104,12 +107,19 @@ class SettingsChannelOwnerMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         callback_data = getattr(event, "data", None)
+        source_ref = _grab_source_ref_from_callback(callback_data)
+        direct_channel_id = _direct_channel_id_from_callback(callback_data)
+
+        # This middleware is installed on the root router. Avoid touching the DB
+        # for the overwhelming majority of callbacks that are not channel settings.
+        if source_ref is None and direct_channel_id is None:
+            return await handler(event, data)
+
         async with AsyncSessionLocal() as session:
-            recognized, channel_id = await _resolve_channel_target(
-                session, callback_data
-            )
-            if not recognized:
-                return await handler(event, data)
+            if source_ref is not None:
+                channel_id = await _resolve_grab_source_target(session, source_ref)
+            else:
+                channel_id = direct_channel_id
 
             user_id = int(
                 getattr(getattr(event, "from_user", None), "id", 0) or 0
