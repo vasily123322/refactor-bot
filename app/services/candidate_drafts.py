@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content import PostDocument
 from app.domain.content.models import ContentItem, ContentRevision
-from app.domain.sources.models import SourceDocument
+from app.domain.sources.models import ContentCandidate, SourceDocument
 from app.repositories.sources_v2 import SourcesRepo
 
 
@@ -95,7 +95,16 @@ class CandidateDraftService:
         candidate_id: int,
         created_by_tg_user_id: int | None = None,
     ) -> CandidateDraftResult:
-        candidate = await self.sources.get_candidate_for_channel(candidate_id, channel_id)
+        candidate = (
+            await self.session.execute(
+                select(ContentCandidate)
+                .where(
+                    ContentCandidate.id == int(candidate_id),
+                    ContentCandidate.channel_id == int(channel_id),
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
         if candidate is None:
             raise CandidateDraftError("candidate not found")
 
