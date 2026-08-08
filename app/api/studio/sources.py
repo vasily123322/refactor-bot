@@ -18,6 +18,8 @@ from app.repositories.sources_v2 import SourcesRepo
 from app.services.legacy_source_mirror import LegacySourceMirror
 from app.services.source_doctor import SourceDoctor
 from app.services.source_ingestion import SourceIngestionError, SourceIngestionService
+from app.services.telegram_source_ingestion import TelegramSourceIngestionService
+from app.userbot.client import app as userbot
 
 
 router = APIRouter(prefix="/api/studio", tags=["sources"])
@@ -205,8 +207,6 @@ async def create_source(
     ):
         raise HTTPException(status_code=409, detail="Source already exists")
 
-    # Keep existing inline AI/source flows functional during migration by creating
-    # the legacy AISource and linking the normalized connector to it atomically.
     legacy = AISource(
         channel_id=int(channel_id),
         source_type=request.kind,
@@ -256,7 +256,8 @@ async def check_source(
     row = await repo.get_connector_for_channel(connector_id, channel_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Source not found")
-    result = await SourceDoctor().check(row)
+    doctor = SourceDoctor(telegram_probe=userbot.get_chat)
+    result = await doctor.check(row)
     row.capabilities = dict(result.capabilities)
     row = await repo.update_health(
         row,
@@ -283,13 +284,13 @@ async def ingest_source(
     row = await SourcesRepo(session).get_connector_for_channel(connector_id, channel_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Source not found")
-    if str(row.kind).lower() not in {"rss", "url", "web"}:
-        raise HTTPException(
-            status_code=409,
-            detail="This source requires its dedicated ingestion adapter",
-        )
     try:
-        result = await SourceIngestionService(session).ingest(row)
+        if str(row.kind).lower() == "telegram":
+            result = await TelegramSourceIngestionService(session).ingest(row)
+        elif str(row.kind).lower() in {"rss", "url", "web"}:
+            result = await SourceIngestionService(session).ingest(row)
+        else:
+            raise HTTPException(status_code=409, detail="Unsupported source adapter")
     except SourceIngestionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return SourceIngestionResponse(
