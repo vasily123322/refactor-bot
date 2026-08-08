@@ -76,6 +76,18 @@ export type CandidateEnrichmentResult = {
   output: Record<string, unknown>;
 };
 
+export type CandidateRewriteResult = {
+  candidate_id: number;
+  candidate_status: string;
+  run_id: number;
+  run_status: string;
+  provider: string;
+  model: string | null;
+  text: string;
+  reused_existing: boolean;
+  output: Record<string, unknown>;
+};
+
 export type LocalBatchEnrichmentResult = {
   selected: number;
   completed: number;
@@ -185,6 +197,11 @@ export const studioApi = {
   enrichCandidateAI: (channelId: number, candidateId: number) =>
     request<CandidateEnrichmentResult>(
       `/api/studio/channels/${channelId}/candidates/${candidateId}/enrich/ai`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  rewriteCandidateAI: (channelId: number, candidateId: number) =>
+    request<CandidateRewriteResult>(
+      `/api/studio/channels/${channelId}/candidates/${candidateId}/rewrite/ai`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
   enrichCandidatesLocalBatch: (channelId: number, limit = 25) =>
