@@ -158,7 +158,7 @@ def test_sources_inbox_is_owner_scoped_and_candidates_can_be_dismissed(monkeypat
     asyncio.run(run())
 
 
-def test_manual_ingest_rejects_telegram_until_mtproto_adapter_exists(monkeypatch) -> None:
+def test_manual_ingest_routes_telegram_through_mtproto_adapter(monkeypatch) -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         try:
@@ -167,6 +167,11 @@ def test_manual_ingest_rejects_telegram_until_mtproto_adapter_exists(monkeypatch
             Session = async_sessionmaker(engine, expire_on_commit=False)
             monkeypatch.setattr(studio_app_module, "AsyncSessionLocal", Session)
             monkeypatch.setattr(sources_api_module, "AsyncSessionLocal", Session)
+            monkeypatch.setattr(
+                sources_api_module,
+                "TelegramSourceIngestionService",
+                _FakeIngestion,
+            )
 
             async with Session() as session:
                 owner = await ClientsRepo(session).create_or_get(5201, "owner", "Owner")
@@ -186,8 +191,13 @@ def test_manual_ingest_rejects_telegram_until_mtproto_adapter_exists(monkeypatch
                     headers=headers,
                     json={},
                 )
-                assert response.status_code == 409
-                assert "dedicated ingestion adapter" in response.json()["detail"]
+                assert response.status_code == 200
+                assert response.json() == {
+                    "connector_id": connector.id,
+                    "documents_seen": 3,
+                    "documents_created": 2,
+                    "candidates_created": 2,
+                }
         finally:
             await engine.dispose()
 

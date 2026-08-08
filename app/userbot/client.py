@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, AsyncIterator, Awaitable, Callable
 from urllib.parse import unquote, urlparse
 
@@ -32,6 +33,7 @@ class UserbotMessage:
     chat: UserbotChat
     text: str | None = None
     caption: str | None = None
+    date: datetime | None = None
     _reply: Callable[[str], Awaitable[Any]] | None = None
 
     async def reply_text(self, text: str):
@@ -96,7 +98,7 @@ def _public_target(target: str | int) -> str | int:
     if isinstance(target, int):
         return target
     value = target.strip()
-    if value.startswith("@"): 
+    if value.startswith("@"):
         return value[1:]
     for marker in ("t.me/", "telegram.me/"):
         if marker in value:
@@ -259,7 +261,11 @@ class UserbotGateway:
         chat: UserbotChat,
         reply: Callable[[str], Awaitable[Any]] | None = None,
     ) -> UserbotMessage:
-        raw = (getattr(message, "raw_text", None) or getattr(message, "message", None) or "")
+        raw = (
+            getattr(message, "raw_text", None)
+            or getattr(message, "message", None)
+            or ""
+        )
         # Telethon exposes text and media captions through the same `message`
         # field. Exposing it through both compatibility fields keeps existing
         # source-processing semantics intact.
@@ -268,6 +274,7 @@ class UserbotGateway:
             chat=chat,
             text=raw or None,
             caption=raw or None,
+            date=getattr(message, "date", None),
             _reply=reply,
         )
 

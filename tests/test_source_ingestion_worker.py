@@ -25,7 +25,18 @@ class _FakeIngestionService:
         return IngestionResult(int(connector.id), 1, 1, 1)
 
 
-def test_worker_isolates_connector_failures(monkeypatch) -> None:
+class _FakeTelegramIngestionService:
+    calls: ClassVar[list[int]] = []
+
+    def __init__(self, session) -> None:
+        self.session = session
+
+    async def ingest(self, connector):
+        type(self).calls.append(int(connector.id))
+        return IngestionResult(int(connector.id), 1, 1, 1)
+
+
+def test_worker_isolates_connector_failures_and_dispatches_telegram(monkeypatch) -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         try:
@@ -46,16 +57,23 @@ def test_worker_isolates_connector_failures(monkeypatch) -> None:
                 await SourcesRepo(session).create_connector(
                     channel_id=51,
                     kind="telegram",
-                    value="@not-http-worker",
+                    value="@telegram-worker",
                 )
 
             _FakeIngestionService.calls = []
+            _FakeTelegramIngestionService.calls = []
             monkeypatch.setattr(worker_module, "SourceIngestionService", _FakeIngestionService)
+            monkeypatch.setattr(
+                worker_module,
+                "TelegramSourceIngestionService",
+                _FakeTelegramIngestionService,
+            )
             worker = SourceIngestionWorker(session_factory=Session, interval_seconds=15)
             processed = await worker.run_once()
 
-            assert processed == 1
+            assert processed == 2
             assert len(_FakeIngestionService.calls) == 2
+            assert len(_FakeTelegramIngestionService.calls) == 1
         finally:
             await engine.dispose()
 
