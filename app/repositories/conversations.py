@@ -1,8 +1,31 @@
 from __future__ import annotations
+
+import hashlib
 from typing import Optional
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.domain.models import AIConversation, AIConversationMessage
+
+
+_MAX_PROMPT_KEY_LEN = 64
+
+
+def scoped_prompt_key(prompt_key: str, channel_id: int | None) -> str:
+    """Return a channel-scoped key while staying within the DB column limit."""
+    key = str(prompt_key)
+    if channel_id is None:
+        return key[:_MAX_PROMPT_KEY_LEN]
+
+    prefix = f"ch:{int(channel_id)}:"
+    candidate = f"{prefix}{key}"
+    if len(candidate) <= _MAX_PROMPT_KEY_LEN:
+        return candidate
+
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+    room = _MAX_PROMPT_KEY_LEN - len(prefix) - len(digest) - 1
+    return f"{prefix}{key[:max(0, room)]}:{digest}"
 
 
 class ConversationsRepo:
@@ -12,15 +35,33 @@ class ConversationsRepo:
     async def get_or_create(
         self, user_id: int, prompt_key: str, channel_id: int | None = None
     ) -> int:
+        effective_key = scoped_prompt_key(prompt_key, channel_id)
         stmt = select(AIConversation).where(
-            AIConversation.user_id == user_id, AIConversation.prompt_key == prompt_key
+            AIConversation.user_id == user_id,
+            AIConversation.prompt_key == effective_key,
         )
         res = await self.session.execute(stmt)
         conv = res.scalar_one_or_none()
         if conv:
             return int(conv.id)
+
+        # Backward compatibility: reuse an old unscoped conversation only when it
+        # already belongs to the same channel. Never reuse another channel's row.
+        if channel_id is not None and effective_key != prompt_key:
+            legacy_stmt = select(AIConversation).where(
+                AIConversation.user_id == user_id,
+                AIConversation.prompt_key == prompt_key,
+                AIConversation.channel_id == channel_id,
+            )
+            legacy_res = await self.session.execute(legacy_stmt)
+            legacy = legacy_res.scalar_one_or_none()
+            if legacy:
+                return int(legacy.id)
+
         conv = AIConversation(
-            user_id=user_id, prompt_key=prompt_key, channel_id=channel_id
+            user_id=user_id,
+            prompt_key=effective_key,
+            channel_id=channel_id,
         )
         self.session.add(conv)
         await self.session.flush()
@@ -36,7 +77,6 @@ class ConversationsRepo:
         )
         res = await self.session.execute(stmt)
         rows = list(res.scalars())
-        # накапливаем с конца до достижения лимита токенов
         total = 0
         selected: list[AIConversationMessage] = []
         for m in rows:
@@ -86,7 +126,6 @@ class ConversationsRepo:
         await self.session.flush()
 
     async def delete_all_by_user(self, user_id: int) -> int:
-        """Удалить все диалоги пользователя (и их сообщения). Возвращает число удалённых диалогов."""
         res = await self.session.execute(
             select(AIConversation).where(AIConversation.user_id == user_id)
         )
@@ -97,23 +136,32 @@ class ConversationsRepo:
         await self.session.commit()
         return count
 
-    async def delete_by_user_and_prompt_key(self, user_id: int, prompt_key: str) -> int:
-        """Удалить диалог по пользователю и prompt_key. Возвращает 1, если удалён."""
-        res = await self.session.execute(
-            select(AIConversation).where(
-                AIConversation.user_id == user_id,
-                AIConversation.prompt_key == prompt_key,
-            )
-        )
-        row = res.scalar_one_or_none()
-        if not row:
-            return 0
-        await self.session.delete(row)
-        await self.session.commit()
-        return 1
+    async def delete_by_user_and_prompt_key(
+        self,
+        user_id: int,
+        prompt_key: str,
+        channel_id: int | None = None,
+    ) -> int:
+        """Delete legacy/scoped conversations matching the logical prompt key."""
+        stmt = select(AIConversation).where(AIConversation.user_id == user_id)
+        if channel_id is not None:
+            stmt = stmt.where(AIConversation.channel_id == channel_id)
+        res = await self.session.execute(stmt)
+        rows = list(res.scalars().all())
+
+        matches = [
+            row
+            for row in rows
+            if row.prompt_key == str(prompt_key)
+            or row.prompt_key == scoped_prompt_key(prompt_key, row.channel_id)
+        ]
+        for row in matches:
+            await self.session.delete(row)
+        if matches:
+            await self.session.commit()
+        return len(matches)
 
     async def delete_all_by_channel(self, channel_id: int) -> int:
-        """Удалить все диалоги, привязанные к каналу."""
         res = await self.session.execute(
             select(AIConversation).where(AIConversation.channel_id == channel_id)
         )
