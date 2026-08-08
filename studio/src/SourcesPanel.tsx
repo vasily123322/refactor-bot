@@ -5,7 +5,7 @@ import { StudioApiError, studioApi, type CreateSourceInput } from './api';
 import { SourceSettingsControls } from './SourceSettingsControls';
 import { updateSourceSettings } from './sourceSettingsApi';
 import type { SourceSettingsPatch } from './sourceSettingsApi';
-import type { Channel, ContentCandidateView, SourceConnectorView } from './types';
+import type { Channel, SourceConnectorView } from './types';
 
 function errorMessage(error: unknown): string {
   if (error instanceof StudioApiError || error instanceof Error) return error.message;
@@ -31,31 +31,8 @@ function sourceKindLabel(kind: string): string {
   return kind;
 }
 
-function actionLabel(action: string | null): string {
-  switch (action) {
-    case 'summarize': return 'Суммаризировать';
-    case 'rewrite': return 'Переписать';
-    case 'mirror': return 'Разрешённый mirror';
-    case 'review': return 'Проверить права';
-    case 'research': return 'Исследовать';
-    default: return action || 'Проверить';
-  }
-}
-
-function scoreLabel(score: number | null): string | null {
-  if (score === null || !Number.isFinite(score)) return null;
-  return `${Math.round(Math.max(0, Math.min(1, score)) * 100)}%`;
-}
-
-export function SourcesPanel({
-  channel,
-  onOpenContent,
-}: {
-  channel: Channel | null;
-  onOpenContent: (contentId: number) => void;
-}) {
+export function SourcesPanel({ channel }: { channel: Channel | null }) {
   const [sources, setSources] = useState<SourceConnectorView[]>([]);
-  const [candidates, setCandidates] = useState<ContentCandidateView[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -69,15 +46,9 @@ export function SourcesPanel({
   const load = useCallback(async () => {
     if (!channel) {
       setSources([]);
-      setCandidates([]);
       return;
     }
-    const [nextSources, nextCandidates] = await Promise.all([
-      studioApi.sources(channel.id),
-      studioApi.candidates(channel.id),
-    ]);
-    setSources(nextSources);
-    setCandidates(nextCandidates);
+    setSources(await studioApi.sources(channel.id));
   }, [channel]);
 
   useEffect(() => {
@@ -133,7 +104,7 @@ export function SourcesPanel({
     run(`ingest:${source.id}`, async () => {
       const result = await studioApi.ingestSource(channel!.id, source.id);
       setNotice(
-        `Источник #${source.id}: ${result.documents_created} новых документов, ${result.candidates_created} кандидатов`,
+        `Источник #${source.id}: ${result.documents_created} новых документов, ${result.candidates_created} кандидатов отправлено в Inbox`,
       );
       await load();
     });
@@ -151,54 +122,6 @@ export function SourcesPanel({
       );
     });
 
-  const enrichLocal = (candidate: ContentCandidateView) =>
-    run(`enrich-local:${candidate.id}`, async () => {
-      const result = await studioApi.enrichCandidateLocal(channel!.id, candidate.id);
-      setCandidates((current) =>
-        current.map((row) =>
-          row.id === candidate.id
-            ? { ...row, summary: result.summary, topic: result.topic, score: result.score }
-            : row,
-        ),
-      );
-      setNotice(
-        result.reused_existing
-          ? `Local enrichment #${result.run_id}: использован сохранённый результат`
-          : `Local enrichment #${result.run_id}: готов`,
-      );
-    });
-
-  const enrichAI = (candidate: ContentCandidateView) =>
-    run(`enrich-ai:${candidate.id}`, async () => {
-      const result = await studioApi.enrichCandidateAI(channel!.id, candidate.id);
-      setCandidates((current) =>
-        current.map((row) =>
-          row.id === candidate.id
-            ? { ...row, summary: result.summary, topic: result.topic, score: result.score }
-            : row,
-        ),
-      );
-      setNotice(
-        result.reused_existing
-          ? `AI enrichment #${result.run_id}: использован сохранённый результат`
-          : `AI enrichment #${result.run_id}: ${result.model || result.provider}`,
-      );
-    });
-
-  const dismiss = (candidate: ContentCandidateView) =>
-    run(`candidate:${candidate.id}`, async () => {
-      await studioApi.dismissCandidate(channel!.id, candidate.id);
-      setCandidates((current) => current.filter((row) => row.id !== candidate.id));
-    });
-
-  const acceptDraft = (candidate: ContentCandidateView) =>
-    run(`draft:${candidate.id}`, async () => {
-      const draft = await studioApi.candidateDraft(channel!.id, candidate.id);
-      setCandidates((current) => current.filter((row) => row.id !== candidate.id));
-      setNotice(`Создан черновик #${draft.id} с policy ${candidate.reuse_policy}`);
-      onOpenContent(draft.id);
-    });
-
   if (!channel) {
     return <div className="sources-empty-page">Выберите канал, чтобы настроить источники.</div>;
   }
@@ -209,11 +132,11 @@ export function SourcesPanel({
         <div>
           <small className="eyebrow">{channel.title || channel.tg_chat_id}</small>
           <h1>Источники</h1>
-          <p>Research pipeline: connector → normalized document → candidate. Автокопирование не включается само.</p>
+          <p>Connectors и ingestion pipeline. Нормализованные материалы после ingest появляются в отдельном Inbox.</p>
         </div>
         <div className="top-actions">
           <button className="button secondary" onClick={() => void load()} disabled={busyId !== null}>↻ Обновить</button>
-          <button className="button primary" onClick={() => setShowForm((value) => !value)}>+ Источник</button>
+          <button className="button primary" onClick={() => setShowForm((current) => !current)}>+ Источник</button>
         </div>
       </header>
 
@@ -272,141 +195,77 @@ export function SourcesPanel({
         </form>
       )}
 
-      <div className="sources-layout">
-        <section className="sources-connectors-card">
-          <div className="panel-heading">
-            <div><h2>Connectors</h2><small>{sources.length} подключено</small></div>
-          </div>
-          <div className="source-list">
-            {sources.length === 0 && <div className="empty-state">Источников пока нет.</div>}
-            {sources.map((source) => {
-              const canIngest = source.enabled && ['rss', 'url', 'web', 'telegram'].includes(source.kind);
-              const ingestLabel = source.kind === 'telegram' ? 'MTProto ingest' : 'Ingest now';
-              const lifecycleEditable = !(
-                source.legacy_grab_source_id !== null && source.legacy_ai_source_id === null
-              );
-              return (
-                <article
-                  key={source.id}
-                  className={source.enabled ? 'source-card' : 'source-card source-card-disabled'}
-                >
-                  <div className="source-card-head">
-                    <div className={`source-kind source-kind-${source.kind}`}>{sourceKindLabel(source.kind)}</div>
-                    <span className={`source-health source-health-${source.status}`}>{source.status}</span>
+      <section className="sources-connectors-card sources-connectors-card-full">
+        <div className="panel-heading">
+          <div><h2>Connectors</h2><small>{sources.length} подключено</small></div>
+        </div>
+        <div className="source-list">
+          {sources.length === 0 && <div className="empty-state">Источников пока нет.</div>}
+          {sources.map((source) => {
+            const canIngest = source.enabled && ['rss', 'url', 'web', 'telegram'].includes(source.kind);
+            const ingestLabel = source.kind === 'telegram' ? 'MTProto ingest' : 'Ingest now';
+            const lifecycleEditable = !(
+              source.legacy_grab_source_id !== null && source.legacy_ai_source_id === null
+            );
+            return (
+              <article
+                key={source.id}
+                className={source.enabled ? 'source-card' : 'source-card source-card-disabled'}
+              >
+                <div className="source-card-head">
+                  <div className={`source-kind source-kind-${source.kind}`}>{sourceKindLabel(source.kind)}</div>
+                  <span className={`source-health source-health-${source.status}`}>{source.status}</span>
+                </div>
+                <strong className="source-address">{source.value}</strong>
+                <div className="source-meta-row">
+                  <span>{source.mode}</span>
+                  <span>{source.reuse_policy}</span>
+                  <span>{source.citation_enabled ? 'citation on' : 'citation off'}</span>
+                </div>
+                {source.status_reason && <p className="source-reason">{source.status_reason}</p>}
+                <div className="source-times">
+                  <span>success: {dateLabel(source.last_success_at)}</span>
+                  <span>document: {dateLabel(source.last_document_at)}</span>
+                </div>
+                {lifecycleEditable ? (
+                  <SourceSettingsControls
+                    source={source}
+                    busy={busyId === `settings:${source.id}`}
+                    onSave={(patch) => saveSettings(source, patch)}
+                  />
+                ) : (
+                  <div className="source-readonly-note">
+                    Legacy GrabSource · read-only в Sources v2. Управляйте правилом через legacy grabber.
                   </div>
-                  <strong className="source-address">{source.value}</strong>
-                  <div className="source-meta-row">
-                    <span>{source.mode}</span>
-                    <span>{source.reuse_policy}</span>
-                    <span>{source.citation_enabled ? 'citation on' : 'citation off'}</span>
-                  </div>
-                  {source.status_reason && <p className="source-reason">{source.status_reason}</p>}
-                  <div className="source-times">
-                    <span>success: {dateLabel(source.last_success_at)}</span>
-                    <span>document: {dateLabel(source.last_document_at)}</span>
-                  </div>
-                  {lifecycleEditable ? (
-                    <SourceSettingsControls
-                      source={source}
-                      busy={busyId === `settings:${source.id}`}
-                      onSave={(patch) => saveSettings(source, patch)}
-                    />
-                  ) : (
-                    <div className="source-readonly-note">
-                      Legacy GrabSource · read-only в Sources v2. Управляйте правилом через legacy grabber.
-                    </div>
-                  )}
-                  <div className="source-actions">
-                    <button
-                      className="button secondary compact"
-                      disabled={busyId !== null}
-                      onClick={() => void doctor(source)}
-                    >
-                      {busyId === `doctor:${source.id}` ? 'Проверяю…' : 'Doctor'}
-                    </button>
-                    <button
-                      className="button secondary compact"
-                      disabled={busyId !== null || !canIngest}
-                      title={
-                        !source.enabled
-                          ? 'Сначала включите источник'
-                          : source.kind === 'telegram'
-                            ? 'Получить историю через userbot MTProto session'
-                            : 'Получить новые документы сейчас'
-                      }
-                      onClick={() => void ingest(source)}
-                    >
-                      {busyId === `ingest:${source.id}` ? 'Читаю…' : ingestLabel}
-                    </button>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        </section>
-
-        <section className="sources-inbox-card">
-          <div className="panel-heading">
-            <div><h2>Inbox</h2><small>{candidates.length} новых кандидатов</small></div>
-          </div>
-          <div className="candidate-list">
-            {candidates.length === 0 && (
-              <div className="empty-state">Новых материалов нет. Worker и ручной ingest будут добавлять их сюда.</div>
-            )}
-            {candidates.map((candidate) => {
-              const score = scoreLabel(candidate.score);
-              return (
-                <article key={candidate.id} className="candidate-card">
-                  <div className="candidate-head">
-                    <span className="candidate-action">{actionLabel(candidate.suggested_action)}</span>
-                    <span className="candidate-policy">{candidate.reuse_policy}</span>
-                    {score && <span className="candidate-policy">score {score}</span>}
-                  </div>
-                  <h3>{candidate.topic || candidate.source_title || `Материал #${candidate.source_document_id}`}</h3>
-                  <p>{candidate.summary || candidate.excerpt}</p>
-                  <div className="candidate-footer">
-                    <span>{dateLabel(candidate.published_at || candidate.fetched_at)}</span>
-                    <div>
-                      {candidate.source_url && (
-                        <a className="button secondary compact" href={candidate.source_url} target="_blank" rel="noreferrer">Источник ↗</a>
-                      )}
-                      <button
-                        className="button secondary compact"
-                        disabled={busyId !== null}
-                        onClick={() => void enrichLocal(candidate)}
-                      >
-                        {busyId === `enrich-local:${candidate.id}` ? 'Анализ…' : 'Local'}
-                      </button>
-                      <button
-                        className="button secondary compact"
-                        disabled={busyId !== null}
-                        title="Использует AI-настройки и лимиты выбранного канала"
-                        onClick={() => void enrichAI(candidate)}
-                      >
-                        {busyId === `enrich-ai:${candidate.id}` ? 'AI…' : '✨ AI'}
-                      </button>
-                      <button
-                        className="button primary compact"
-                        disabled={busyId !== null}
-                        onClick={() => void acceptDraft(candidate)}
-                      >
-                        {busyId === `draft:${candidate.id}` ? 'Создаю…' : 'В черновик'}
-                      </button>
-                      <button
-                        className="button secondary compact"
-                        disabled={busyId !== null}
-                        onClick={() => void dismiss(candidate)}
-                      >
-                        Скрыть
-                      </button>
-                    </div>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        </section>
-      </div>
+                )}
+                <div className="source-actions">
+                  <button
+                    className="button secondary compact"
+                    disabled={busyId !== null}
+                    onClick={() => void doctor(source)}
+                  >
+                    {busyId === `doctor:${source.id}` ? 'Проверяю…' : 'Doctor'}
+                  </button>
+                  <button
+                    className="button secondary compact"
+                    disabled={busyId !== null || !canIngest}
+                    title={
+                      !source.enabled
+                        ? 'Сначала включите источник'
+                        : source.kind === 'telegram'
+                          ? 'Получить историю через userbot MTProto session'
+                          : 'Получить новые документы сейчас'
+                    }
+                    onClick={() => void ingest(source)}
+                  >
+                    {busyId === `ingest:${source.id}` ? 'Читаю…' : ingestLabel}
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </section>
     </div>
   );
 }
