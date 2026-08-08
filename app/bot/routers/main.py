@@ -2923,10 +2923,8 @@ async def handle_ai_topic_input(message: Message, state: FSMContext):
 
     # Stream the model directly into Telegram's ephemeral draft preview.
     async with AsyncSessionLocal() as session:
-        from app.bot.ai_draft_stream import render_ai_stream_to_draft
+        from app.bot.ai_editor_runtime import run_editor_ai_request
         from app.repositories.ai_settings import ChannelAISettingsRepo
-        from app.services.ai_generation import AIGenerationService
-        from app.services.ai_streaming import InteractiveAIStreamingService
 
         try:
             repo = ChannelAISettingsRepo(session)
@@ -2934,25 +2932,26 @@ async def handle_ai_topic_input(message: Message, state: FSMContext):
         except Exception:
             pass
 
-        generation = AIGenerationService(session)
-        streaming = InteractiveAIStreamingService(generation)
         context = {
             "brand": data.get("brand", ""),
             "audience": data.get("audience", "подписчики канала"),
             "cta": data.get("cta", ""),
         }
-        result = await render_ai_stream_to_draft(
+        request = {
+            "kind": "topic",
+            "topic": topic,
+            "extra": context,
+            "prompt_key": "ai_text",
+        }
+        await state.update_data(ai_last_request=request)
+        result = await run_editor_ai_request(
             tg_bot,
+            session=session,
+            request=request,
+            channel_id=channel_id,
+            user_id=message.from_user.id,
             chat_id=message.chat.id,
             seed=message.message_id,
-            events=streaming.stream_pipeline(
-                channel_id=channel_id,
-                mode="from_scratch",
-                topic=topic,
-                extra=context,
-                user_id=message.from_user.id,
-                prompt_key="ai_text",
-            ),
         )
     if not result["success"]:
         err = (result.get("error") or "").lower()
@@ -3051,19 +3050,12 @@ async def handle_ai_topic_input(message: Message, state: FSMContext):
 
     await state.update_data(preview_msg_id=preview.message_id)
 
-    # Кнопка «Применить ответ →» для быстрого возврата в редактор уже совершена вставкой выше,
-    # поэтому просто дадим кнопку возврата к карточке создания
-    kb_back = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="← В редактор", callback_data="ai_back_to_preview"
-                )
-            ]
-        ]
+    from app.bot.ai_editor_runtime import ai_result_actions_kb, ai_result_summary
+
+    await message.answer(
+        ai_result_summary(result, label="Текст сгенерирован"),
+        reply_markup=ai_result_actions_kb(),
     )
-    success_text = f"✅ Текст сгенерирован!\nИспользовано токенов: {tokens_used}"
-    await message.answer(success_text, reply_markup=kb_back)
 
 
 # --- Обработчик ввода ссылки для генерации ---
@@ -3085,23 +3077,30 @@ async def handle_ai_link_input(message: Message, state: FSMContext):
     data = await state.get_data()
     channel_id = data.get("channel_id", 0)
 
-    status_msg = await message.answer("⏳ Загружаю статью и генерирую текст...")
+    mode = (data.get("ai_link_mode") or "summary").lower().strip()
+    if mode not in {"summary", "rewrite", "paraphrase"}:
+        mode = "summary"
+    request = {
+        "kind": "link",
+        "url": url,
+        "mode": mode,
+        "prompt_key": "ai_link",
+    }
+    await state.update_data(ai_last_request=request)
 
     try:
         async with AsyncSessionLocal() as session:
-            service = AIGenerationService(session)
-            mode = (data.get("ai_link_mode") or "summary").lower().strip()
-            if mode not in {"summary", "rewrite", "paraphrase"}:
-                mode = "summary"
-            result = await service.generate_from_link(
+            from app.bot.ai_editor_runtime import run_editor_ai_request
+
+            result = await run_editor_ai_request(
+                tg_bot,
+                session=session,
+                request=request,
                 channel_id=channel_id,
-                url=url,
-                mode=mode,
                 user_id=message.from_user.id,
-                prompt_key="ai_link",
+                chat_id=message.chat.id,
+                seed=message.message_id,
             )
-            with suppress(TelegramBadRequest):
-                await status_msg.delete()
         if not result["success"]:
             err = (result.get("error") or "").lower()
             if ("лимит токенов" in err) or ("limit" in err and "token" in err):
@@ -3167,13 +3166,16 @@ async def handle_ai_link_input(message: Message, state: FSMContext):
             "rewrite": "Рерайт",
             "paraphrase": "Перефраз",
         }.get(mode, "Саммари")
+        from app.bot.ai_editor_runtime import ai_result_actions_kb, ai_result_summary
+
         await message.answer(
-            f"✅ {mode_done} готов!\nИспользовано токенов: {tokens_used}"
+            ai_result_summary(result, label=f"{mode_done} готов"),
+            reply_markup=ai_result_actions_kb(),
         )
 
     except Exception as e:
         logger.error(f"Ошибка при генерации из ссылки: {e}")
-        await status_msg.edit_text(f"❌ Произошла ошибка: {str(e)}")
+        await message.answer(f"❌ Произошла ошибка: {str(e)}")
         await state.set_state(PostFSM.preview)
 
 
@@ -3183,7 +3185,9 @@ async def handle_ai_link_input(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("ai_improve_"))
 async def cb_ai_improve_action(callback: CallbackQuery, state: FSMContext):
     """Выполнение конкретного улучшения текста."""
-    action = callback.data.split("_")[-1]
+    from app.bot.ai_editor_runtime import improve_action_name
+
+    action = improve_action_name(callback.data)
 
     instructions = {
         "style": "улучши общий стиль текста, сделай его более привлекательным и читабельным",
@@ -3193,7 +3197,7 @@ async def cb_ai_improve_action(callback: CallbackQuery, state: FSMContext):
     }
 
     # Для "tone_menu" показываем подменю
-    if action == "tone":
+    if action == "tone_menu":
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -3264,24 +3268,24 @@ async def cb_ai_improve_action(callback: CallbackQuery, state: FSMContext):
     except TelegramBadRequest:
         pass
     try:
+        request = {
+            "kind": "improve",
+            "original_text": current_text,
+            "instruction": instruction,
+            "prompt_key": "ai_improve",
+        }
+        await state.update_data(ai_last_request=request)
         async with AsyncSessionLocal() as session:
-            from app.bot.ai_draft_stream import render_ai_stream_to_draft
-            from app.services.ai_streaming import InteractiveAIStreamingService
+            from app.bot.ai_editor_runtime import run_editor_ai_request
 
-            generation = AIGenerationService(session)
-            streaming = InteractiveAIStreamingService(generation)
-            result = await render_ai_stream_to_draft(
+            result = await run_editor_ai_request(
                 tg_bot,
+                session=session,
+                request=request,
+                channel_id=channel_id,
+                user_id=callback.from_user.id,
                 chat_id=callback.message.chat.id,
                 seed=callback.message.message_id,
-                events=streaming.stream_pipeline(
-                    channel_id=channel_id,
-                    mode="improve",
-                    original_text=current_text,
-                    instruction=instruction,
-                    user_id=callback.from_user.id,
-                    prompt_key="ai_improve",
-                ),
             )
 
         if not result["success"]:
@@ -3325,8 +3329,11 @@ async def cb_ai_improve_action(callback: CallbackQuery, state: FSMContext):
         )
 
         await state.update_data(preview_msg_id=preview.message_id)
+        from app.bot.ai_editor_runtime import ai_result_actions_kb, ai_result_summary
+
         await callback.message.answer(
-            f"✅ Текст улучшен!\nИспользовано токенов: {tokens_used}"
+            ai_result_summary(result, label="Текст улучшен"),
+            reply_markup=ai_result_actions_kb(),
         )
 
     except Exception as e:
