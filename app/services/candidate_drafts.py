@@ -41,6 +41,13 @@ def _clip(value: str, limit: int) -> tuple[str, bool]:
     return text[: max(0, limit - 1)].rstrip() + "…", True
 
 
+def _body_with_source(body: str, source: str) -> tuple[str, bool]:
+    suffix = f"\n\n{source}"
+    body_limit = max(0, _MAX_DRAFT_TEXT - len(suffix))
+    clipped, truncated = _clip(body, body_limit)
+    return (f"{clipped}{suffix}" if clipped else source), truncated
+
+
 def _draft_text(
     *,
     policy: str,
@@ -52,21 +59,19 @@ def _draft_text(
     body = str(document.content or "").strip()
 
     if policy == "mirror_authorized":
-        text = f"{body}\n\n{source}" if body else source
-        return _clip(text, _MAX_DRAFT_TEXT)
+        return _body_with_source(body, source)
 
     if policy == "quote_with_attribution":
         quote, quote_truncated = _clip(body, _MAX_QUOTE_CHARS)
         parts = [title]
         if quote:
             parts.append(f"«{quote}»")
-        parts.append(source)
-        text, text_truncated = _clip("\n\n".join(parts), _MAX_DRAFT_TEXT)
+        prefix = "\n\n".join(parts)
+        text, text_truncated = _body_with_source(prefix, source)
         return text, quote_truncated or text_truncated
 
     if policy == "summarize" and summary:
-        text, truncated = _clip(f"{summary.strip()}\n\n{source}", _MAX_DRAFT_TEXT)
-        return text, truncated
+        return _body_with_source(summary.strip(), source)
 
     task = {
         "summarize": "Задача: подготовить краткое изложение своими словами.",
