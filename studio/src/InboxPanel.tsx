@@ -3,6 +3,12 @@ import { useCallback, useEffect, useState } from 'react';
 import { StudioApiError, studioApi } from './api';
 import type { Channel, ContentCandidateView } from './types';
 
+type RewritePreview = {
+  runId: number;
+  text: string;
+  model: string | null;
+};
+
 function errorMessage(error: unknown): string {
   if (error instanceof StudioApiError || error instanceof Error) return error.message;
   return 'Неизвестная ошибка';
@@ -44,6 +50,7 @@ export function InboxPanel({
   onOpenContent: (contentId: number) => void;
 }) {
   const [candidates, setCandidates] = useState<ContentCandidateView[]>([]);
+  const [rewritePreviews, setRewritePreviews] = useState<Record<number, RewritePreview>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -59,6 +66,7 @@ export function InboxPanel({
   useEffect(() => {
     setError(null);
     setNotice(null);
+    setRewritePreviews({});
     void load().catch((reason) => setError(errorMessage(reason)));
   }, [load]);
 
@@ -117,16 +125,44 @@ export function InboxPanel({
       );
     });
 
+  const rewriteAI = (candidate: ContentCandidateView) =>
+    run(`rewrite-ai:${candidate.id}`, async () => {
+      const result = await studioApi.rewriteCandidateAI(channel!.id, candidate.id);
+      setRewritePreviews((current) => ({
+        ...current,
+        [candidate.id]: {
+          runId: result.run_id,
+          text: result.text,
+          model: result.model,
+        },
+      }));
+      setNotice(
+        result.reused_existing
+          ? `AI rewrite #${result.run_id}: использован сохранённый результат`
+          : `AI rewrite #${result.run_id}: ${result.model || result.provider}`,
+      );
+    });
+
   const dismiss = (candidate: ContentCandidateView) =>
     run(`dismiss:${candidate.id}`, async () => {
       await studioApi.dismissCandidate(channel!.id, candidate.id);
       setCandidates((current) => current.filter((row) => row.id !== candidate.id));
+      setRewritePreviews((current) => {
+        const next = { ...current };
+        delete next[candidate.id];
+        return next;
+      });
     });
 
   const acceptDraft = (candidate: ContentCandidateView) =>
     run(`draft:${candidate.id}`, async () => {
       const draft = await studioApi.candidateDraft(channel!.id, candidate.id);
       setCandidates((current) => current.filter((row) => row.id !== candidate.id));
+      setRewritePreviews((current) => {
+        const next = { ...current };
+        delete next[candidate.id];
+        return next;
+      });
       onOpenContent(draft.id);
     });
 
@@ -168,6 +204,8 @@ export function InboxPanel({
           )}
           {candidates.map((candidate) => {
             const score = scoreLabel(candidate.score);
+            const rewritePreview = rewritePreviews[candidate.id];
+            const canRewrite = candidate.reuse_policy === 'rewrite_with_attribution';
             return (
               <article key={candidate.id} className="candidate-card">
                 <div className="candidate-head">
@@ -177,6 +215,15 @@ export function InboxPanel({
                 </div>
                 <h3>{candidate.topic || candidate.source_title || `Материал #${candidate.source_document_id}`}</h3>
                 <p>{candidate.summary || candidate.excerpt}</p>
+                {rewritePreview && (
+                  <div className="candidate-rewrite-preview">
+                    <small>
+                      AI rewrite preview · run #{rewritePreview.runId}
+                      {rewritePreview.model ? ` · ${rewritePreview.model}` : ''}
+                    </small>
+                    <p>{rewritePreview.text}</p>
+                  </div>
+                )}
                 <div className="candidate-footer">
                   <span>{dateLabel(candidate.published_at || candidate.fetched_at)}</span>
                   <div>
@@ -198,6 +245,16 @@ export function InboxPanel({
                     >
                       {busyId === `enrich-ai:${candidate.id}` ? 'AI…' : '✨ AI'}
                     </button>
+                    {canRewrite && (
+                      <button
+                        className="button secondary compact"
+                        disabled={busyId !== null}
+                        title="Создать независимый AI rewrite; attribution добавит приложение"
+                        onClick={() => void rewriteAI(candidate)}
+                      >
+                        {busyId === `rewrite-ai:${candidate.id}` ? 'Rewrite…' : '✨ Rewrite'}
+                      </button>
+                    )}
                     <button
                       className="button primary compact"
                       disabled={busyId !== null}
