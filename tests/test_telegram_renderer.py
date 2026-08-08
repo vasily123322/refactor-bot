@@ -169,7 +169,7 @@ def test_document_posting_sends_rich_message_and_returns_id() -> None:
     asyncio.run(run())
 
 
-def test_document_posting_dispatches_serialized_rich_document_task() -> None:
+def test_document_posting_dispatches_serialized_rich_document_task_via_send_now() -> None:
     async def run() -> None:
         bot = _RichBot()
         posting = DocumentPostingService(bot, object())  # type: ignore[arg-type]
@@ -177,9 +177,9 @@ def test_document_posting_dispatches_serialized_rich_document_task() -> None:
             mode="rich",
             blocks=[{"id": "p", "type": "paragraph", "content": "From scheduler"}],
         )
-        ids = await posting._dispatch(
-            {"type": "rich_document", "post_document": document.to_dict()},
+        ids = await posting.send_now(
             67890,
+            {"type": "rich_document", "post_document": document.to_dict()},
         )
         assert ids == [700]
         assert bot.calls[0]["chat_id"] == 67890
