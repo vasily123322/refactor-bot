@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import random
 import time
 import uuid
 import weakref
-from typing import Any, Dict, List, Literal, TypedDict
+from typing import Any, AsyncIterator, Dict, List, Literal, TypedDict
 
 import httpx
 from loguru import logger
@@ -24,6 +25,12 @@ class ChatResult(TypedDict):
     prompt_tokens: int
     completion_tokens: int
     error: str | None
+
+
+class ChatStreamEvent(TypedDict, total=False):
+    type: Literal["delta", "done", "error"]
+    text: str
+    result: ChatResult
 
 
 class _SharedHTTPPool:
@@ -127,6 +134,22 @@ class OpenRouterClient:
             "error": error,
         }
 
+    @staticmethod
+    def _parse_sse_line(line: str) -> dict[str, Any] | None:
+        """Parse one OpenRouter SSE data line and ignore keepalive comments."""
+        value = (line or "").strip()
+        if not value or value.startswith(":") or not value.startswith("data:"):
+            return None
+        payload = value[5:].strip()
+        if not payload or payload == "[DONE]":
+            return None
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError:
+            logger.debug("OpenRouter stream: ignored malformed SSE payload")
+            return None
+        return decoded if isinstance(decoded, dict) else None
+
     def _should_retry_status(self, status_code: int) -> bool:
         return status_code == 429 or (500 <= status_code < 600)
 
@@ -141,6 +164,15 @@ class OpenRouterClient:
         if len(compact) > 500:
             compact = compact[:497] + "..."
         return f"HTTP {status}: {compact}" if compact else f"HTTP {status}"
+
+    @staticmethod
+    def _stream_error_message(payload: dict[str, Any]) -> str:
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or error.get("code") or "stream error")
+        else:
+            message = str(error or "stream error")
+        return f"OpenRouter stream error: {message}"
 
     async def chat(
         self,
@@ -265,3 +297,181 @@ class OpenRouterClient:
             success=False,
             error=last_error or "Неизвестная ошибка",
         )
+
+    async def stream_chat(
+        self,
+        *,
+        messages: List[ChatMessage],
+        model: str,
+        temperature: float,
+        top_p: float,
+        max_tokens: int,
+        base_url: str,
+        api_key: str,
+        request_id: str | None = None,
+    ) -> AsyncIterator[ChatStreamEvent]:
+        """Stream OpenRouter SSE deltas and emit one terminal result event.
+
+        Transient failures are retried only before the first user-visible delta.
+        Once partial text has been emitted, retrying would duplicate content, so a
+        mid-stream error terminates the stream with the partial text attached.
+        """
+        if not api_key:
+            yield {
+                "type": "error",
+                "result": self._result(
+                    success=False, error="OpenRouter API key не настроен"
+                ),
+            }
+            return
+
+        req_id = request_id or uuid.uuid4().hex
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        headers = self._build_headers(api_key)
+        payload = self._build_payload(
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+        )
+        payload["stream"] = True
+
+        last_error: str | None = None
+        for attempt in range(1, self.max_retries + 1):
+            emitted = False
+            chunks: list[str] = []
+            usage: dict[str, Any] = {}
+            start_ts = time.monotonic()
+            try:
+                async with _SharedHTTPPool.get().stream(
+                    "POST",
+                    url,
+                    headers=headers,
+                    json=payload,
+                    timeout=self.timeout_seconds,
+                ) as response:
+                    if not response.is_success:
+                        raw = await response.aread()
+                        body = raw.decode(errors="replace")
+                        status = response.status_code
+                        last_error = self._response_error(status, body)
+                        if not self._should_retry_status(status):
+                            yield {
+                                "type": "error",
+                                "result": self._result(
+                                    success=False, error=last_error
+                                ),
+                            }
+                            return
+                    else:
+                        stream_failed_before_delta = False
+                        async for line in response.aiter_lines():
+                            data = self._parse_sse_line(line)
+                            if data is None:
+                                continue
+
+                            if data.get("usage"):
+                                usage = dict(data.get("usage") or {})
+
+                            if data.get("error"):
+                                last_error = self._stream_error_message(data)
+                                if emitted:
+                                    partial = "".join(chunks)
+                                    yield {
+                                        "type": "error",
+                                        "result": self._result(
+                                            success=False,
+                                            text=partial,
+                                            error=last_error,
+                                            usage=usage,
+                                        ),
+                                    }
+                                    return
+                                stream_failed_before_delta = True
+                                break
+
+                            choices = data.get("choices") or []
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta") or {}
+                            content = delta.get("content")
+                            if isinstance(content, str) and content:
+                                emitted = True
+                                chunks.append(content)
+                                yield {"type": "delta", "text": content}
+
+                        if not stream_failed_before_delta:
+                            full_text = "".join(chunks).strip()
+                            if full_text:
+                                result = self._result(
+                                    success=True,
+                                    text=full_text,
+                                    usage=usage,
+                                )
+                                dur_ms = int((time.monotonic() - start_ts) * 1000)
+                                logger.info(
+                                    "LLM stream ok req_id={} model={} dur_ms={} prompt_tokens={} completion_tokens={} total_tokens={}",
+                                    req_id,
+                                    model,
+                                    dur_ms,
+                                    result["prompt_tokens"],
+                                    result["completion_tokens"],
+                                    result["tokens_used"],
+                                )
+                                yield {"type": "done", "result": result}
+                                return
+                            last_error = "Пустой ответ от API"
+
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_error = f"Транспортная ошибка: {exc}"
+                if emitted:
+                    yield {
+                        "type": "error",
+                        "result": self._result(
+                            success=False,
+                            text="".join(chunks),
+                            error=last_error,
+                            usage=usage,
+                        ),
+                    }
+                    return
+                logger.warning(
+                    "LLM stream transport req_id={} model={} attempt={}/{} error={!r}",
+                    req_id,
+                    model,
+                    attempt,
+                    self.max_retries,
+                    exc,
+                )
+            except Exception as exc:
+                last_error = f"Ошибка генерации: {exc}"
+                if emitted:
+                    yield {
+                        "type": "error",
+                        "result": self._result(
+                            success=False,
+                            text="".join(chunks),
+                            error=last_error,
+                            usage=usage,
+                        ),
+                    }
+                    return
+                logger.exception(
+                    "LLM stream exception req_id={} model={} attempt={}/{}",
+                    req_id,
+                    model,
+                    attempt,
+                    self.max_retries,
+                )
+
+            if attempt < self.max_retries:
+                await asyncio.sleep(self._compute_backoff(attempt))
+
+        yield {
+            "type": "error",
+            "result": self._result(
+                success=False,
+                error=last_error or "Неизвестная ошибка",
+            ),
+        }
