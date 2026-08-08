@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from typing import Awaitable, Callable, Optional
+
 from loguru import logger
 
 
@@ -31,18 +33,27 @@ class PollingLoop:
     async def start(self) -> None:
         if self._task and not self._task.done():
             return
-        logger.info(f"{self.name}: start")
+        logger.info("{}: start", self.name)
         self._stopping.clear()
         self._task = asyncio.create_task(self._run_loop(), name=self.name)
 
     async def stop(self) -> None:
-        logger.info(f"{self.name}: stop requested")
+        logger.info("{}: stop requested", self.name)
         self._stopping.set()
-        if self._task:
-            try:
-                await asyncio.wait_for(self._task, timeout=5)
-            except Exception:
-                self._task.cancel()
+        if not self._task:
+            return
+
+        try:
+            await asyncio.wait_for(self._task, timeout=5)
+        except asyncio.TimeoutError:
+            logger.warning("{}: stop timed out; cancelling task", self.name)
+            self._task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("{}: worker task failed during shutdown", self.name)
 
     async def _run_loop(self) -> None:
         while not self._stopping.is_set():
@@ -50,14 +61,15 @@ class PollingLoop:
                 await self.on_tick()
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.warning(f"{self.name}: tick error: {e}")
-            # базовый sleep + джиттер
+            except Exception:
+                logger.exception("{}: tick error", self.name)
+
             try:
-                base = self.interval_seconds
-                if base > 0:
-                    await asyncio.sleep(base)
+                if self.interval_seconds > 0:
+                    await asyncio.sleep(self.interval_seconds)
                     if self.jitter_seconds > 0:
                         await asyncio.sleep(min(self.jitter_seconds, 1))
+            except asyncio.CancelledError:
+                break
             except Exception:
-                pass
+                logger.exception("{}: sleep error", self.name)
