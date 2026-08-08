@@ -18,7 +18,7 @@ from app.services.posting import PostingService
 from app.userbot.client import app as userbot
 from app.workers.ai_auto_tasks import AIAutoTasksWorker
 from app.workers.grab_poll import GrabPoller
-from app.workers.scheduler import Scheduler
+from app.workers.reliable_scheduler import Scheduler
 
 try:
     import app.userbot.listener  # noqa: F401 ensure userbot handlers are registered
