@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,6 +13,7 @@ from app.api.studio.schemas import ContentDetailResponse
 from app.core.db import AsyncSessionLocal
 from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
+from app.services.ai_activity import AIActivityService
 from app.services.candidate_drafts import CandidateDraftError, CandidateDraftService
 from app.services.candidate_enrichment import (
     CandidateEnrichmentBusy,
@@ -31,7 +33,7 @@ from app.services.candidate_rewrite import (
 from app.services.candidate_rewrite_ai import ChannelAIRewriteProviderFactory
 
 
-router = APIRouter(prefix="/api/studio", tags=["inbox"])
+router = APIRouter(prefix="/api/studio", tags=["inbox", "ai"])
 
 
 class CandidateEnrichmentResponse(BaseModel):
@@ -70,6 +72,39 @@ class LocalBatchEnrichmentResponse(BaseModel):
     reused: int
     skipped_busy: int
     failed: int
+
+
+class AIUsageResponse(BaseModel):
+    configured: bool
+    enabled: bool
+    model: str | None
+    temperature: float | None
+    max_tokens: int | None
+    tokens_used_day: int
+    tokens_limit_day: int | None
+    tokens_used_month: int
+    tokens_limit_month: int | None
+
+
+class AIActivityRunResponse(BaseModel):
+    kind: str
+    id: int
+    candidate_id: int
+    status: str
+    provider: str
+    model: str | None
+    input_chars: int
+    error_type: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    created_at: datetime | None
+
+
+class AIActivityResponse(BaseModel):
+    usage: AIUsageResponse
+    enrichment_counts: dict[str, int]
+    rewrite_counts: dict[str, int]
+    runs: list[AIActivityRunResponse]
 
 
 async def _session_dependency() -> AsyncIterator[AsyncSession]:
@@ -140,6 +175,55 @@ def _raise_rewrite_http(exc: CandidateRewriteError) -> None:
     if str(exc) == "candidate not found":
         raise HTTPException(status_code=404, detail="Candidate not found") from exc
     raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get(
+    "/channels/{channel_id}/ai/activity",
+    response_model=AIActivityResponse,
+)
+async def ai_activity(
+    channel_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+    limit: int = 50,
+) -> AIActivityResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    snapshot = await AIActivityService(session).snapshot(
+        channel_id=channel_id,
+        limit=limit,
+    )
+    usage = snapshot.usage
+    return AIActivityResponse(
+        usage=AIUsageResponse(
+            configured=usage.configured,
+            enabled=usage.enabled,
+            model=usage.model,
+            temperature=usage.temperature,
+            max_tokens=usage.max_tokens,
+            tokens_used_day=usage.tokens_used_day,
+            tokens_limit_day=usage.tokens_limit_day,
+            tokens_used_month=usage.tokens_used_month,
+            tokens_limit_month=usage.tokens_limit_month,
+        ),
+        enrichment_counts=dict(snapshot.enrichment_counts),
+        rewrite_counts=dict(snapshot.rewrite_counts),
+        runs=[
+            AIActivityRunResponse(
+                kind=run.kind,
+                id=run.id,
+                candidate_id=run.candidate_id,
+                status=run.status,
+                provider=run.provider,
+                model=run.model,
+                input_chars=run.input_chars,
+                error_type=run.error_type,
+                started_at=run.started_at,
+                finished_at=run.finished_at,
+                created_at=run.created_at,
+            )
+            for run in snapshot.runs
+        ],
+    )
 
 
 @router.post(

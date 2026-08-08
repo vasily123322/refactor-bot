@@ -1,0 +1,55 @@
+.ai-studio-page { display: grid; gap: 14px; }
+.ai-usage-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.ai-stat-card,
+.ai-status-card,
+.ai-runs-card {
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 22%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--tg-theme-secondary-bg-color, #111827) 91%, transparent);
+}
+.ai-stat-card { display: grid; gap: 5px; padding: 14px; min-height: 112px; align-content: start; }
+.ai-stat-card small { color: var(--tg-theme-hint-color, #94a3b8); font-size: 10px; }
+.ai-stat-card strong { font-size: 17px; overflow-wrap: anywhere; }
+.ai-stat-card span { color: var(--tg-theme-hint-color, #94a3b8); font-size: 10px; line-height: 1.45; }
+.ai-status-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.ai-status-card { display: grid; gap: 5px; padding: 12px 14px; }
+.ai-status-card span { color: var(--tg-theme-hint-color, #94a3b8); font-size: 10px; }
+.ai-runs-card { overflow: hidden; }
+.ai-run-list { display: grid; gap: 7px; padding: 9px; max-height: calc(100vh - 390px); overflow: auto; }
+.ai-run-row {
+  display: grid;
+  gap: 8px;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 17%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--tg-theme-bg-color, #0b1020) 48%, transparent);
+}
+.ai-run-main, .ai-run-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.ai-run-main strong { font-size: 12px; }
+.ai-run-main > span:not(.ai-run-kind), .ai-run-meta span { color: var(--tg-theme-hint-color, #94a3b8); font-size: 9px; }
+.ai-run-kind,
+.ai-run-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 9px;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 14%, transparent);
+}
+.ai-run-kind-enrichment { color: var(--tg-theme-link-color, #2aabee); }
+.ai-run-kind-rewrite { color: #a78bfa; }
+.ai-run-status-completed { color: #22c55e !important; background: color-mix(in srgb, #22c55e 12%, transparent); }
+.ai-run-status-failed, .ai-run-status-discarded, .ai-run-status-stale { color: #ef4444 !important; background: color-mix(in srgb, #ef4444 10%, transparent); }
+.ai-run-status-running { color: #f59e0b !important; background: color-mix(in srgb, #f59e0b 10%, transparent); }
+.ai-run-error { color: #ef4444 !important; }
+
+@media (max-width: 1050px) {
+  .ai-usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ai-run-list { max-height: none; }
+}
+
+@media (max-width: 620px) {
+  .ai-usage-grid, .ai-status-grid { grid-template-columns: 1fr; }
+}

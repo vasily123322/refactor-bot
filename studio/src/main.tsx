@@ -3,6 +3,7 @@ import { StrictMode } from 'react';
 import ReactDOM from 'react-dom/client';
 
 import App from './App';
+import './ai-studio.css';
 import './rich.css';
 import './source-settings.css';
 import './sources.css';

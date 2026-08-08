@@ -96,6 +96,39 @@ export type LocalBatchEnrichmentResult = {
   failed: number;
 };
 
+export type AIUsageView = {
+  configured: boolean;
+  enabled: boolean;
+  model: string | null;
+  temperature: number | null;
+  max_tokens: number | null;
+  tokens_used_day: number;
+  tokens_limit_day: number | null;
+  tokens_used_month: number;
+  tokens_limit_month: number | null;
+};
+
+export type AIActivityRunView = {
+  kind: 'enrichment' | 'rewrite' | string;
+  id: number;
+  candidate_id: number;
+  status: string;
+  provider: string;
+  model: string | null;
+  input_chars: number;
+  error_type: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string | null;
+};
+
+export type AIActivityView = {
+  usage: AIUsageView;
+  enrichment_counts: Record<string, number>;
+  rewrite_counts: Record<string, number>;
+  runs: AIActivityRunView[];
+};
+
 export const studioApi = {
   me: () => request<StudioUser>('/api/studio/me'),
   channels: () => request<Channel[]>('/api/studio/channels'),
@@ -208,5 +241,9 @@ export const studioApi = {
     request<LocalBatchEnrichmentResult>(
       `/api/studio/channels/${channelId}/candidates/enrich/local-batch`,
       { method: 'POST', body: JSON.stringify({ limit }) },
+    ),
+  aiActivity: (channelId: number, limit = 50) =>
+    request<AIActivityView>(
+      `/api/studio/channels/${channelId}/ai/activity?limit=${encodeURIComponent(String(limit))}`,
     ),
 };
