@@ -10,9 +10,11 @@ from .admin import router as admin_commands
 from .tz import router as tz_commands
 from .sources import router as sources_commands
 from .moderation import router as moderation_commands
+from app.core.settings_channel_access import SettingsChannelOwnerMiddleware
 
 # Реестр роутеров: start/menu отдельно, остальное в main.py
 main_router = Router()
+main_router.callback_query.outer_middleware(SettingsChannelOwnerMiddleware())
 main_router.include_router(start_commands)
 main_router.include_router(chats_commands)
 main_router.include_router(post_editor_commands)
