@@ -12,11 +12,22 @@ from app.domain.models import Channel, Client
 
 
 _CHANNEL_CALLBACK_PATTERNS = (
+    # Callbacks where the channel id is followed by another numeric/string option.
+    re.compile(r"^ai_set_hashtags_count_(?P<channel_id>\d+)_\d+$"),
+    re.compile(
+        r"^ai_source_(?:item|nop|toggle|cite|mode|delete)_(?P<channel_id>\d+)_\d+$"
+    ),
+    re.compile(r"^ai_priority_set_(?P<channel_id>\d+)_[a-z0-9_-]+$"),
+    # Single-channel callbacks.
     re.compile(r"^ai_toggle_[a-z0-9_]+_(?P<channel_id>\d+)$"),
     re.compile(r"^ai_forbidden_[a-z0-9_]+_(?P<channel_id>\d+)$"),
     re.compile(r"^ai_hashtags_count_(?P<channel_id>\d+)$"),
-    re.compile(r"^ai_set_hashtags_count_(?P<channel_id>\d+)_\d+$"),
-    re.compile(r"^neu_(?:moder|tags)_(?P<channel_id>\d+)$"),
+    re.compile(
+        r"^ai_source_(?:add|list|digest|drafts)_(?P<channel_id>\d+)$"
+    ),
+    re.compile(r"^ai_priority_(?P<channel_id>\d+)$"),
+    re.compile(r"^ai_text_history_(?P<channel_id>\d+)$"),
+    re.compile(r"^neu_[a-z0-9_]+_(?P<channel_id>\d+)$"),
     re.compile(r"^settings_neuropost_(?P<channel_id>\d+)$"),
 )
 
