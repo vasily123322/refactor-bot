@@ -1,8 +1,8 @@
-aiogram>=3.6
+aiogram~=3.30.0
 pyrogram>=2.0.106
 TgCrypto>=1.2.5
 loguru>=0.7.2
-aioredis>=2.0.1
+redis>=5.0,<9
 pydantic>=2.6
 pydantic-settings>=2.3
 SQLAlchemy>=2.0.30
