@@ -28,6 +28,7 @@ jobs:
       API_ID: "123456"
       API_HASH: "0123456789abcdef0123456789abcdef"
       DB_URL: "sqlite+aiosqlite:///:memory:"
+      DB_SECRET_KEY: "ci-only-database-secret-key-0123456789abcdef"
       PYTHONPATH: "."
     steps:
       - uses: actions/checkout@v4

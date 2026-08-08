@@ -1,11 +1,44 @@
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
+
+from app.core.secrets import (
+    database_secret_key_available,
+    decrypt_secret,
+    encrypt_secret,
+    is_encrypted_secret,
+)
 from app.domain.models import ExternalBot, ChannelBot
 
 
 class ExternalBotsRepo:
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    @staticmethod
+    def _expose_runtime_token(obj: ExternalBot | None) -> ExternalBot | None:
+        if obj is None or not obj.token:
+            return obj
+        plaintext = decrypt_secret(obj.token)
+        # Expose plaintext to existing runtime callers without marking the ORM field
+        # dirty, so unrelated commits cannot write it back to the database.
+        set_committed_value(obj, "token", plaintext)
+        return obj
+
+    async def migrate_plaintext_tokens(self) -> int:
+        """Encrypt legacy plaintext tokens when DB_SECRET_KEY is configured."""
+        if not database_secret_key_available():
+            return 0
+        res = await self.session.execute(select(ExternalBot))
+        changed = 0
+        for obj in list(res.scalars().all()):
+            token = obj.token or ""
+            if token and not is_encrypted_secret(token):
+                obj.token = encrypt_secret(token)
+                changed += 1
+        if changed:
+            await self.session.commit()
+        return changed
 
     async def create_or_update(
         self,
@@ -14,6 +47,7 @@ class ExternalBotsRepo:
         bot_user_id: int | None,
         bot_username: str | None,
     ) -> ExternalBot:
+        stored_token = encrypt_secret(token)
         obj = None
         if bot_user_id:
             res = await self.session.execute(
@@ -22,7 +56,7 @@ class ExternalBotsRepo:
             obj = res.scalars().first()
         if not obj:
             obj = ExternalBot(
-                token=token,
+                token=stored_token,
                 owner_client_id=owner_client_id,
                 bot_user_id=bot_user_id,
                 bot_username=bot_username,
@@ -30,7 +64,7 @@ class ExternalBotsRepo:
             )
             self.session.add(obj)
         else:
-            obj.token = token
+            obj.token = stored_token
             obj.owner_client_id = owner_client_id
             obj.bot_username = bot_username
             obj.is_active = True
@@ -39,13 +73,27 @@ class ExternalBotsRepo:
         return obj
 
     async def get_active(self) -> list[ExternalBot]:
+        await self.migrate_plaintext_tokens()
         res = await self.session.execute(
             select(ExternalBot).where(ExternalBot.is_active.is_(True))
         )
-        return list(res.scalars().all())
+        items = list(res.scalars().all())
+        return [self._expose_runtime_token(obj) for obj in items if obj is not None]
 
     async def get_by_id(self, external_bot_id: int) -> ExternalBot | None:
-        return await self.session.get(ExternalBot, external_bot_id)
+        obj = await self.session.get(ExternalBot, external_bot_id)
+        if obj is None:
+            return None
+
+        token = obj.token or ""
+        if token and not is_encrypted_secret(token) and database_secret_key_available():
+            plaintext = token
+            obj.token = encrypt_secret(plaintext)
+            await self.session.commit()
+            set_committed_value(obj, "token", plaintext)
+            return obj
+
+        return self._expose_runtime_token(obj)
 
     async def deactivate_if_orphan(self, external_bot_id: int) -> None:
         res = await self.session.execute(
