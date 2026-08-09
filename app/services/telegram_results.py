@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import urlsplit
+
+
+_PUBLIC_POST_PATH = re.compile(r"^/[A-Za-z0-9_]{1,64}/[1-9][0-9]*$")
+_PRIVATE_POST_PATH = re.compile(r"^/c/[1-9][0-9]*/[1-9][0-9]*$")
 
 
 def normalize_telegram_message_ids(value: Any) -> list[int]:
@@ -29,7 +34,7 @@ def normalize_telegram_message_ids(value: Any) -> list[int]:
 
 
 def normalize_telegram_result_link(value: Any) -> str | None:
-    """Allow only canonical HTTPS t.me post links produced by the scheduler."""
+    """Allow only exact HTTPS t.me post-link forms produced by this scheduler."""
     if not isinstance(value, str):
         return None
     text = value.strip()
@@ -52,6 +57,9 @@ def normalize_telegram_result_link(value: Any) -> str | None:
         return None
     if parsed.query or parsed.fragment:
         return None
-    if not parsed.path or parsed.path == "/" or not parsed.path.startswith("/"):
+    if not (
+        _PUBLIC_POST_PATH.fullmatch(parsed.path)
+        or _PRIVATE_POST_PATH.fullmatch(parsed.path)
+    ):
         return None
     return f"https://t.me{parsed.path}"
