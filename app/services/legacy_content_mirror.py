@@ -91,6 +91,30 @@ def _title_from_document_text(text: str) -> str | None:
     return normalized[:120]
 
 
+async def _content_identity(
+    session: AsyncSession,
+    *,
+    item_id: int,
+    revision_number: int,
+    channel_id: int,
+) -> tuple[ContentItem, ContentRevision] | None:
+    item = await session.get(ContentItem, int(item_id))
+    if item is None or int(item.channel_id) != int(channel_id):
+        return None
+
+    revision = (
+        await session.execute(
+            select(ContentRevision).where(
+                ContentRevision.content_item_id == int(item_id),
+                ContentRevision.revision == int(revision_number),
+            )
+        )
+    ).scalar_one_or_none()
+    if revision is None:
+        return None
+    return item, revision
+
+
 async def _referenced_content(
     session: AsyncSession,
     payload: dict[str, Any],
@@ -108,21 +132,43 @@ async def _referenced_content(
         if marker_id is None or marker_id != int(channel_id):
             return None
 
-    item = await session.get(ContentItem, item_id)
-    if item is None or int(item.channel_id) != int(channel_id):
+    return await _content_identity(
+        session,
+        item_id=item_id,
+        revision_number=revision_number,
+        channel_id=channel_id,
+    )
+
+
+async def _repeat_root_content(
+    session: AsyncSession,
+    payload: dict[str, Any],
+    *,
+    channel_id: int,
+    task_id: int,
+) -> tuple[ContentItem, ContentRevision] | None:
+    """Resolve immutable repeat provenance from the root task's Publication linkage."""
+    root_task_id = _legacy_db_id(payload.get("repeat_group_id"))
+    if root_task_id is None or root_task_id == int(task_id):
         return None
 
-    revision = (
+    root_publication = (
         await session.execute(
-            select(ContentRevision).where(
-                ContentRevision.content_item_id == item_id,
-                ContentRevision.revision == revision_number,
+            select(Publication).where(
+                Publication.legacy_post_task_id == root_task_id,
+                Publication.channel_id == int(channel_id),
             )
         )
     ).scalar_one_or_none()
-    if revision is None:
+    if root_publication is None:
         return None
-    return item, revision
+
+    return await _content_identity(
+        session,
+        item_id=int(root_publication.content_item_id),
+        revision_number=int(root_publication.content_revision),
+        channel_id=channel_id,
+    )
 
 
 async def mirror_legacy_post_task(
@@ -163,6 +209,16 @@ async def mirror_legacy_post_task(
         payload,
         channel_id=channel_id,
     )
+    reused_repeat_root = False
+    if referenced is None:
+        referenced = await _repeat_root_content(
+            session,
+            payload,
+            channel_id=channel_id,
+            task_id=task_id,
+        )
+        reused_repeat_root = referenced is not None
+
     document = None
     if referenced is None:
         try:
@@ -233,6 +289,9 @@ async def mirror_legacy_post_task(
         if reused_content:
             mirror_meta["reused_content_provenance"] = True
             schedule_meta["reused_content_provenance"] = True
+        if reused_repeat_root:
+            mirror_meta["repeat_root_provenance"] = True
+            schedule_meta["repeat_root_provenance"] = True
 
         schedule = ScheduleEntry(
             content_item_id=int(item.id),
