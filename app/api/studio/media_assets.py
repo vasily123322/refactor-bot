@@ -2,22 +2,29 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.studio.auth import StudioPrincipal, require_studio_principal
+from app.bot.bot_instance import bot as tg_bot
 from app.core.db import AsyncSessionLocal
 from app.domain.content.models import MediaAsset
 from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
 from app.repositories.content import MediaAssetsRepo
+from app.services.telegram_media_upload import (
+    TelegramMediaUploadError,
+    TelegramMediaUploadService,
+)
 
 
 router = APIRouter(prefix="/api/studio", tags=["media-assets"])
+MAX_STUDIO_MEDIA_UPLOAD_BYTES = 20 * 1024 * 1024
 
 
 class MediaAssetCreateRequest(BaseModel):
@@ -112,6 +119,12 @@ def _response(asset: MediaAsset) -> MediaAssetResponse:
     )
 
 
+def _safe_filename(filename: str | None, kind: str) -> str:
+    raw = Path(str(filename or "")).name.strip()
+    cleaned = "".join(character for character in raw if character.isprintable())[:120]
+    return cleaned or f"studio-{kind}-upload"
+
+
 @router.get(
     "/channels/{channel_id}/media-assets",
     response_model=list[MediaAssetResponse],
@@ -155,5 +168,58 @@ async def create_media_asset(
         duration_seconds=request.duration_seconds,
         size_bytes=request.size_bytes,
         metadata={"label": request.label} if request.label else {},
+    )
+    return _response(asset)
+
+
+@router.post(
+    "/channels/{channel_id}/media-assets/upload",
+    response_model=MediaAssetResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_media_asset(
+    channel_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+    kind: Annotated[
+        Literal["photo", "video", "animation", "audio", "voice_note"],
+        Form(),
+    ],
+    file: Annotated[UploadFile, File()],
+    label: Annotated[str | None, Form(max_length=120)] = None,
+) -> MediaAssetResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    filename = _safe_filename(file.filename, kind)
+    mime_type = str(file.content_type or "").strip()[:255] or None
+    try:
+        data = await file.read(MAX_STUDIO_MEDIA_UPLOAD_BYTES + 1)
+    finally:
+        await file.close()
+    if not data:
+        raise HTTPException(status_code=422, detail="Uploaded media is empty")
+    if len(data) > MAX_STUDIO_MEDIA_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Uploaded media exceeds Studio limit")
+
+    try:
+        uploaded = await TelegramMediaUploadService(tg_bot).upload(
+            tg_user_id=principal.tg_user_id,
+            kind=kind,
+            data=data,
+            filename=filename,
+        )
+    except TelegramMediaUploadError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    asset = await MediaAssetsRepo(session).create(
+        channel_id=channel_id,
+        kind=kind,
+        source="studio_upload",
+        telegram_file_id=uploaded.telegram_file_id,
+        mime_type=mime_type,
+        width=uploaded.width,
+        height=uploaded.height,
+        duration_seconds=uploaded.duration_seconds,
+        size_bytes=len(data),
+        metadata={"label": label.strip()} if label and label.strip() else {},
     )
     return _response(asset)
