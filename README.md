@@ -53,6 +53,11 @@ alembic upgrade head
 
 and start the application again.
 
+Managed startup also verifies that every current ORM table and column is physically
+present. An Alembic `head` marker alone is not accepted if a historical/manual schema
+change left the database structurally incomplete. Fix the schema with the correct
+migration or repair procedure; the application will not auto-create missing columns.
+
 For Alembic-managed SQLite databases, startup also runs `PRAGMA foreign_key_check`
 before enabling SQLite foreign-key enforcement on application connections. If an
 existing managed database contains orphaned FK rows, startup fails closed instead of
@@ -106,7 +111,7 @@ Set these to control networking and extraction behavior:
 - OPENROUTER_BACKOFF_MAX: LLM backoff cap seconds (default 5.0)
 - HTTP_FETCH_TIMEOUT_SECONDS: HTML fetch timeout (default 30)
 - HTTP_FETCH_MAX_RETRIES: HTML fetch retries (default 2)
-- HTTP_FETCH_BACKOFF_INITIAL: HTML backoff start seconds (default 0.4)
+- HTTP_FETCH_BACKOFF_INITIAL: HTML fetch backoff start seconds (default 0.4)
 - HTTP_FETCH_BACKOFF_MAX: HTML backoff cap seconds (default 3.0)
 - HTTP_FETCH_USER_AGENT: User-Agent header for fetcher (browser-like default)
 - CONTENT_EXTRACT_MAX_LEN: Max extracted text length before LLM (default 8000)
