@@ -133,7 +133,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
                 "audio",
                 "voice_note",
             ],
-            "rich_media_attachments": False,
+            "rich_media_attachments": True,
             "exact_telegram_preview": True,
             "revisions": True,
             "planner": True,
