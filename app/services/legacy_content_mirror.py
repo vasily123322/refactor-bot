@@ -266,7 +266,9 @@ async def mirror_legacy_post_task(
         payload["_content_item_id"] = int(item.id)
         payload["_content_revision"] = revision_number
         payload["_content_channel_id"] = channel_id
-        payload["_publication_id"] = int(publication.id)
+        # `_publication_id` is read-only historical compatibility now. Domain
+        # delivery identity is authoritative in Publication.legacy_post_task_id.
+        payload.pop("_publication_id", None)
         task.payload = payload
         await session.commit()
         await session.refresh(publication)

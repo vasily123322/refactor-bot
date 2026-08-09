@@ -51,7 +51,7 @@ def test_publication_bridge_queues_content_on_existing_scheduler() -> None:
                 assert task.payload["repeat_on"] is True
                 assert task.payload["repeat_seconds"] == 3600
                 assert task.payload["pin"] is True
-                assert task.payload["_publication_id"] == publication.id
+                assert "_publication_id" not in task.payload
                 assert task.dedupe_key == f"publication:{publication.id}"
 
                 schedule = await session.get(ScheduleEntry, publication.schedule_entry_id)
@@ -260,7 +260,7 @@ def test_publication_bridge_queues_rich_document_for_shared_renderer() -> None:
                 assert task is not None
                 assert task.payload["type"] == "rich_document"
                 assert task.payload["post_document"] == document.to_dict()
-                assert task.payload["_publication_id"] == publication.id
+                assert "_publication_id" not in task.payload
         finally:
             await engine.dispose()
 
