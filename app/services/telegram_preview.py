@@ -35,10 +35,15 @@ class TelegramPreviewService:
         tg_user_id: int,
         document: PostDocument,
         replace_message_ids: list[int] | None = None,
+        asset_channel_id: int | None = None,
     ) -> list[int]:
         posting = self.posting_factory(self.bot, self.session_factory)
         try:
-            message_ids = await posting.send_document(int(tg_user_id), document)
+            message_ids = await posting.send_document(
+                int(tg_user_id),
+                document,
+                asset_channel_id=asset_channel_id,
+            )
         except TelegramRenderError as exc:
             raise TelegramPreviewError(str(exc)) from exc
         if not message_ids:
