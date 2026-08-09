@@ -143,6 +143,17 @@ async def _require_owned_channel(
         raise HTTPException(status_code=404, detail="Channel not found")
 
 
+async def _release_ingestion_lease(lease) -> None:
+    # Never reuse the ingestion transaction for lease cleanup. Otherwise a finally
+    # block could accidentally commit dirty state left by a failed adapter.
+    try:
+        async with AsyncSessionLocal() as lease_session:
+            await SourceIngestionLeaseService(lease_session).release(lease)
+    except Exception:
+        # TTL recovery is the fallback if cleanup itself loses database connectivity.
+        pass
+
+
 def _response(row: SourceConnector) -> SourceResponse:
     is_telegram = str(row.kind).lower() == "telegram"
     cursor = telegram_cursor_message_id(row) if is_telegram else 0
@@ -351,8 +362,7 @@ async def ingest_source(
     if row is None:
         raise HTTPException(status_code=404, detail="Source not found")
 
-    lease_service = SourceIngestionLeaseService(session)
-    lease = await lease_service.acquire(
+    lease = await SourceIngestionLeaseService(session).acquire(
         connector_id=int(row.id),
         holder="studio",
     )
@@ -360,15 +370,12 @@ async def ingest_source(
         raise HTTPException(status_code=409, detail="Source ingestion already running")
 
     try:
-        try:
-            if str(row.kind).lower() == "telegram":
-                result = await TelegramSourceIngestionService(session).ingest(row)
-            elif str(row.kind).lower() in {"rss", "url", "web"}:
-                result = await SourceIngestionService(session).ingest(row)
-            else:
-                raise HTTPException(status_code=409, detail="Unsupported source adapter")
-        except SourceIngestionError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if str(row.kind).lower() == "telegram":
+            result = await TelegramSourceIngestionService(session).ingest(row)
+        elif str(row.kind).lower() in {"rss", "url", "web"}:
+            result = await SourceIngestionService(session).ingest(row)
+        else:
+            raise HTTPException(status_code=409, detail="Unsupported source adapter")
 
         if clear_source_worker_failure(row):
             await session.commit()
@@ -378,11 +385,17 @@ async def ingest_source(
             documents_created=result.documents_created,
             candidates_created=result.candidates_created,
         )
+    except SourceIngestionError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except HTTPException:
+        await session.rollback()
+        raise
+    except Exception:
+        await session.rollback()
+        raise
     finally:
-        try:
-            await lease_service.release(lease)
-        except Exception:
-            await session.rollback()
+        await _release_ingestion_lease(lease)
 
 
 @router.get(
