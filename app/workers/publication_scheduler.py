@@ -9,6 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models import PostTask
+from app.domain.publishing.models import Publication
+from app.services.legacy_content_mirror import mirror_legacy_post_task
 from app.services.publication_bridge import LegacyPublicationBridge
 from app.services.publication_runtime import PublicationRuntimeProjector
 from app.services.scheduler_errors import SAFE_DELIVERY_ERROR
@@ -129,7 +131,9 @@ class Scheduler(ReliableScheduler):
     records liveness for each task owned in `processing`; Telegram provider exception
     text is redacted before entering legacy persistence/logging boundaries. Generated
     autodelete lifecycle is mirrored into Publication metadata so the canonical domain
-    no longer loses deletion state when PostTask is eventually retired.
+    no longer loses deletion state when PostTask is eventually retired. Repeat child
+    tasks are mirrored synchronously after their scheduler commit so canonical repeat
+    provenance does not depend on the periodic reconciler window.
     """
 
     def __init__(
@@ -227,6 +231,139 @@ class Scheduler(ReliableScheduler):
                 int(publication.id),
                 publication.status,
             )
+
+    @staticmethod
+    def _repeat_group_id(post: PostTask) -> int | None:
+        payload = dict(post.payload or {})
+        if not bool(payload.get("repeat_on", False)):
+            return None
+        raw_group = payload.get("repeat_group_id")
+        try:
+            group_id = int(raw_group) if raw_group is not None else int(post.id)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return group_id if group_id > 0 else None
+
+    async def _sync_repeat_publications(
+        self,
+        session: AsyncSession,
+        parent: PostTask,
+        *,
+        limit: int = 20,
+    ) -> int:
+        """Mirror pending repeat children for one committed repeat group immediately."""
+        parent_id = int(parent.id)
+        channel_id = int(parent.channel_id)
+        group_id = self._repeat_group_id(parent)
+        if group_id is None:
+            return 0
+
+        try:
+            parent_link = (
+                await session.execute(
+                    select(Publication.id).where(
+                        Publication.legacy_post_task_id == parent_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if parent_link is None:
+                await mirror_legacy_post_task(session, parent)
+        except Exception as exc:
+            await self._rollback(session, "repeat parent publication mirror")
+            logger.warning(
+                "Scheduler: repeat parent mirror failed post_id={} type={}",
+                parent_id,
+                type(exc).__name__,
+            )
+            return 0
+
+        try:
+            result = await session.execute(
+                select(PostTask.id)
+                .outerjoin(
+                    Publication,
+                    Publication.legacy_post_task_id == PostTask.id,
+                )
+                .where(
+                    PostTask.id != parent_id,
+                    PostTask.channel_id == channel_id,
+                    PostTask.status == "pending",
+                    PostTask.payload["repeat_group_id"].as_integer() == group_id,
+                    Publication.id.is_(None),
+                )
+                .order_by(PostTask.scheduled_at.asc(), PostTask.id.asc())
+                .limit(max(1, min(int(limit), 100)))
+            )
+            child_ids = [int(value) for value in result.scalars().all()]
+        except Exception as exc:
+            await self._rollback(session, "repeat child publication lookup")
+            logger.warning(
+                "Scheduler: repeat child lookup failed parent_id={} type={}",
+                parent_id,
+                type(exc).__name__,
+            )
+            return 0
+
+        mirrored = 0
+        for child_id in child_ids:
+            try:
+                child = await session.get(PostTask, child_id)
+                if child is None:
+                    continue
+                publication = await mirror_legacy_post_task(session, child)
+            except Exception as exc:
+                await self._rollback(session, "repeat child publication mirror")
+                logger.warning(
+                    "Scheduler: repeat child mirror failed post_id={} type={}",
+                    child_id,
+                    type(exc).__name__,
+                )
+                continue
+            if publication is not None:
+                mirrored += 1
+
+        if mirrored:
+            logger.debug(
+                "Scheduler: repeat publications mirrored parent_id={} count={}",
+                parent_id,
+                mirrored,
+            )
+        return mirrored
+
+    async def _schedule_next_repeat_if_needed(
+        self,
+        session: AsyncSession,
+        post: PostTask,
+        pl: dict,
+    ) -> None:
+        await super()._schedule_next_repeat_if_needed(session, post, pl)
+        await self._sync_repeat_publications(session, post)
+
+    async def _skip_overdue_repeat_and_schedule_next(
+        self,
+        session: AsyncSession,
+        post: PostTask,
+        pl: dict,
+    ) -> bool:
+        skipped = await super()._skip_overdue_repeat_and_schedule_next(session, post, pl)
+        if skipped:
+            await self._sync_repeat_publications(session, post)
+        return skipped
+
+    async def _boot_cleanup_repeats(
+        self,
+        session: AsyncSession,
+        items: list[PostTask],
+    ) -> list[PostTask]:
+        selected = list(items)
+        remaining = await super()._boot_cleanup_repeats(session, items)
+        remaining_ids = {int(post.id) for post in remaining}
+        for post in selected:
+            if int(post.id) in remaining_ids:
+                continue
+            await self._sync_repeat_publications(session, post)
+            await self._project_publication(session, post)
+        return remaining
 
     async def _mark_processing(
         self,
