@@ -375,7 +375,11 @@ export default function App() {
                   </button>
                 </div>
                 {document.mode === 'rich' ? (
-                  <RichComposer document={document} onChange={editDocument} />
+                  <RichComposer
+                    document={document}
+                    channelId={selectedChannelId}
+                    onChange={editDocument}
+                  />
                 ) : (
                   <TelegramComposer document={document} onChange={editDocument} />
                 )}
