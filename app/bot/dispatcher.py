@@ -30,6 +30,7 @@ from app.userbot.client import app as userbot
 from app.workers.ai_auto_tasks import AIAutoTasksWorker
 from app.workers.candidate_enrichment import LocalCandidateEnrichmentWorker
 from app.workers.grab_poll import GrabPoller
+from app.workers.post_task_retention import PostTaskRetentionWorker
 from app.workers.publication_reconciler import PublicationReconcilerWorker
 from app.workers.publication_scheduler import Scheduler
 from app.workers.scheduler_recovery import SchedulerRecoveryWorker
@@ -110,6 +111,7 @@ async def run_bot() -> None:
     scheduler = None
     scheduler_recovery = None
     publication_reconciler = None
+    post_task_retention = None
     source_ingestion = None
     poller = None
     ai_auto_worker = None
@@ -153,6 +155,17 @@ async def run_bot() -> None:
 
         publication_reconciler = PublicationReconcilerWorker(interval_seconds=5)
         await publication_reconciler.start()
+
+        if settings.post_task_retention_enabled:
+            post_task_retention = PostTaskRetentionWorker(
+                session_factory=AsyncSessionLocal,
+                interval_seconds=settings.post_task_retention_interval_seconds,
+                retention_days=settings.post_task_retention_days,
+                batch_size=settings.post_task_retention_batch_size,
+            )
+            await post_task_retention.start()
+        else:
+            logger.info("Boot: PostTask retention worker disabled")
 
         source_ingestion = SourceIngestionWorker(
             interval_seconds=60,
@@ -200,6 +213,8 @@ async def run_bot() -> None:
             await _safe_stop("local enrichment worker", local_enrichment_worker.stop)
         if source_ingestion is not None:
             await _safe_stop("source ingestion", source_ingestion.stop)
+        if post_task_retention is not None:
+            await _safe_stop("PostTask retention", post_task_retention.stop)
         if publication_reconciler is not None:
             await _safe_stop("publication reconciler", publication_reconciler.stop)
         if scheduler_recovery is not None:
