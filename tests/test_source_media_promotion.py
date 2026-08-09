@@ -64,8 +64,9 @@ def test_source_media_promotion_is_channel_scoped_and_idempotent(monkeypatch) ->
             async with Session() as session:
                 owner = await ClientsRepo(session).create_or_get(9501, "owner", "Owner")
                 channel = await ChannelsRepo(session).create(owner.id, -1009501, "Channel")
+                channel_id = int(channel.id)
                 connector = await SourcesRepo(session).create_connector(
-                    channel_id=channel.id,
+                    channel_id=channel_id,
                     kind="telegram",
                     value="@source",
                 )
@@ -83,10 +84,12 @@ def test_source_media_promotion_is_channel_scoped_and_idempotent(monkeypatch) ->
                         },
                     },
                 )
+                document_id = int(document.id)
                 candidate = await SourcesRepo(session).ensure_candidate(
-                    source_document_id=document.id,
-                    channel_id=channel.id,
+                    source_document_id=document_id,
+                    channel_id=channel_id,
                 )
+                candidate_id = int(candidate.id)
 
                 service = SourceMediaPromotionService(
                     session,
@@ -94,31 +97,32 @@ def test_source_media_promotion_is_channel_scoped_and_idempotent(monkeypatch) ->
                     bot=object(),
                 )
                 first = await service.promote(
-                    channel_id=channel.id,
-                    candidate_id=candidate.id,
+                    channel_id=channel_id,
+                    candidate_id=candidate_id,
                     tg_user_id=9501,
                 )
+                first_id = int(first.id)
                 second = await service.promote(
-                    channel_id=channel.id,
-                    candidate_id=candidate.id,
+                    channel_id=channel_id,
+                    candidate_id=candidate_id,
                     tg_user_id=9501,
                 )
 
-                assert int(first.id) == int(second.id)
+                assert first_id == int(second.id)
                 assert first.kind == "photo"
                 assert first.source == "telegram_source"
                 assert first.telegram_file_id == "bot-file-id"
                 assert first.meta == {
-                    "source_document_id": int(document.id),
+                    "source_document_id": document_id,
                     "source": "telegram",
                 }
                 assert calls == {"download": 1, "upload": 1}
 
                 assets = list((await session.execute(select(MediaAsset))).scalars().all())
                 assert len(assets) == 1
-                stored_document = await session.get(SourceDocument, int(document.id))
+                stored_document = await session.get(SourceDocument, document_id)
                 assert stored_document is not None
-                assert stored_document.meta["media_asset_id"] == int(first.id)
+                assert stored_document.meta["media_asset_id"] == first_id
         finally:
             await engine.dispose()
 
