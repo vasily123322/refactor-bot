@@ -72,6 +72,10 @@ async def bootstrap_database_schema(
     """
     state = await inspect_alembic_schema(engine)
     if not state.managed:
+        # Inspection opens the database before the historical initializer runs.
+        # Clear pooled connections (especially SQLite StaticPool) because legacy
+        # bootstrap may atomically rename an old database file before create_all().
+        await engine.dispose()
         await unmanaged_initializer()
         return state
 
