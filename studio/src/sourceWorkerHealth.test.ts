@@ -35,7 +35,7 @@ function health(history: SourceWorkerTickView[]): SourceWorkerHealthView {
     started_at: '2026-08-09T15:00:00Z',
     ticks: history.length,
     history_size: 20,
-    last_tick: history.at(-1) ?? null,
+    last_tick: history.length > 0 ? history[history.length - 1] : null,
     history,
     totals: {
       window_selected: 50,
