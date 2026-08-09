@@ -49,7 +49,21 @@ def test_scheduler_projects_processing_and_terminal_publication_state(monkeypatc
                 sending = await check_session.get(Publication, publication_id)
                 assert sending is not None
                 assert sending.status == "sending"
-                assert sending.attempt_count == 0
+                assert sending.attempt_count == 1
+                attempts = list(
+                    (
+                        await check_session.execute(
+                            select(PublicationAttempt).where(
+                                PublicationAttempt.publication_id == publication_id
+                            )
+                        )
+                    ).scalars().all()
+                )
+                assert len(attempts) == 1
+                assert attempts[0].attempt == 1
+                assert attempts[0].status == "sending"
+                assert attempts[0].finished_at is None
+                attempt_id = int(attempts[0].id)
 
             async def fake_process_items(self, session, items):
                 assert len(items) == 1
@@ -93,8 +107,11 @@ def test_scheduler_projects_processing_and_terminal_publication_state(monkeypatc
                     ).scalars().all()
                 )
                 assert len(attempts) == 1
+                assert int(attempts[0].id) == attempt_id
+                assert attempts[0].attempt == 1
                 assert attempts[0].status == "published"
                 assert attempts[0].telegram_message_ids == [701, 702]
+                assert attempts[0].finished_at is not None
 
             # Projection is idempotent: recovery/reconciler can safely repeat it.
             async with Session() as scheduler_session:
@@ -112,6 +129,7 @@ def test_scheduler_projects_processing_and_terminal_publication_state(monkeypatc
                     ).scalars().all()
                 )
                 assert len(attempts) == 1
+                assert int(attempts[0].id) == attempt_id
         finally:
             await engine.dispose()
 
