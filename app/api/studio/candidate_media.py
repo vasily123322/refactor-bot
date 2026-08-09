@@ -5,10 +5,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.studio.auth import StudioPrincipal, require_studio_principal
 from app.core.db import AsyncSessionLocal
+from app.domain.content.models import MediaAsset
 from app.domain.sources.models import SourceDocument
 from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
@@ -40,6 +42,7 @@ class CandidateMediaResponse(BaseModel):
     height: int | None
     duration_seconds: int | None
     promotable: bool
+    media_asset_id: int | None = None
 
 
 async def _session_dependency() -> AsyncIterator[AsyncSession]:
@@ -123,9 +126,33 @@ async def list_candidate_media(
         status="new",
         limit=max(1, min(int(limit), 500)),
     )
-    result: list[CandidateMediaResponse] = []
+    pending: list[tuple[CandidateMediaResponse, int | None]] = []
+    requested_asset_ids: set[int] = set()
     for candidate, document in rows:
         media = _candidate_media_response(candidate_id=int(candidate.id), document=document)
-        if media is not None:
-            result.append(media)
+        if media is None:
+            continue
+        raw_asset_id = _bounded_positive_int(
+            dict(document.meta or {}).get("media_asset_id"),
+            maximum=2_147_483_647,
+        )
+        if raw_asset_id is not None:
+            requested_asset_ids.add(raw_asset_id)
+        pending.append((media, raw_asset_id))
+
+    allowed_asset_ids: set[int] = set()
+    if requested_asset_ids:
+        asset_rows = await session.execute(
+            select(MediaAsset.id).where(
+                MediaAsset.channel_id == int(channel_id),
+                MediaAsset.id.in_(requested_asset_ids),
+            )
+        )
+        allowed_asset_ids = {int(value) for value in asset_rows.scalars().all()}
+
+    result: list[CandidateMediaResponse] = []
+    for media, raw_asset_id in pending:
+        if raw_asset_id is not None and raw_asset_id in allowed_asset_ids:
+            media.media_asset_id = raw_asset_id
+        result.append(media)
     return result
