@@ -124,6 +124,10 @@ export type PlannerEntry = {
   telegram_message_ids: number[] | null;
   result_link: string | null;
   last_error: string | null;
+  attempt_number: number | null;
+  attempt_status: string | null;
+  attempt_started_at: string | null;
+  attempt_finished_at: string | null;
   legacy_post_task_id: number | null;
 };
 

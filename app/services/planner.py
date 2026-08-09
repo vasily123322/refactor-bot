@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content.models import ContentItem
 from app.domain.models import PostTask
-from app.domain.publishing.models import Publication, ScheduleEntry
+from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.services.scheduling import as_utc
 
 
@@ -42,6 +42,10 @@ class PlannerEntry:
     telegram_message_ids: list[int] | None
     result_link: str | None
     last_error: str | None
+    attempt_number: int | None
+    attempt_status: str | None
+    attempt_started_at: datetime | None
+    attempt_finished_at: datetime | None
     legacy_post_task_id: int | None
 
 
@@ -50,6 +54,75 @@ class PlannerService:
 
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    async def _current_attempts(
+        self,
+        publications: Iterable[Publication | None],
+    ) -> dict[int, PublicationAttempt]:
+        publication_ids = [
+            int(publication.id)
+            for publication in publications
+            if publication is not None and int(publication.attempt_count or 0) > 0
+        ]
+        if not publication_ids:
+            return {}
+
+        rows = list(
+            (
+                await self.session.execute(
+                    select(PublicationAttempt)
+                    .join(
+                        Publication,
+                        Publication.id == PublicationAttempt.publication_id,
+                    )
+                    .where(
+                        Publication.id.in_(publication_ids),
+                        PublicationAttempt.attempt == Publication.attempt_count,
+                    )
+                )
+            ).scalars().all()
+        )
+        return {int(attempt.publication_id): attempt for attempt in rows}
+
+    @staticmethod
+    def _entry(
+        schedule: ScheduleEntry,
+        content: ContentItem,
+        publication: Publication | None,
+        attempt: PublicationAttempt | None,
+    ) -> PlannerEntry:
+        return PlannerEntry(
+            schedule_id=int(schedule.id),
+            channel_id=int(schedule.channel_id),
+            content_item_id=int(schedule.content_item_id),
+            content_revision=int(schedule.content_revision),
+            content_title=content.title,
+            content_kind=str(content.kind),
+            scheduled_at=as_utc(schedule.scheduled_at),
+            timezone=schedule.timezone,
+            schedule_status=str(schedule.status),
+            repeat_rule=dict(schedule.repeat_rule or {}),
+            publication_id=(int(publication.id) if publication is not None else None),
+            publication_status=(
+                str(publication.status) if publication is not None else None
+            ),
+            telegram_message_ids=(
+                [int(value) for value in publication.telegram_message_ids]
+                if publication is not None and publication.telegram_message_ids
+                else None
+            ),
+            result_link=(publication.result_link if publication is not None else None),
+            last_error=(publication.last_error if publication is not None else None),
+            attempt_number=(int(attempt.attempt) if attempt is not None else None),
+            attempt_status=(str(attempt.status) if attempt is not None else None),
+            attempt_started_at=(attempt.started_at if attempt is not None else None),
+            attempt_finished_at=(attempt.finished_at if attempt is not None else None),
+            legacy_post_task_id=(
+                int(publication.legacy_post_task_id)
+                if publication is not None and publication.legacy_post_task_id is not None
+                else None
+            ),
+        )
 
     async def list_entries(
         self,
@@ -81,41 +154,17 @@ class PlannerService:
         if normalized_statuses:
             stmt = stmt.where(ScheduleEntry.status.in_(normalized_statuses))
 
-        result = await self.session.execute(stmt)
-        entries: list[PlannerEntry] = []
-        for schedule, content, publication in result.all():
-            entries.append(
-                PlannerEntry(
-                    schedule_id=int(schedule.id),
-                    channel_id=int(schedule.channel_id),
-                    content_item_id=int(schedule.content_item_id),
-                    content_revision=int(schedule.content_revision),
-                    content_title=content.title,
-                    content_kind=str(content.kind),
-                    scheduled_at=as_utc(schedule.scheduled_at),
-                    timezone=schedule.timezone,
-                    schedule_status=str(schedule.status),
-                    repeat_rule=dict(schedule.repeat_rule or {}),
-                    publication_id=(int(publication.id) if publication is not None else None),
-                    publication_status=(
-                        str(publication.status) if publication is not None else None
-                    ),
-                    telegram_message_ids=(
-                        [int(value) for value in publication.telegram_message_ids]
-                        if publication is not None and publication.telegram_message_ids
-                        else None
-                    ),
-                    result_link=(publication.result_link if publication is not None else None),
-                    last_error=(publication.last_error if publication is not None else None),
-                    legacy_post_task_id=(
-                        int(publication.legacy_post_task_id)
-                        if publication is not None
-                        and publication.legacy_post_task_id is not None
-                        else None
-                    ),
-                )
+        rows = list((await self.session.execute(stmt)).all())
+        attempts = await self._current_attempts(row[2] for row in rows)
+        return [
+            self._entry(
+                schedule,
+                content,
+                publication,
+                attempts.get(int(publication.id)) if publication is not None else None,
             )
-        return entries
+            for schedule, content, publication in rows
+        ]
 
     async def _locked_schedule(
         self, *, channel_id: int, schedule_id: int
@@ -220,29 +269,10 @@ class PlannerService:
         if row is None:
             raise PlannerNotFoundError("schedule entry not found")
         schedule, content, publication = row
-        return PlannerEntry(
-            schedule_id=int(schedule.id),
-            channel_id=int(schedule.channel_id),
-            content_item_id=int(schedule.content_item_id),
-            content_revision=int(schedule.content_revision),
-            content_title=content.title,
-            content_kind=str(content.kind),
-            scheduled_at=as_utc(schedule.scheduled_at),
-            timezone=schedule.timezone,
-            schedule_status=str(schedule.status),
-            repeat_rule=dict(schedule.repeat_rule or {}),
-            publication_id=(int(publication.id) if publication is not None else None),
-            publication_status=(str(publication.status) if publication is not None else None),
-            telegram_message_ids=(
-                [int(value) for value in publication.telegram_message_ids]
-                if publication is not None and publication.telegram_message_ids
-                else None
-            ),
-            result_link=(publication.result_link if publication is not None else None),
-            last_error=(publication.last_error if publication is not None else None),
-            legacy_post_task_id=(
-                int(publication.legacy_post_task_id)
-                if publication is not None and publication.legacy_post_task_id is not None
-                else None
-            ),
+        attempts = await self._current_attempts([publication])
+        return self._entry(
+            schedule,
+            content,
+            publication,
+            attempts.get(int(publication.id)) if publication is not None else None,
         )
