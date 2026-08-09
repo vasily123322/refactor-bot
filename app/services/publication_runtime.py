@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.models import PostTask
 from app.domain.publishing.models import Publication
 
 
 AUTODELETE_RUNTIME_META_KEY = "autodelete_runtime"
+_TERMINAL_PUBLICATION_STATUSES = frozenset(
+    {"published", "failed", "skipped", "cancelled"}
+)
 
 
 def _positive_int(value: Any) -> int | None:
@@ -67,11 +72,37 @@ def normalize_autodelete_runtime(payload: Mapping[str, Any] | None) -> dict[str,
     return state
 
 
+@dataclass(frozen=True, slots=True)
+class PublicationRuntimeBackfillBatch:
+    scanned: int
+    updated: int
+    next_cursor: int
+    done: bool
+
+
 class PublicationRuntimeProjector:
     """Mirror generated PostTask runtime facts into the canonical Publication row."""
 
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    @staticmethod
+    def _apply_runtime(
+        publication: Publication,
+        payload: Mapping[str, Any] | None,
+    ) -> bool:
+        original = dict(publication.meta or {})
+        meta = deepcopy(original)
+        state = normalize_autodelete_runtime(payload)
+        if state is None:
+            meta.pop(AUTODELETE_RUNTIME_META_KEY, None)
+        else:
+            meta[AUTODELETE_RUNTIME_META_KEY] = state
+
+        if meta == original:
+            return False
+        publication.meta = meta
+        return True
 
     async def project_task(self, task_id: int, payload: Mapping[str, Any] | None) -> bool:
         publication = (
@@ -84,15 +115,55 @@ class PublicationRuntimeProjector:
         if publication is None:
             return False
 
-        meta = deepcopy(dict(publication.meta or {}))
-        state = normalize_autodelete_runtime(payload)
-        if state is None:
-            meta.pop(AUTODELETE_RUNTIME_META_KEY, None)
-        else:
-            meta[AUTODELETE_RUNTIME_META_KEY] = state
-
-        if meta == dict(publication.meta or {}):
+        if not self._apply_runtime(publication, payload):
             return False
-        publication.meta = meta
         await self.session.commit()
         return True
+
+    async def backfill_terminal(
+        self,
+        *,
+        after_publication_id: int = 0,
+        limit: int = 100,
+    ) -> PublicationRuntimeBackfillBatch:
+        """Scan a bounded historical terminal slice once per process.
+
+        New scheduler paths already project runtime synchronously. This cursor-based
+        pass exists only for Publications that reached a terminal state before runtime
+        projection was introduced. It avoids JSON-dialect filtering and never scans
+        more than `limit` rows in one reconciler tick.
+        """
+        bounded_limit = max(1, min(int(limit), 500))
+        cursor = max(0, int(after_publication_id))
+        rows = (
+            await self.session.execute(
+                select(Publication, PostTask.payload)
+                .join(
+                    PostTask,
+                    PostTask.id == Publication.legacy_post_task_id,
+                )
+                .where(
+                    Publication.id > cursor,
+                    Publication.status.in_(tuple(_TERMINAL_PUBLICATION_STATUSES)),
+                )
+                .order_by(Publication.id.asc())
+                .limit(bounded_limit)
+            )
+        ).all()
+
+        updated = 0
+        next_cursor = cursor
+        for publication, payload in rows:
+            next_cursor = max(next_cursor, int(publication.id))
+            if self._apply_runtime(publication, payload):
+                updated += 1
+
+        if updated:
+            await self.session.commit()
+
+        return PublicationRuntimeBackfillBatch(
+            scanned=len(rows),
+            updated=updated,
+            next_cursor=next_cursor,
+            done=len(rows) < bounded_limit,
+        )
