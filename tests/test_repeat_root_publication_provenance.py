@@ -80,7 +80,7 @@ def test_repeat_child_reuses_root_publication_without_content_markers() -> None:
                 await session.refresh(child)
                 assert "_content_item_id" not in child.payload
                 assert "_content_revision" not in child.payload
-                assert child.payload["_content_channel_id"] == 905
+                assert "_content_channel_id" not in child.payload
         finally:
             await engine.dispose()
 
