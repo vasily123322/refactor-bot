@@ -31,6 +31,8 @@ const MEDIA_KINDS: Array<[MediaAssetKind, string]> = [
   ['voice_note', 'Voice note'],
 ];
 
+type AssetTransport = 'upload' | 'https' | 'telegram';
+
 function newId(prefix: string): string {
   const random = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
   return `${prefix}_${random}`;
@@ -80,6 +82,13 @@ function numberValue(value: unknown, fallback: number): number {
 function errorMessage(error: unknown): string {
   if (error instanceof StudioApiError || error instanceof Error) return error.message;
   return 'Неизвестная ошибка';
+}
+
+function mediaAccept(kind: MediaAssetKind): string {
+  if (kind === 'photo') return 'image/*';
+  if (kind === 'video') return 'video/*';
+  if (kind === 'animation') return 'image/gif,video/mp4';
+  return 'audio/*';
 }
 
 function BlockEditor({
@@ -288,8 +297,9 @@ export function RichComposer({
   const [assetBusy, setAssetBusy] = useState(false);
   const [showAssetForm, setShowAssetForm] = useState(false);
   const [assetKind, setAssetKind] = useState<MediaAssetKind>('photo');
-  const [assetTransport, setAssetTransport] = useState<'https' | 'telegram'>('https');
+  const [assetTransport, setAssetTransport] = useState<AssetTransport>('upload');
   const [assetReference, setAssetReference] = useState('');
+  const [assetFile, setAssetFile] = useState<File | null>(null);
   const [assetLabel, setAssetLabel] = useState('');
 
   const loadAssets = useCallback(async () => {
@@ -336,18 +346,24 @@ export function RichComposer({
   const add = (type: string) => replaceBlocks([...blocks, newBlock(type)]);
 
   const registerAsset = async () => {
-    if (channelId === null || !assetReference.trim()) return;
+    if (channelId === null) return;
+    if (assetTransport === 'upload' && assetFile === null) return;
+    if (assetTransport !== 'upload' && !assetReference.trim()) return;
     setAssetBusy(true);
     setAssetError(null);
     try {
-      const created = await studioApi.createMediaAsset(channelId, {
-        kind: assetKind,
-        label: assetLabel.trim() || null,
-        telegram_file_id: assetTransport === 'telegram' ? assetReference.trim() : null,
-        storage_url: assetTransport === 'https' ? assetReference.trim() : null,
-      });
+      const label = assetLabel.trim() || null;
+      const created = assetTransport === 'upload'
+        ? await studioApi.uploadMediaAsset(channelId, assetKind, assetFile!, label)
+        : await studioApi.createMediaAsset(channelId, {
+            kind: assetKind,
+            label,
+            telegram_file_id: assetTransport === 'telegram' ? assetReference.trim() : null,
+            storage_url: assetTransport === 'https' ? assetReference.trim() : null,
+          });
       setAssets((current) => [created, ...current.filter((asset) => asset.id !== created.id)]);
       setAssetReference('');
+      setAssetFile(null);
       setAssetLabel('');
       setShowAssetForm(false);
     } catch (error) {
@@ -356,6 +372,10 @@ export function RichComposer({
       setAssetBusy(false);
     }
   };
+
+  const canRegister = channelId !== null && !assetBusy && (
+    assetTransport === 'upload' ? assetFile !== null : Boolean(assetReference.trim())
+  );
 
   return (
     <div className="rich-composer">
@@ -381,25 +401,44 @@ export function RichComposer({
         {assetError && <div className="rich-media-error">{assetError}</div>}
         {showAssetForm && (
           <div className="rich-media-register">
-            <select value={assetKind} onChange={(event) => setAssetKind(event.target.value as MediaAssetKind)}>
+            <select value={assetKind} onChange={(event) => {
+              setAssetKind(event.target.value as MediaAssetKind);
+              setAssetFile(null);
+            }}>
               {MEDIA_KINDS.map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
             </select>
-            <select value={assetTransport} onChange={(event) => setAssetTransport(event.target.value as 'https' | 'telegram')}>
+            <select value={assetTransport} onChange={(event) => {
+              setAssetTransport(event.target.value as AssetTransport);
+              setAssetReference('');
+              setAssetFile(null);
+            }}>
+              <option value="upload">Загрузить файл</option>
               <option value="https">HTTPS URL</option>
               <option value="telegram">Telegram file ID</option>
             </select>
-            <input
-              value={assetReference}
-              onChange={(event) => setAssetReference(event.target.value)}
-              placeholder={assetTransport === 'https' ? 'https://cdn.example.com/media…' : 'Telegram file ID…'}
-            />
+            {assetTransport === 'upload' ? (
+              <label className="rich-media-file-picker">
+                <input
+                  type="file"
+                  accept={mediaAccept(assetKind)}
+                  onChange={(event) => setAssetFile(event.target.files?.[0] ?? null)}
+                />
+                <span>{assetFile ? `${assetFile.name} · ${Math.ceil(assetFile.size / 1024)} KiB` : 'До 20 MiB'}</span>
+              </label>
+            ) : (
+              <input
+                value={assetReference}
+                onChange={(event) => setAssetReference(event.target.value)}
+                placeholder={assetTransport === 'https' ? 'https://cdn.example.com/media…' : 'Telegram file ID…'}
+              />
+            )}
             <input
               value={assetLabel}
               onChange={(event) => setAssetLabel(event.target.value)}
               placeholder="Название (необязательно)"
             />
-            <button onClick={() => void registerAsset()} disabled={assetBusy || !assetReference.trim()}>
-              {assetBusy ? 'Сохраняю…' : 'Добавить'}
+            <button onClick={() => void registerAsset()} disabled={!canRegister}>
+              {assetBusy ? 'Сохраняю…' : assetTransport === 'upload' ? 'Загрузить' : 'Добавить'}
             </button>
           </div>
         )}
