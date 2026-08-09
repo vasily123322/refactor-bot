@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 
 import { StudioApiError, studioApi, type CreateSourceInput } from './api';
 import { SourceSettingsControls } from './SourceSettingsControls';
+import { SourceWorkerHealthCard } from './SourceWorkerHealthCard';
 import { updateSourceSettings } from './sourceSettingsApi';
 import type { SourceSettingsPatch } from './sourceSettingsApi';
 import type { Channel, SourceConnectorView } from './types';
@@ -142,6 +143,8 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
 
       {error && <div className="banner error" role="alert">{error}<button onClick={() => setError(null)}>×</button></div>}
       {notice && <div className="banner success">{notice}<button onClick={() => setNotice(null)}>×</button></div>}
+
+      <SourceWorkerHealthCard />
 
       {showForm && (
         <form className="source-create-card" onSubmit={(event) => void createSource(event)}>

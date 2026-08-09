@@ -7,7 +7,8 @@
 
 .source-create-card,
 .sources-connectors-card,
-.sources-inbox-card {
+.sources-inbox-card,
+.source-worker-health-card {
   border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 23%, transparent);
   border-radius: 14px;
   background: color-mix(in srgb, var(--tg-theme-secondary-bg-color, #111827) 91%, transparent);
@@ -23,6 +24,87 @@
 }
 .source-checkbox { display: flex; grid-auto-flow: column; justify-content: start; align-items: center; margin-top: 12px; }
 .source-form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
+.source-worker-health-card { padding: 14px; }
+.source-worker-health-head,
+.source-worker-title-row,
+.source-worker-tick-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.source-worker-health-head { justify-content: space-between; align-items: flex-start; }
+.source-worker-health-head h2,
+.source-worker-health-card h3 { margin: 0; }
+.source-worker-health-head small,
+.source-worker-health-card .panel-heading small { color: var(--tg-theme-hint-color, #94a3b8); }
+.worker-running,
+.worker-stopped {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 9px;
+  font-weight: 700;
+}
+.worker-running { color: #22c55e; background: color-mix(in srgb, #22c55e 12%, transparent); }
+.worker-stopped { color: var(--tg-theme-hint-color, #94a3b8); background: color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 14%, transparent); }
+.source-worker-health-error {
+  margin-top: 10px;
+  border-radius: 9px;
+  padding: 9px 10px;
+  color: #ef4444;
+  background: color-mix(in srgb, #ef4444 10%, transparent);
+  font-size: 10px;
+}
+.source-worker-metrics {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(78px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.source-worker-metrics > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--tg-theme-bg-color, #0b1020) 48%, transparent);
+}
+.source-worker-metrics small { color: var(--tg-theme-hint-color, #94a3b8); font-size: 9px; }
+.source-worker-metrics strong { font-size: 15px; }
+.source-worker-last-tick,
+.source-worker-history-wrap {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 16%, transparent);
+}
+.source-worker-tick-summary { flex-wrap: wrap; margin-top: 8px; }
+.source-worker-tick-summary span {
+  border-radius: 999px;
+  padding: 4px 7px;
+  background: color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 11%, transparent);
+  color: var(--tg-theme-hint-color, #94a3b8);
+  font-size: 9px;
+}
+.source-worker-empty { padding: 12px 0 0; }
+.source-worker-history { display: grid; margin-top: 8px; overflow-x: auto; }
+.source-worker-history-row {
+  display: grid;
+  grid-template-columns: minmax(72px, .8fr) repeat(4, minmax(70px, .7fr)) minmax(80px, .8fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 560px;
+  padding: 6px 4px;
+  border-top: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 10%, transparent);
+  font-size: 9px;
+}
+.source-worker-history-header {
+  border-top: 0;
+  color: var(--tg-theme-hint-color, #94a3b8);
+  font-weight: 700;
+}
 
 .sources-layout { display: grid; grid-template-columns: minmax(300px, .85fr) minmax(420px, 1.4fr); gap: 12px; align-items: start; }
 .source-list, .candidate-list { display: grid; gap: 8px; padding: 9px; max-height: calc(100vh - 210px); overflow: auto; }
@@ -64,6 +146,10 @@
 .candidate-footer > div { display: flex; gap: 6px; flex-wrap: wrap; }
 .candidate-footer a.button { text-decoration: none; }
 
+@media (max-width: 1180px) {
+  .source-worker-metrics { grid-template-columns: repeat(4, minmax(90px, 1fr)); }
+}
+
 @media (max-width: 980px) {
   .source-form-grid { grid-template-columns: 1fr 2fr; }
   .sources-layout { grid-template-columns: 1fr; }
@@ -76,4 +162,7 @@
   .source-form-grid { grid-template-columns: 1fr; }
   .source-times, .candidate-footer { align-items: flex-start; flex-direction: column; }
   .candidate-footer > div { width: 100%; }
+  .source-worker-health-head { display: grid; }
+  .source-worker-health-head .button { justify-self: start; }
+  .source-worker-metrics { grid-template-columns: repeat(2, minmax(100px, 1fr)); }
 }
