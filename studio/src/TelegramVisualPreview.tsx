@@ -58,6 +58,18 @@ function RichPreviewBlock({ block }: { block: PostBlock }) {
       return <div className="visual-rich-math">{String(block.formula ?? '')}</div>;
     case 'anchor':
       return <span className="visual-rich-anchor">#{String(block.name ?? '')}</span>;
+    case 'image':
+    case 'media':
+      return (
+        <div className="visual-rich-media">
+          <div>
+            <span>▣</span>
+            <strong>{String(block.kind || (block.type === 'image' ? 'photo' : 'media'))}</strong>
+            <small>{block.asset_id ? `asset #${String(block.asset_id)}` : 'asset не выбран'}</small>
+          </div>
+          {block.caption ? <p>{String(block.caption)}</p> : null}
+        </div>
+      );
     default:
       return <div className="visual-rich-unsupported">{block.type}</div>;
   }
