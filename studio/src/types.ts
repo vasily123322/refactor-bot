@@ -148,6 +148,36 @@ export type SourceIngestionResult = {
   candidates_created: number;
 };
 
+export type SourceWorkerTickHealth = {
+  started_at: string;
+  finished_at: string;
+  window_selected: number;
+  scheduled: number;
+  processed: number;
+  skipped_backoff: number;
+  skipped_busy: number;
+  lease_errors: number;
+  failures: number;
+  timeouts: number;
+  ingestion_errors: number;
+  unexpected_errors: number;
+  new_documents: number;
+  candidates_created: number;
+  backlog_remaining: number;
+  stopped_early: boolean;
+  duration_ms: number;
+};
+
+export type SourceWorkerHealth = {
+  running: boolean;
+  started_at: string;
+  ticks: number;
+  history_size: number;
+  last_tick: SourceWorkerTickHealth | null;
+  history: SourceWorkerTickHealth[];
+  totals: Record<string, number>;
+};
+
 export type ContentCandidateView = {
   id: number;
   source_document_id: number;
