@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 from app.bot import dispatcher
 
@@ -80,6 +81,10 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
         events.append("commands-register")
         return True
 
+    async def _legacy_schema_boundary(engine, *, unmanaged_initializer):
+        await unmanaged_initializer()
+        return SimpleNamespace(managed=False, current_heads=())
+
     monkeypatch.setattr(dispatcher, "engine", _FakeEngine())
     monkeypatch.setattr(dispatcher, "create_dispatcher", _create_dispatcher)
     monkeypatch.setattr(dispatcher, "ExternalBotsManager", _FakeExternalBotsManager)
@@ -93,6 +98,12 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
     monkeypatch.setattr(dispatcher, "register_bot_commands", _register_commands)
     monkeypatch.setattr(
         dispatcher, "init_db_if_needed_sync", lambda: events.append("db-sync")
+    )
+    monkeypatch.setattr(dispatcher, "prepare_db_storage_sync", lambda: None)
+    monkeypatch.setattr(
+        dispatcher,
+        "bootstrap_database_schema",
+        _legacy_schema_boundary,
     )
     monkeypatch.setattr(dispatcher, "cancel_bg_tasks", _cancel_bg_tasks)
     monkeypatch.setattr(
