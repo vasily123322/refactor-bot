@@ -1,5 +1,11 @@
-import { useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import {
+  StudioApiError,
+  studioApi,
+  type MediaAssetKind,
+  type MediaAssetView,
+} from './api';
 import { RichTextField } from './RichTextField';
 import type { PostBlock, PostDocument, RichSegmentValue } from './types';
 
@@ -13,7 +19,16 @@ const BLOCK_OPTIONS = [
   ['divider', '— Разделитель'],
   ['math', '∑ Формула'],
   ['anchor', '# Anchor'],
+  ['media', '▣ Медиа'],
 ] as const;
+
+const MEDIA_KINDS: Array<[MediaAssetKind, string]> = [
+  ['photo', 'Фото'],
+  ['video', 'Видео'],
+  ['animation', 'Анимация'],
+  ['audio', 'Аудио'],
+  ['voice_note', 'Voice note'],
+];
 
 function newId(prefix: string): string {
   const random = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
@@ -39,6 +54,8 @@ function newBlock(type: string): PostBlock {
       return { id, type, formula: '' };
     case 'anchor':
       return { id, type, name: '' };
+    case 'media':
+      return { id, type, kind: 'photo', caption: '' };
     default:
       return { id, type: 'paragraph', content: '' };
   }
@@ -59,10 +76,21 @@ function numberValue(value: unknown, fallback: number): number {
   return Number.isFinite(result) ? result : fallback;
 }
 
+function assetOptionLabel(asset: MediaAssetView): string {
+  const title = asset.label?.trim() || `${asset.kind} #${asset.id}`;
+  return `${title} · ${asset.transport}`;
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof StudioApiError || error instanceof Error) return error.message;
+  return 'Неизвестная ошибка';
+}
+
 function BlockEditor({
   block,
   index,
   count,
+  assets,
   onPatch,
   onMove,
   onDuplicate,
@@ -71,12 +99,14 @@ function BlockEditor({
   block: PostBlock;
   index: number;
   count: number;
+  assets: MediaAssetView[];
   onPatch: (patch: Partial<PostBlock>) => void;
   onMove: (direction: -1 | 1) => void;
   onDuplicate: () => void;
   onDelete: () => void;
 }) {
   const title = BLOCK_OPTIONS.find(([type]) => type === block.type)?.[1] ?? block.type;
+  const selectedAssetId = Number(block.asset_id || 0);
 
   return (
     <article className={`rich-block rich-block-${block.type}`}>
@@ -208,6 +238,43 @@ function BlockEditor({
             />
           </label>
         )}
+
+        {block.type === 'media' && (
+          <>
+            <label className="rich-field-label">
+              <span>Media asset</span>
+              <select
+                className="rich-media-select"
+                value={selectedAssetId || ''}
+                onChange={(event) => {
+                  const assetId = Number(event.target.value || 0);
+                  const asset = assets.find((candidate) => candidate.id === assetId);
+                  onPatch({
+                    asset_id: asset ? asset.id : undefined,
+                    kind: asset ? asset.kind : 'photo',
+                  });
+                }}
+              >
+                <option value="">Выберите asset…</option>
+                {assets.map((asset) => (
+                  <option key={asset.id} value={asset.id}>{assetOptionLabel(asset)}</option>
+                ))}
+              </select>
+            </label>
+            <label className="rich-field-label">
+              <span>Caption</span>
+              <textarea
+                className="rich-media-caption"
+                value={textValue(block.caption)}
+                onChange={(event) => onPatch({ caption: event.target.value })}
+                placeholder="Подпись (необязательно)"
+              />
+            </label>
+            {selectedAssetId === 0 && (
+              <small className="rich-media-warning">Выберите asset перед exact preview / publish.</small>
+            )}
+          </>
+        )}
       </div>
     </article>
   );
@@ -215,12 +282,39 @@ function BlockEditor({
 
 export function RichComposer({
   document,
+  channelId,
   onChange,
 }: {
   document: PostDocument;
+  channelId: number | null;
   onChange: (document: PostDocument) => void;
 }) {
   const blocks = useMemo(() => document.blocks, [document.blocks]);
+  const [assets, setAssets] = useState<MediaAssetView[]>([]);
+  const [assetError, setAssetError] = useState<string | null>(null);
+  const [assetBusy, setAssetBusy] = useState(false);
+  const [showAssetForm, setShowAssetForm] = useState(false);
+  const [assetKind, setAssetKind] = useState<MediaAssetKind>('photo');
+  const [assetTransport, setAssetTransport] = useState<'https' | 'telegram'>('https');
+  const [assetReference, setAssetReference] = useState('');
+  const [assetLabel, setAssetLabel] = useState('');
+
+  const loadAssets = useCallback(async () => {
+    if (channelId === null) {
+      setAssets([]);
+      return;
+    }
+    setAssetError(null);
+    try {
+      setAssets(await studioApi.mediaAssets(channelId));
+    } catch (error) {
+      setAssetError(errorMessage(error));
+    }
+  }, [channelId]);
+
+  useEffect(() => {
+    void loadAssets();
+  }, [loadAssets]);
 
   const replaceBlocks = (next: PostBlock[]) => onChange({ ...document, blocks: next });
   const patch = (index: number, value: Partial<PostBlock>) => {
@@ -248,6 +342,28 @@ export function RichComposer({
   };
   const add = (type: string) => replaceBlocks([...blocks, newBlock(type)]);
 
+  const registerAsset = async () => {
+    if (channelId === null || !assetReference.trim()) return;
+    setAssetBusy(true);
+    setAssetError(null);
+    try {
+      const created = await studioApi.createMediaAsset(channelId, {
+        kind: assetKind,
+        label: assetLabel.trim() || null,
+        telegram_file_id: assetTransport === 'telegram' ? assetReference.trim() : null,
+        storage_url: assetTransport === 'https' ? assetReference.trim() : null,
+      });
+      setAssets((current) => [created, ...current.filter((asset) => asset.id !== created.id)]);
+      setAssetReference('');
+      setAssetLabel('');
+      setShowAssetForm(false);
+    } catch (error) {
+      setAssetError(errorMessage(error));
+    } finally {
+      setAssetBusy(false);
+    }
+  };
+
   return (
     <div className="rich-composer">
       <div className="rich-composer-banner">
@@ -258,6 +374,44 @@ export function RichComposer({
         <span>{blocks.length} блоков</span>
       </div>
 
+      <div className="rich-media-library">
+        <div className="rich-media-library-head">
+          <div>
+            <strong>Media assets</strong>
+            <small>{assets.length} в текущем канале · raw URL/file ID не возвращаются API</small>
+          </div>
+          <div>
+            <button onClick={() => void loadAssets()} disabled={assetBusy || channelId === null}>↻</button>
+            <button onClick={() => setShowAssetForm((current) => !current)} disabled={channelId === null}>+ Asset</button>
+          </div>
+        </div>
+        {assetError && <div className="rich-media-error">{assetError}</div>}
+        {showAssetForm && (
+          <div className="rich-media-register">
+            <select value={assetKind} onChange={(event) => setAssetKind(event.target.value as MediaAssetKind)}>
+              {MEDIA_KINDS.map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
+            </select>
+            <select value={assetTransport} onChange={(event) => setAssetTransport(event.target.value as 'https' | 'telegram')}>
+              <option value="https">HTTPS URL</option>
+              <option value="telegram">Telegram file ID</option>
+            </select>
+            <input
+              value={assetReference}
+              onChange={(event) => setAssetReference(event.target.value)}
+              placeholder={assetTransport === 'https' ? 'https://cdn.example.com/media…' : 'Telegram file ID…'}
+            />
+            <input
+              value={assetLabel}
+              onChange={(event) => setAssetLabel(event.target.value)}
+              placeholder="Название (необязательно)"
+            />
+            <button onClick={() => void registerAsset()} disabled={assetBusy || !assetReference.trim()}>
+              {assetBusy ? 'Сохраняю…' : 'Добавить'}
+            </button>
+          </div>
+        )}
+      </div>
+
       <div className="rich-block-list">
         {blocks.map((block, index) => (
           <BlockEditor
@@ -265,6 +419,7 @@ export function RichComposer({
             block={block}
             index={index}
             count={blocks.length}
+            assets={assets}
             onPatch={(value) => patch(index, value)}
             onMove={(direction) => move(index, direction)}
             onDuplicate={() => duplicate(index)}
