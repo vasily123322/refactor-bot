@@ -13,6 +13,7 @@ function media(patch: Partial<CandidateMediaView> = {}): CandidateMediaView {
     height: 900,
     duration_seconds: null,
     promotable: true,
+    media_asset_id: null,
     ...patch,
   };
 }
@@ -27,5 +28,11 @@ describe('candidate media labels', () => {
     expect(label).toBe('▣ Видео · 2.5 MiB · 18s');
     expect(label).not.toContain('file_id');
     expect(label).not.toContain('access_hash');
+  });
+
+  it('shows only durable MediaAsset identity after promotion', () => {
+    const label = candidateMediaLabel(media({ media_asset_id: 77 }));
+    expect(label).toBe('▣ Фото · 338 KiB · Asset #77');
+    expect(label).not.toContain('telegram');
   });
 });
