@@ -209,7 +209,6 @@ class LegacyPublicationBridge:
         try:
             await self.session.flush()
             publication.schedule_entry_id = int(schedule.id)
-            payload["_content_channel_id"] = int(item.channel_id)
 
             task = PostTask(
                 channel_id=int(item.channel_id),
