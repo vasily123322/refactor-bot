@@ -12,6 +12,10 @@ from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.services.content import LegacyPayloadError, document_from_legacy_payload
+from app.services.publication_runtime import (
+    AUTODELETE_RUNTIME_META_KEY,
+    normalize_autodelete_runtime,
+)
 from app.services.scheduler_errors import public_scheduler_error
 from app.services.scheduling import as_utc, cleanup_runtime_fields
 from app.services.telegram_results import (
@@ -253,6 +257,7 @@ async def mirror_legacy_post_task(
     last_error = (
         public_scheduler_error(task.error) if task_status == "failed" else None
     )
+    autodelete_runtime = normalize_autodelete_runtime(payload)
     now = datetime.now(timezone.utc)
     when = as_utc(task.scheduled_at)
     reused_content = referenced is not None
@@ -285,6 +290,8 @@ async def mirror_legacy_post_task(
             revision_number = int(revision.revision)
 
         mirror_meta = {"mirrored_from_legacy": True}
+        if autodelete_runtime is not None:
+            mirror_meta[AUTODELETE_RUNTIME_META_KEY] = autodelete_runtime
         schedule_meta: dict[str, Any] = {"legacy_post_task_id": task_id}
         if reused_content:
             mirror_meta["reused_content_provenance"] = True
