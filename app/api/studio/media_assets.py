@@ -189,6 +189,8 @@ async def upload_media_asset(
     label: Annotated[str | None, Form(max_length=120)] = None,
 ) -> MediaAssetResponse:
     await _require_owned_channel(session, principal, channel_id)
+    filename = _safe_filename(file.filename, kind)
+    mime_type = str(file.content_type or "").strip()[:255] or None
     try:
         data = await file.read(MAX_STUDIO_MEDIA_UPLOAD_BYTES + 1)
     finally:
@@ -198,8 +200,6 @@ async def upload_media_asset(
     if len(data) > MAX_STUDIO_MEDIA_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Uploaded media exceeds Studio limit")
 
-    filename = _safe_filename(file.filename, kind)
-    mime_type = str(file.content_type or "").strip()[:255] or None
     try:
         uploaded = await TelegramMediaUploadService(tg_bot).upload(
             tg_user_id=principal.tg_user_id,
