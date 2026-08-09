@@ -7,9 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.models import AISource
 from app.domain.sources.models import SourceConnector
 from app.repositories.sources_v2 import SourcesRepo
+from app.services.source_ingestion_lease import SourceIngestionLeaseService
 
 
 class SourceLifecycleError(RuntimeError):
+    pass
+
+
+class SourceLifecycleBusy(SourceLifecycleError):
     pass
 
 
@@ -50,6 +55,12 @@ class SourceLifecycleService:
         connector = await self.repo.get_connector_for_channel(connector_id, channel_id)
         if connector is None:
             raise SourceLifecycleError("source not found")
+
+        active_lease = await SourceIngestionLeaseService(self.session).active_statuses(
+            [int(connector.id)]
+        )
+        if int(connector.id) in active_lease:
+            raise SourceLifecycleBusy("source ingestion is running")
 
         # Legacy GrabSource has no persisted enabled/mode/citation state. Such rows
         # are mirrored into Sources v2 for observability only; accepting lifecycle
