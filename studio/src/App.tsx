@@ -1,8 +1,9 @@
 import { AppRoot } from '@telegram-apps/telegram-ui';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AIStudioPanel } from './AIStudioPanel';
 import { StudioApiError, studioApi } from './api';
+import { DRAFT_AUTOSAVE_DELAY_MS, isCurrentDraftSave } from './draftAutosave';
 import { InboxPanel } from './InboxPanel';
 import { PlannerPanel } from './PlannerPanel';
 import { RichComposer } from './RichComposer';
@@ -19,6 +20,7 @@ import type {
 import { documentText, emptyRichDocument, emptyTextDocument } from './types';
 
 type StudioView = 'content' | 'planner' | 'sources' | 'inbox' | 'ai';
+type DraftSaveState = 'saved' | 'dirty' | 'saving' | 'error';
 
 function shortDate(value: string | null): string {
   if (!value) return '—';
@@ -133,6 +135,19 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [saveState, setSaveState] = useState<DraftSaveState>('saved');
+
+  const selectedRef = useRef<ContentDetail | null>(selected);
+  const channelIdRef = useRef<number | null>(selectedChannelId);
+  const documentRef = useRef<PostDocument>(document);
+  const dirtyRef = useRef(dirty);
+  const editVersionRef = useRef(0);
+  const inFlightSaveRef = useRef<Promise<boolean> | null>(null);
+
+  selectedRef.current = selected;
+  channelIdRef.current = selectedChannelId;
+  documentRef.current = document;
+  dirtyRef.current = dirty;
 
   const channel = useMemo(
     () => channels.find((row) => row.id === selectedChannelId) ?? null,
@@ -144,6 +159,97 @@ export default function App() {
     setItems(rows);
   }, []);
 
+  const installEditorDocument = useCallback(
+    (detail: ContentDetail | null, nextDocument: PostDocument) => {
+      editVersionRef.current += 1;
+      selectedRef.current = detail;
+      documentRef.current = nextDocument;
+      dirtyRef.current = false;
+      setSelected(detail);
+      setDocument(nextDocument);
+      setDirty(false);
+      setSaveState('saved');
+    },
+    [],
+  );
+
+  const persistDraft = useCallback(async (notify = false): Promise<boolean> => {
+    while (inFlightSaveRef.current) {
+      await inFlightSaveRef.current;
+    }
+    if (!dirtyRef.current) return true;
+
+    const currentSelected = selectedRef.current;
+    const channelId = channelIdRef.current;
+    if (!currentSelected || channelId === null) return false;
+
+    const snapshot = {
+      channelId,
+      contentId: currentSelected.id,
+      editVersion: editVersionRef.current,
+    };
+    const snapshotDocument = documentRef.current;
+
+    const operation = (async (): Promise<boolean> => {
+      setSaveState('saving');
+      setError(null);
+      try {
+        const detail = await studioApi.saveRevision(
+          snapshot.channelId,
+          snapshot.contentId,
+          snapshotDocument,
+        );
+        const targetStillOpen = (
+          channelIdRef.current === snapshot.channelId
+          && selectedRef.current?.id === snapshot.contentId
+        );
+        const current = isCurrentDraftSave(snapshot, {
+          channelId: channelIdRef.current,
+          contentId: selectedRef.current?.id ?? null,
+          editVersion: editVersionRef.current,
+        });
+
+        if (targetStillOpen) {
+          selectedRef.current = detail;
+          setSelected(detail);
+          if (current) {
+            documentRef.current = detail.document;
+            dirtyRef.current = false;
+            setDocument(detail.document);
+            setDirty(false);
+            setSaveState('saved');
+            if (notify) setNotice(`Сохранена версия ${detail.current_revision}`);
+          } else {
+            setSaveState('dirty');
+          }
+        }
+        if (channelIdRef.current === snapshot.channelId) {
+          await loadItems(snapshot.channelId);
+        }
+        return current;
+      } catch (reason) {
+        const targetStillOpen = (
+          channelIdRef.current === snapshot.channelId
+          && selectedRef.current?.id === snapshot.contentId
+        );
+        if (targetStillOpen) {
+          setSaveState('error');
+          setError(errorMessage(reason));
+        }
+        return false;
+      }
+    })();
+
+    inFlightSaveRef.current = operation;
+    try {
+      return await operation;
+    } finally {
+      if (inFlightSaveRef.current === operation) {
+        inFlightSaveRef.current = null;
+      }
+    }
+  }, [loadItems]);
+
   useEffect(() => {
     let cancelled = false;
     void Promise.all([studioApi.me(), studioApi.channels()])
@@ -151,7 +257,10 @@ export default function App() {
         if (cancelled) return;
         setUser(nextUser);
         setChannels(nextChannels);
-        if (nextChannels.length) setSelectedChannelId(nextChannels[0].id);
+        if (nextChannels.length) {
+          channelIdRef.current = nextChannels[0].id;
+          setSelectedChannelId(nextChannels[0].id);
+        }
       })
       .catch((reason) => !cancelled && setError(errorMessage(reason)));
     return () => {
@@ -161,25 +270,36 @@ export default function App() {
 
   useEffect(() => {
     if (selectedChannelId === null) return;
-    setSelected(null);
-    setDocument(emptyTextDocument());
-    setDirty(false);
+    installEditorDocument(null, emptyTextDocument());
     setPreviewMessageIds([]);
     void loadItems(selectedChannelId).catch((reason) => setError(errorMessage(reason)));
-  }, [loadItems, selectedChannelId]);
+  }, [installEditorDocument, loadItems, selectedChannelId]);
+
+  useEffect(() => {
+    if (!dirty || !selected || selectedChannelId === null) return;
+    const timer = window.setTimeout(() => {
+      void persistDraft(false);
+    }, DRAFT_AUTOSAVE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [dirty, document, persistDraft, selected?.id, selectedChannelId]);
 
   const openContentById = async (contentId: number) => {
-    if (selectedChannelId === null) return;
+    if (channelIdRef.current === null) return;
+    if (dirtyRef.current) {
+      const saved = await persistDraft(false);
+      if (!saved && dirtyRef.current) return;
+    }
+    const channelId = channelIdRef.current;
+    if (channelId === null) return;
     setView('content');
     setBusy(true);
     setError(null);
     try {
-      const detail = await studioApi.contentItem(selectedChannelId, contentId);
-      setSelected(detail);
-      setDocument(detail.document);
-      setDirty(false);
+      const detail = await studioApi.contentItem(channelId, contentId);
+      if (channelIdRef.current !== channelId) return;
+      installEditorDocument(detail, detail.document);
       setPreviewMessageIds([]);
-      await loadItems(selectedChannelId);
+      await loadItems(channelId);
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
@@ -189,22 +309,39 @@ export default function App() {
 
   const openItem = async (item: ContentSummary) => openContentById(item.id);
 
+  const selectChannel = (channelId: number) => {
+    if (channelId === channelIdRef.current) return;
+    void (async () => {
+      if (dirtyRef.current) {
+        const saved = await persistDraft(false);
+        if (!saved && dirtyRef.current) return;
+      }
+      channelIdRef.current = channelId;
+      selectedRef.current = null;
+      setSelectedChannelId(channelId);
+    })();
+  };
+
   const createDraft = async (mode: 'classic' | 'rich') => {
-    if (selectedChannelId === null) return;
+    if (dirtyRef.current) {
+      const saved = await persistDraft(false);
+      if (!saved && dirtyRef.current) return;
+    }
+    const channelId = channelIdRef.current;
+    if (channelId === null) return;
     setBusy(true);
     setError(null);
     try {
       const initial = mode === 'rich' ? emptyRichDocument() : emptyTextDocument();
       const detail = await studioApi.createContent(
-        selectedChannelId,
+        channelId,
         initial,
         mode === 'rich' ? 'Новый Rich пост' : 'Новый пост',
       );
-      setSelected(detail);
-      setDocument(detail.document);
-      setDirty(false);
+      if (channelIdRef.current !== channelId) return;
+      installEditorDocument(detail, detail.document);
       setPreviewMessageIds([]);
-      await loadItems(selectedChannelId);
+      await loadItems(channelId);
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
@@ -212,22 +349,8 @@ export default function App() {
     }
   };
 
-  const save = async () => {
-    if (!selected || selectedChannelId === null) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const detail = await studioApi.saveRevision(selectedChannelId, selected.id, document);
-      setSelected(detail);
-      setDocument(detail.document);
-      setDirty(false);
-      setNotice(`Сохранена версия ${detail.current_revision}`);
-      await loadItems(selectedChannelId);
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+  const save = () => {
+    void persistDraft(true);
   };
 
   const exactPreview = async () => {
@@ -235,9 +358,9 @@ export default function App() {
     setError(null);
     try {
       const result = await studioApi.telegramPreview(
-        document,
+        documentRef.current,
         previewMessageIds,
-        selectedChannelId,
+        channelIdRef.current,
       );
       setPreviewMessageIds(result.message_ids);
       setNotice('Настоящий preview отправлен в Telegram');
@@ -249,15 +372,20 @@ export default function App() {
   };
 
   const publishNow = async () => {
-    if (!selected || selectedChannelId === null) return;
-    if (dirty) {
-      setError('Сначала сохраните текущие изменения как новую версию.');
-      return;
+    if (dirtyRef.current) {
+      const saved = await persistDraft(false);
+      if (!saved && dirtyRef.current) {
+        setError('Не удалось сохранить последние изменения перед публикацией.');
+        return;
+      }
     }
+    const currentSelected = selectedRef.current;
+    const channelId = channelIdRef.current;
+    if (!currentSelected || channelId === null) return;
     setBusy(true);
     setError(null);
     try {
-      const publication = await studioApi.publishNow(selectedChannelId, selected.id);
+      const publication = await studioApi.publishNow(channelId, currentSelected.id);
       setNotice(`Публикация #${publication.id} поставлена в очередь`);
     } catch (reason) {
       setError(errorMessage(reason));
@@ -268,9 +396,28 @@ export default function App() {
 
   const text = documentText(document);
   const editDocument = (next: PostDocument) => {
+    editVersionRef.current += 1;
+    documentRef.current = next;
+    dirtyRef.current = true;
     setDocument(next);
     setDirty(true);
+    setSaveState('dirty');
   };
+
+  const saveButtonLabel = saveState === 'saving'
+    ? 'Сохраняю…'
+    : saveState === 'error'
+      ? 'Повторить сохранение'
+      : dirty
+        ? 'Сохранить сейчас'
+        : 'Сохранено';
+  const saveFooterLabel = saveState === 'saving'
+    ? '↻ Автосохранение…'
+    : saveState === 'error'
+      ? '⚠ Не удалось сохранить'
+      : dirty
+        ? '● Изменения сохранятся автоматически'
+        : '✓ Автосохранено';
 
   return (
     <AppRoot>
@@ -280,7 +427,7 @@ export default function App() {
           channels={channels}
           selectedChannelId={selectedChannelId}
           activeView={view}
-          onSelectChannel={setSelectedChannelId}
+          onSelectChannel={selectChannel}
           onView={setView}
         />
 
@@ -317,7 +464,7 @@ export default function App() {
                 <button className="button secondary" onClick={exactPreview} disabled={busy}>
                   👁 В Telegram
                 </button>
-                <button className="button primary" onClick={publishNow} disabled={busy || !selected}>
+                <button className="button primary" onClick={() => void publishNow()} disabled={busy || !selected}>
                   Опубликовать
                 </button>
               </div>
@@ -370,8 +517,12 @@ export default function App() {
                       {selected ? `Content #${selected.id} · revision ${selected.current_revision}` : 'Новый документ'}
                     </small>
                   </div>
-                  <button className="button primary compact" onClick={save} disabled={busy || !selected || !dirty}>
-                    {dirty ? 'Сохранить версию' : 'Сохранено'}
+                  <button
+                    className="button primary compact"
+                    onClick={save}
+                    disabled={busy || !selected || !dirty || saveState === 'saving'}
+                  >
+                    {saveButtonLabel}
                   </button>
                 </div>
                 {document.mode === 'rich' ? (
@@ -387,7 +538,7 @@ export default function App() {
                   <span>
                     {text.length} UTF-16 единиц · {document.mode === 'rich' ? 'native Rich Message blocks' : 'Telegram text limit: 4096'}
                   </span>
-                  <span>{dirty ? '● Есть несохранённые изменения' : '✓ Версия сохранена'}</span>
+                  <span>{saveFooterLabel}</span>
                 </footer>
               </section>
 
