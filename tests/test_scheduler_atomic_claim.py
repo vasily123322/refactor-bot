@@ -15,9 +15,10 @@ from app.services.publication_bridge import LegacyPublicationBridge
 from app.workers.publication_scheduler import Scheduler
 
 
-def test_scheduler_atomic_claim_filters_stale_second_worker() -> None:
+def test_scheduler_atomic_claim_filters_stale_second_worker(tmp_path) -> None:
     async def run() -> None:
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        database_path = tmp_path / "scheduler-claim.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
         try:
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
@@ -38,13 +39,15 @@ def test_scheduler_atomic_claim_filters_stale_second_worker() -> None:
                 assert task_id > 0
 
             async with Session() as first_session, Session() as second_session:
-                # Both workers select while the row is still pending. Their ORM
-                # objects intentionally remain stale after the first worker commits.
+                # Both workers select while the row is still pending. End the read
+                # transactions but retain stale ORM snapshots via expire_on_commit=False.
                 first_task = await first_session.get(PostTask, task_id)
                 second_task = await second_session.get(PostTask, task_id)
                 assert first_task is not None and second_task is not None
                 assert first_task.status == "pending"
                 assert second_task.status == "pending"
+                await first_session.commit()
+                await second_session.commit()
 
                 first_batch = [first_task]
                 second_batch = [second_task]
@@ -54,6 +57,9 @@ def test_scheduler_atomic_claim_filters_stale_second_worker() -> None:
                 await first_scheduler._mark_processing(first_session, first_batch)
                 assert [int(task.id) for task in first_batch] == [task_id]
 
+                # The second ORM object still says pending, but the CAS UPDATE checks
+                # the committed database status and removes the loser from its batch.
+                assert second_task.status == "pending"
                 await second_scheduler._mark_processing(second_session, second_batch)
                 assert second_batch == []
 
