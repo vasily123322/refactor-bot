@@ -20,6 +20,7 @@ from app.services.external_bots import ExternalBotsManager
 from app.services.llm.openrouter_client import OpenRouterClient
 from app.userbot.client import app as userbot
 from app.workers.ai_auto_tasks import AIAutoTasksWorker
+from app.workers.candidate_enrichment import LocalCandidateEnrichmentWorker
 from app.workers.grab_poll import GrabPoller
 from app.workers.publication_reconciler import PublicationReconcilerWorker
 from app.workers.reliable_scheduler import Scheduler
@@ -83,6 +84,7 @@ async def run_bot() -> None:
     source_ingestion = None
     poller = None
     ai_auto_worker = None
+    local_enrichment_worker = None
 
     try:
         await register_bot_commands(bot)
@@ -122,6 +124,19 @@ async def run_bot() -> None:
         )
         await source_ingestion.start()
 
+        if settings.local_enrichment_worker_enabled:
+            local_enrichment_worker = LocalCandidateEnrichmentWorker(
+                session_factory=AsyncSessionLocal,
+                interval_seconds=settings.local_enrichment_worker_interval_seconds,
+                batch_size=settings.local_enrichment_worker_batch_size,
+                candidate_timeout_seconds=(
+                    settings.local_enrichment_worker_candidate_timeout_seconds
+                ),
+            )
+            await local_enrichment_worker.start()
+        else:
+            logger.info("Boot: local enrichment worker disabled")
+
         poller = GrabPoller(interval_seconds=5)
         await poller.start()
 
@@ -145,6 +160,8 @@ async def run_bot() -> None:
             await _safe_stop("AI auto tasks worker", ai_auto_worker.stop)
         if poller is not None:
             await _safe_stop("grab poller", poller.stop)
+        if local_enrichment_worker is not None:
+            await _safe_stop("local enrichment worker", local_enrichment_worker.stop)
         if source_ingestion is not None:
             await _safe_stop("source ingestion", source_ingestion.stop)
         if publication_reconciler is not None:
