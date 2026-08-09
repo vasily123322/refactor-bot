@@ -224,7 +224,11 @@ export default function App() {
           }
         }
         if (channelIdRef.current === snapshot.channelId) {
-          await loadItems(snapshot.channelId);
+          void loadItems(snapshot.channelId).catch((reason) => {
+            if (channelIdRef.current === snapshot.channelId) {
+              setError(errorMessage(reason));
+            }
+          });
         }
         return current;
       } catch (reason) {
