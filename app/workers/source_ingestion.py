@@ -133,6 +133,7 @@ class SourceIngestionWorker:
         session: AsyncSession,
         connector: SourceConnector,
         *,
+        connector_id: int,
         failure_kind: str,
     ) -> None:
         await session.rollback()
@@ -144,7 +145,7 @@ class SourceIngestionWorker:
         await session.commit()
         logger.warning(
             "Sources v2 connector={} worker failure kind={} count={} retry_after={}",
-            int(connector.id),
+            int(connector_id),
             failure_kind,
             source_worker_failure_count(connector),
             retry_after.isoformat(),
@@ -193,35 +194,36 @@ class SourceIngestionWorker:
         for connector_id in connector_ids:
             if self._stop.is_set():
                 break
+            current_connector_id = int(connector_id)
             async with self.session_factory() as session:
-                connector = await session.get(SourceConnector, int(connector_id))
+                connector = await session.get(SourceConnector, current_connector_id)
                 if connector is None or not connector.enabled:
                     continue
                 if source_worker_backoff_active(connector):
                     logger.trace(
                         "Sources v2 connector={} skipped by worker backoff",
-                        int(connector.id),
+                        current_connector_id,
                     )
                     continue
 
                 lease_service = SourceIngestionLeaseService(session)
                 try:
                     lease = await lease_service.acquire(
-                        connector_id=int(connector.id),
+                        connector_id=current_connector_id,
                         holder="worker",
                     )
                 except Exception as exc:
                     await session.rollback()
                     logger.warning(
                         "Sources v2 connector={} lease acquisition failed type={}",
-                        int(connector.id),
+                        current_connector_id,
                         type(exc).__name__,
                     )
                     continue
                 if lease is None:
                     logger.trace(
                         "Sources v2 connector={} skipped because ingestion lease is busy",
-                        int(connector.id),
+                        current_connector_id,
                     )
                     continue
 
@@ -232,7 +234,7 @@ class SourceIngestionWorker:
                         if result.documents_created:
                             logger.info(
                                 "Sources v2 connector={} kind={} new_documents={} candidates={}",
-                                int(connector.id),
+                                current_connector_id,
                                 kind,
                                 result.documents_created,
                                 result.candidates_created,
@@ -240,32 +242,38 @@ class SourceIngestionWorker:
                         if kind == "telegram" and telegram_backlog_hint(connector):
                             logger.info(
                                 "Sources v2 connector={} Telegram backlog may remain cursor={}",
-                                int(connector.id),
+                                current_connector_id,
                                 telegram_cursor_message_id(connector),
                             )
                     except asyncio.TimeoutError:
                         await self._record_failure(
                             session,
                             connector,
+                            connector_id=current_connector_id,
                             failure_kind="timeout",
                         )
                     except SourceIngestionError:
                         await self._record_failure(
                             session,
                             connector,
+                            connector_id=current_connector_id,
                             failure_kind="ingestion_error",
                         )
                     except Exception as exc:
                         await self._record_failure(
                             session,
                             connector,
+                            connector_id=current_connector_id,
                             failure_kind="unexpected",
                         )
                         logger.warning(
                             "Sources v2 connector={} unexpected ingestion failure type={}",
-                            int(connector.id),
+                            current_connector_id,
                             type(exc).__name__,
                         )
                 finally:
-                    await self._release_lease(lease, connector_id=int(connector.id))
+                    await self._release_lease(
+                        lease,
+                        connector_id=current_connector_id,
+                    )
         return processed
