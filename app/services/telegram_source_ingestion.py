@@ -16,6 +16,7 @@ from app.userbot.client import UserbotChat, UserbotMessage, app as userbot
 
 
 TELEGRAM_CURSOR_KEY = "telegram_cursor_message_id"
+TELEGRAM_BACKLOG_HINT_KEY = "telegram_backlog_hint"
 
 
 class TelegramSourceGateway(Protocol):
@@ -40,6 +41,10 @@ def telegram_cursor_message_id(connector: SourceConnector) -> int:
     except (TypeError, ValueError):
         return 0
     return max(0, value)
+
+
+def telegram_backlog_hint(connector: SourceConnector) -> bool:
+    return bool(dict(connector.config or {}).get(TELEGRAM_BACKLOG_HINT_KEY, False))
 
 
 def _normalize_message_date(value: datetime | None) -> datetime | None:
@@ -101,8 +106,6 @@ class TelegramSourceIngestionService:
         try:
             return await self.gateway.get_chat(target)
         except Exception:
-            # Private invite links and some channels require joining first. This
-            # matches the existing inline source-access semantics.
             try:
                 await self.gateway.join_chat(target)
                 return await self.gateway.get_chat(target)
@@ -116,24 +119,33 @@ class TelegramSourceIngestionService:
                 )
                 raise SourceIngestionError("Telegram source is not accessible") from exc
 
-    async def _stage_cursor(
+    async def _stage_runtime_state(
         self,
         connector: SourceConnector,
+        *,
         highest_message_id: int,
-    ) -> None:
-        if highest_message_id <= 0:
-            return
-        # Another manual/worker ingestion may have advanced the same connector while
-        # this network read was in flight. Refresh only config and never move the
-        # cursor backwards.
+        backlog_hint: bool,
+    ) -> tuple[int, bool]:
+        """Persist monotonic cursor + backlog hint without clobbering a newer poll."""
         await self.session.refresh(connector, attribute_names=["config"])
-        persisted = telegram_cursor_message_id(connector)
-        if highest_message_id <= persisted:
-            return
+        persisted_cursor = telegram_cursor_message_id(connector)
+        if int(highest_message_id) < persisted_cursor:
+            return persisted_cursor, telegram_backlog_hint(connector)
+
+        next_cursor = max(persisted_cursor, int(highest_message_id))
+        next_hint = bool(backlog_hint)
+        current = dict(connector.config or {})
+        if (
+            int(current.get(TELEGRAM_CURSOR_KEY) or 0) == next_cursor
+            and bool(current.get(TELEGRAM_BACKLOG_HINT_KEY, False)) == next_hint
+        ):
+            return next_cursor, next_hint
         connector.config = {
-            **dict(connector.config or {}),
-            TELEGRAM_CURSOR_KEY: int(highest_message_id),
+            **current,
+            TELEGRAM_CURSOR_KEY: next_cursor,
+            TELEGRAM_BACKLOG_HINT_KEY: next_hint,
         }
+        return next_cursor, next_hint
 
     async def ingest(self, connector: SourceConnector) -> IngestionResult:
         if str(connector.kind).lower() != "telegram":
@@ -150,9 +162,6 @@ class TelegramSourceIngestionService:
         highest_message_id = cursor
         latest_published_at: datetime | None = None
         try:
-            # Bootstrap intentionally keeps the historical "latest N" behavior. Once
-            # a cursor exists, read oldest->newest above min_id so a backlog larger
-            # than one page is drained over multiple ticks without skipping rows.
             async for message in self.gateway.get_chat_history(
                 int(chat.id),
                 limit=self.history_limit,
@@ -167,9 +176,6 @@ class TelegramSourceIngestionService:
 
                 text = _message_text(message)
                 if not text:
-                    # Media-only posts are intentionally deferred to the media
-                    # attachment adapter, but their IDs still advance the cursor so
-                    # they are not re-read forever.
                     continue
                 seen += 1
                 published_at = _normalize_message_date(message.date)
@@ -194,9 +200,6 @@ class TelegramSourceIngestionService:
                 )
                 if created:
                     created_count += 1
-                # Always ensure the candidate. If document persistence succeeded but
-                # a previous run failed before candidate creation, the retry heals
-                # that partial commit instead of leaving an orphan document forever.
                 await self.repo.ensure_candidate(
                     source_document_id=document.id,
                     channel_id=connector.channel_id,
@@ -211,9 +214,6 @@ class TelegramSourceIngestionService:
         except SourceIngestionError:
             raise
         except Exception as exc:
-            # Cursor is staged only after the iterator finishes successfully. Any
-            # documents committed before this failure are safe to replay because
-            # external_id/candidate constraints make the retry idempotent.
             await self.repo.update_health(
                 connector,
                 status="broken",
@@ -224,9 +224,13 @@ class TelegramSourceIngestionService:
             raise SourceIngestionError("Telegram history read failed") from exc
 
         if fetched == 0 and cursor > 0:
-            # Being caught up is a healthy no-op, not a degraded source. Avoid a DB
-            # write on every worker tick unless this poll actually recovers state.
-            if connector.status != "healthy" or connector.auth_state != "ready":
+            _, hint = await self._stage_runtime_state(
+                connector,
+                highest_message_id=cursor,
+                backlog_hint=False,
+            )
+            needs_health_recovery = connector.status != "healthy" or connector.auth_state != "ready"
+            if needs_health_recovery:
                 await self.repo.update_health(
                     connector,
                     status="healthy",
@@ -234,9 +238,19 @@ class TelegramSourceIngestionService:
                     auth_state="ready",
                     success=True,
                 )
+            elif hint is False and self.session.is_modified(connector, include_collections=False):
+                await self.session.commit()
             return IngestionResult(int(connector.id), 0, 0, 0)
 
-        await self._stage_cursor(connector, highest_message_id)
+        # A full incremental page is a conservative hint that more messages may
+        # remain. Bootstrap pages intentionally do not set it because older history
+        # is outside the incremental contract.
+        backlog_hint = bool(cursor > 0 and fetched >= self.history_limit)
+        await self._stage_runtime_state(
+            connector,
+            highest_message_id=highest_message_id,
+            backlog_hint=backlog_hint,
+        )
         if seen == 0:
             await self.repo.update_health(
                 connector,
