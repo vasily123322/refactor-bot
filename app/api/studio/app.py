@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.studio.auth import StudioPrincipal, require_studio_principal
 from app.api.studio.candidate_actions import router as candidate_actions_router
 from app.api.studio.config import StudioConfig, studio_config
+from app.api.studio.media_assets import router as media_assets_router
 from app.api.studio.planner import router as planner_router
 from app.api.studio.schemas import (
     ChannelResponse,
@@ -84,6 +85,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
     )
     app.include_router(planner_router)
     app.include_router(sources_router)
+    app.include_router(media_assets_router)
     app.include_router(candidate_actions_router)
 
     if cfg.cors_origins:
@@ -116,6 +118,20 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
                 "details",
                 "math",
                 "anchor",
+                "image",
+                "media",
+                "gallery",
+                "collage",
+                "slideshow",
+                "map",
+            ],
+            "rich_media_assets": True,
+            "rich_media_asset_kinds": [
+                "photo",
+                "video",
+                "animation",
+                "audio",
+                "voice_note",
             ],
             "rich_media_attachments": False,
             "exact_telegram_preview": True,
