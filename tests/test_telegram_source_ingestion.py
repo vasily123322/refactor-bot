@@ -15,6 +15,7 @@ from app.services.source_ingestion import SourceIngestionError
 from app.services.telegram_source_ingestion import (
     TELEGRAM_CURSOR_KEY,
     TelegramSourceIngestionService,
+    telegram_backlog_hint,
     telegram_cursor_message_id,
 )
 from app.userbot.client import UserbotChat, UserbotMessage
@@ -94,8 +95,10 @@ def test_telegram_ingestion_bootstraps_cursor_then_becomes_healthy_noop() -> Non
                 gateway = _Gateway()
                 service = TelegramSourceIngestionService(session, gateway=gateway)
                 first = await service.ingest(connector)
-                second = await service.ingest(connector)
+                assert telegram_cursor_message_id(connector) == 13
+                assert telegram_backlog_hint(connector) is False
 
+                second = await service.ingest(connector)
                 assert first.documents_seen == 2
                 assert first.documents_created == 2
                 assert first.candidates_created == 2
@@ -104,6 +107,7 @@ def test_telegram_ingestion_bootstraps_cursor_then_becomes_healthy_noop() -> Non
                 assert second.candidates_created == 0
                 assert gateway.calls == [(0, False, 100), (13, True, 100)]
                 assert telegram_cursor_message_id(connector) == 13
+                assert telegram_backlog_hint(connector) is False
 
                 documents = (
                     await session.execute(
@@ -164,14 +168,17 @@ def test_incremental_cursor_drains_backlog_without_skipping_over_page_limit() ->
                 first = await service.ingest(connector)
                 assert first.documents_created == 100
                 assert telegram_cursor_message_id(connector) == 200
+                assert telegram_backlog_hint(connector) is True
 
                 second = await service.ingest(connector)
                 assert second.documents_created == 50
                 assert telegram_cursor_message_id(connector) == 250
+                assert telegram_backlog_hint(connector) is False
 
                 third = await service.ingest(connector)
                 assert third.documents_seen == 0
                 assert third.documents_created == 0
+                assert telegram_backlog_hint(connector) is False
                 assert gateway.calls == [
                     (100, True, 100),
                     (200, True, 100),
@@ -247,6 +254,7 @@ def test_retry_heals_document_committed_before_candidate_without_advancing_curso
                 )
                 assert retry.documents_created == 1
                 assert telegram_cursor_message_id(connector) == 102
+                assert telegram_backlog_hint(connector) is False
                 documents = (
                     await session.execute(select(SourceDocument))
                 ).scalars().all()

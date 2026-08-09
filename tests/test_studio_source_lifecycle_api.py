@@ -20,6 +20,10 @@ from app.domain.models import AISource
 from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
 from app.repositories.sources_v2 import SourcesRepo
+from app.services.telegram_source_ingestion import (
+    TELEGRAM_BACKLOG_HINT_KEY,
+    TELEGRAM_CURSOR_KEY,
+)
 
 
 def _init_data(user_id: int) -> str:
@@ -121,6 +125,52 @@ def test_source_settings_api_updates_owner_source_and_legacy_projection(monkeypa
                 assert legacy_after.enabled is False
                 assert legacy_after.mode == "rewrite"
                 assert legacy_after.citation_enabled is False
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_sources_api_exposes_only_safe_telegram_cursor_fields(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            monkeypatch.setattr(studio_app_module, "AsyncSessionLocal", Session)
+            monkeypatch.setattr(sources_api_module, "AsyncSessionLocal", Session)
+
+            async with Session() as session:
+                owner = await ClientsRepo(session).create_or_get(9111, "owner", "Owner")
+                channel = await ChannelsRepo(session).create(owner.id, -1009111, "Telegram")
+                await SourcesRepo(session).create_connector(
+                    channel_id=channel.id,
+                    kind="telegram",
+                    value="@safe_cursor_source",
+                    config={
+                        TELEGRAM_CURSOR_KEY: 456,
+                        TELEGRAM_BACKLOG_HINT_KEY: True,
+                        "internal_fixture_secret": "must-not-leak",
+                    },
+                )
+
+            app = create_studio_app(_config())
+            transport = httpx.ASGITransport(app=app)
+            headers = {"X-Telegram-Init-Data": _init_data(9111)}
+            async with httpx.AsyncClient(transport=transport, base_url="http://studio") as client:
+                response = await client.get(
+                    f"/api/studio/channels/{channel.id}/sources",
+                    headers=headers,
+                )
+                assert response.status_code == 200
+                body = response.json()
+                assert len(body) == 1
+                source = body[0]
+                assert source["cursor_message_id"] == 456
+                assert source["backlog_hint"] is True
+                assert "config" not in source
+                assert "must-not-leak" not in response.text
         finally:
             await engine.dispose()
 
