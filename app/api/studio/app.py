@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.studio.auth import StudioPrincipal, require_studio_principal
 from app.api.studio.candidate_actions import router as candidate_actions_router
+from app.api.studio.candidate_media import router as candidate_media_router
 from app.api.studio.config import StudioConfig, studio_config
 from app.api.studio.media_assets import router as media_assets_router
 from app.api.studio.planner import router as planner_router
@@ -87,6 +88,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
     app.include_router(sources_router)
     app.include_router(media_assets_router)
     app.include_router(candidate_actions_router)
+    app.include_router(candidate_media_router)
 
     if cfg.cors_origins:
         app.add_middleware(
