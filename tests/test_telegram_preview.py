@@ -20,14 +20,20 @@ class _FakeBot:
 
 class _FakePosting:
     next_result: list[int] | None = [501, 502]
-    calls: list[tuple[int, dict]] = []
+    calls: list[tuple[int, dict, int | None]] = []
 
     def __init__(self, bot, session_factory) -> None:
         self.bot = bot
         self.session_factory = session_factory
 
-    async def send_document(self, chat_id: int, document: PostDocument) -> list[int] | None:
-        type(self).calls.append((chat_id, document.to_dict()))
+    async def send_document(
+        self,
+        chat_id: int,
+        document: PostDocument,
+        *,
+        asset_channel_id: int | None = None,
+    ) -> list[int] | None:
+        type(self).calls.append((chat_id, document.to_dict(), asset_channel_id))
         return type(self).next_result
 
 
@@ -53,10 +59,11 @@ def test_exact_preview_uses_authenticated_chat_and_shared_document_renderer() ->
             tg_user_id=777,
             document=document,
             replace_message_ids=[400, 501, 401],
+            asset_channel_id=17,
         )
 
         assert ids == [501, 502]
-        assert _FakePosting.calls == [(777, document.to_dict())]
+        assert _FakePosting.calls == [(777, document.to_dict(), 17)]
         assert bot.deleted == [(777, 400), (777, 401)]
 
     asyncio.run(run())
@@ -101,7 +108,7 @@ def test_exact_preview_accepts_rich_document_through_shared_renderer() -> None:
         )
         ids = await service.send(tg_user_id=999, document=document)
         assert ids == [601]
-        assert _FakePosting.calls == [(999, document.to_dict())]
+        assert _FakePosting.calls == [(999, document.to_dict(), None)]
 
     asyncio.run(run())
 
@@ -116,3 +123,14 @@ def test_preview_request_cannot_select_arbitrary_telegram_chat() -> None:
                 "chat_id": -100123,
             }
         )
+
+
+def test_preview_request_accepts_internal_channel_context_only() -> None:
+    request = TelegramPreviewRequest.model_validate(
+        {
+            "document": _document().to_dict(),
+            "replace_message_ids": [],
+            "channel_id": 42,
+        }
+    )
+    assert request.channel_id == 42
