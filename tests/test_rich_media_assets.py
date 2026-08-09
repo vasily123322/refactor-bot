@@ -8,7 +8,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.db import Base
 from app.domain.content import PostDocument
 from app.repositories.content import MediaAssetsRepo
-from app.services.rich_media_assets import RichMediaAssetError, RichMediaAssetResolver
+from app.services.rich_media_assets import (
+    MAX_RICH_MEDIA_ASSETS_PER_DOCUMENT,
+    RichMediaAssetError,
+    RichMediaAssetResolver,
+)
 
 
 def test_resolver_keeps_asset_identity_in_input_and_builds_transport_copy() -> None:
@@ -139,5 +143,25 @@ def test_resolver_rejects_kind_mismatch_and_transportless_asset() -> None:
                     )
         finally:
             await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_resolver_bounds_number_of_asset_ids_before_query() -> None:
+    async def run() -> None:
+        document = PostDocument(
+            mode="rich",
+            blocks=[
+                {
+                    "id": f"asset-{index}",
+                    "type": "image",
+                    "asset_id": index + 1,
+                }
+                for index in range(MAX_RICH_MEDIA_ASSETS_PER_DOCUMENT + 1)
+            ],
+        )
+        resolver = RichMediaAssetResolver(object())  # type: ignore[arg-type]
+        with pytest.raises(RichMediaAssetError, match="more than 100 media assets"):
+            await resolver.resolve(document, channel_id=503)
 
     asyncio.run(run())
