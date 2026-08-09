@@ -17,12 +17,44 @@ from app.services.scheduler_task_lease import (
 from app.workers.reliable_scheduler import Scheduler as ReliableScheduler
 
 
+SAFE_DELIVERY_ERROR = "Telegram delivery failed"
+
+
+class SchedulerDeliveryError(RuntimeError):
+    """Safe transport-boundary failure suitable for durable/user-visible state."""
+
+
+class _RedactedPostingService:
+    """Delegate PostingService while replacing provider exception text at the edge."""
+
+    def __init__(self, delegate) -> None:
+        self._delegate = delegate
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+    async def send_now(self, *args, **kwargs):
+        try:
+            return await self._delegate.send_now(*args, **kwargs)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Telegram/provider exceptions can contain request URLs, payloads or
+            # credentials. The mature base scheduler persists/logs str(exception), so
+            # replace the exception before it crosses that compatibility boundary.
+            logger.warning(
+                "Scheduler: Telegram delivery transport failed type={}",
+                type(exc).__name__,
+            )
+            raise SchedulerDeliveryError(SAFE_DELIVERY_ERROR) from None
+
+
 class Scheduler(ReliableScheduler):
     """Reliable scheduler with leased atomic claim and Publication projection.
 
     PostTask remains the compatibility transport during migration. A durable lease
-    now records liveness for each task owned in `processing`; heartbeat expiry is a
-    future fail-closed recovery signal, not an automatic retry trigger.
+    records liveness for each task owned in `processing`; provider exception text is
+    redacted before entering the legacy scheduler's durable/logging boundary.
     """
 
     def __init__(
@@ -34,7 +66,12 @@ class Scheduler(ReliableScheduler):
         lease_ttl_seconds: int = DEFAULT_SCHEDULER_LEASE_SECONDS,
         lease_heartbeat_seconds: float = 45.0,
     ) -> None:
-        super().__init__(session_or_factory, posting, interval_seconds=interval_seconds)
+        self._posting_delegate = posting
+        super().__init__(
+            session_or_factory,
+            _RedactedPostingService(posting),
+            interval_seconds=interval_seconds,
+        )
         self._lease_holder = f"scheduler-{uuid.uuid4().hex[:16]}"
         self._lease_ttl_seconds = max(30, min(int(lease_ttl_seconds), 3600))
         self._lease_heartbeat_seconds = max(
@@ -221,7 +258,7 @@ class Scheduler(ReliableScheduler):
                     await heartbeat
 
         if not completed_normally:
-            # Keep leases until expiry. A future recovery pass can identify these
+            # Keep leases until expiry. The recovery worker can identify these
             # lease-backed ambiguous processing rows without touching old legacy rows.
             return
 
