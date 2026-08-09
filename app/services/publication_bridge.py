@@ -12,6 +12,7 @@ from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.services.rich_media_assets import RichMediaAssetError, RichMediaAssetResolver
+from app.services.scheduler_errors import public_scheduler_error
 from app.services.scheduling import as_utc
 from app.services.telegram_renderer import TelegramRenderError, TelegramRenderer
 from app.services.telegram_results import (
@@ -346,7 +347,9 @@ class LegacyPublicationBridge:
         ids = normalize_telegram_message_ids(payload.get("result_ids"))
         publication.telegram_message_ids = ids or None
         publication.result_link = normalize_telegram_result_link(payload.get("result_link"))
-        publication.last_error = task.error if task_status == "failed" else None
+        publication.last_error = (
+            public_scheduler_error(task.error) if task_status == "failed" else None
+        )
 
         schedule = (
             await self.session.get(ScheduleEntry, int(publication.schedule_entry_id))
