@@ -107,8 +107,10 @@ def test_publication_bridge_reconciles_success_and_records_attempt() -> None:
                     )
                 ).scalars().all()
                 assert len(attempts) == 1
+                assert attempts[0].attempt == 1
                 assert attempts[0].status == "published"
                 assert attempts[0].telegram_message_ids == [101, 102]
+                assert attempts[0].finished_at is not None
 
                 schedule = await session.get(ScheduleEntry, publication.schedule_entry_id)
                 assert schedule is not None
@@ -166,10 +168,25 @@ def test_reconcile_task_uses_db_link_not_stale_payload_marker() -> None:
                 assert projected is not None
                 assert projected.id == second.id
                 assert projected.status == "sending"
+                assert projected.attempt_count == 1
+
+                attempts = list(
+                    (
+                        await session.execute(
+                            select(PublicationAttempt).where(
+                                PublicationAttempt.publication_id == second.id
+                            )
+                        )
+                    ).scalars().all()
+                )
+                assert len(attempts) == 1
+                assert attempts[0].status == "sending"
+                assert attempts[0].finished_at is None
 
                 first_reloaded = await session.get(Publication, int(first.id))
                 assert first_reloaded is not None
                 assert first_reloaded.status == "queued"
+                assert first_reloaded.attempt_count == 0
         finally:
             await engine.dispose()
 
@@ -202,6 +219,20 @@ def test_publication_bridge_reconciles_scheduler_failure() -> None:
                 assert publication.status == "failed"
                 assert publication.last_error == "telegram unavailable"
                 assert publication.attempt_count == 1
+
+                attempts = list(
+                    (
+                        await session.execute(
+                            select(PublicationAttempt).where(
+                                PublicationAttempt.publication_id == publication.id
+                            )
+                        )
+                    ).scalars().all()
+                )
+                assert len(attempts) == 1
+                assert attempts[0].status == "failed"
+                assert attempts[0].error == "telegram unavailable"
+                assert attempts[0].finished_at is not None
         finally:
             await engine.dispose()
 

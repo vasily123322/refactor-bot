@@ -170,6 +170,111 @@ class LegacyPublicationBridge:
             await self.session.rollback()
             raise
 
+    async def _latest_attempt(
+        self,
+        publication_id: int,
+    ) -> PublicationAttempt | None:
+        return (
+            await self.session.execute(
+                select(PublicationAttempt)
+                .where(PublicationAttempt.publication_id == int(publication_id))
+                .order_by(PublicationAttempt.attempt.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    async def _sync_attempt(
+        self,
+        *,
+        publication: Publication,
+        task: PostTask,
+        task_status: str,
+        ids: list[int],
+    ) -> None:
+        if task_status != "processing" and task_status not in _TERMINAL_TASK_STATUSES:
+            return
+
+        latest = await self._latest_attempt(int(publication.id))
+        recorded_count = max(0, int(publication.attempt_count or 0))
+        if latest is not None:
+            recorded_count = max(recorded_count, int(latest.attempt))
+            publication.attempt_count = recorded_count
+
+        if task_status == "processing":
+            if latest is not None and latest.finished_at is None:
+                latest.status = "sending"
+                latest.error = None
+                return
+
+            attempt_number = (
+                int(latest.attempt) + 1
+                if latest is not None
+                else max(1, recorded_count)
+            )
+            publication.attempt_count = max(recorded_count, attempt_number)
+            self.session.add(
+                PublicationAttempt(
+                    publication_id=int(publication.id),
+                    attempt=attempt_number,
+                    status="sending",
+                    telegram_message_ids=None,
+                    error=None,
+                    meta={"legacy_post_task_id": int(task.id)},
+                    finished_at=None,
+                )
+            )
+            return
+
+        terminal_status = str(publication.status)
+        terminal_error = publication.last_error
+        finished_at = datetime.now(timezone.utc)
+
+        if latest is None:
+            attempt_number = max(1, recorded_count)
+            publication.attempt_count = max(recorded_count, attempt_number)
+            self.session.add(
+                PublicationAttempt(
+                    publication_id=int(publication.id),
+                    attempt=attempt_number,
+                    status=terminal_status,
+                    telegram_message_ids=ids or None,
+                    error=terminal_error,
+                    meta={"legacy_post_task_id": int(task.id)},
+                    finished_at=finished_at,
+                )
+            )
+            return
+
+        if latest.finished_at is None:
+            latest.status = terminal_status
+            latest.telegram_message_ids = ids or None
+            latest.error = terminal_error
+            latest.finished_at = finished_at
+            return
+
+        if str(latest.status) == terminal_status:
+            # Recovery may learn result IDs/error after the first terminal projection.
+            # Enrich the same immutable attempt identity instead of duplicating it.
+            latest.telegram_message_ids = ids or None
+            latest.error = terminal_error
+            return
+
+        # A terminal task state changed after an already-finished attempt. Preserve
+        # append-only attempt history rather than rewriting the previous outcome.
+        attempt_number = int(latest.attempt) + 1
+        publication.attempt_count = max(recorded_count, attempt_number)
+        self.session.add(
+            PublicationAttempt(
+                publication_id=int(publication.id),
+                attempt=attempt_number,
+                status=terminal_status,
+                telegram_message_ids=ids or None,
+                error=terminal_error,
+                meta={"legacy_post_task_id": int(task.id), "recovered_transition": True},
+                finished_at=finished_at,
+            )
+        )
+
     async def _apply_task_state(
         self,
         publication: Publication,
@@ -194,22 +299,12 @@ class LegacyPublicationBridge:
             elif task_status in {"failed", "skipped", "cancelled"}:
                 schedule.status = task_status
 
-        if (
-            task_status in _TERMINAL_TASK_STATUSES
-            and int(publication.attempt_count or 0) == 0
-        ):
-            publication.attempt_count = 1
-            self.session.add(
-                PublicationAttempt(
-                    publication_id=int(publication.id),
-                    attempt=1,
-                    status=publication.status,
-                    telegram_message_ids=ids or None,
-                    error=publication.last_error,
-                    meta={"legacy_post_task_id": int(task.id)},
-                    finished_at=datetime.now(timezone.utc),
-                )
-            )
+        await self._sync_attempt(
+            publication=publication,
+            task=task,
+            task_status=task_status,
+            ids=ids,
+        )
 
         try:
             await self.session.commit()
