@@ -5,10 +5,12 @@ import uuid
 from contextlib import suppress
 
 from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models import PostTask
 from app.services.publication_bridge import LegacyPublicationBridge
+from app.services.publication_runtime import PublicationRuntimeProjector
 from app.services.scheduler_errors import SAFE_DELIVERY_ERROR
 from app.services.scheduler_task_lease import (
     DEFAULT_SCHEDULER_LEASE_SECONDS,
@@ -125,7 +127,9 @@ class Scheduler(ReliableScheduler):
 
     PostTask remains the compatibility transport during migration. A durable lease
     records liveness for each task owned in `processing`; Telegram provider exception
-    text is redacted before entering legacy persistence/logging boundaries.
+    text is redacted before entering legacy persistence/logging boundaries. Generated
+    autodelete lifecycle is mirrored into Publication metadata so the canonical domain
+    no longer loses deletion state when PostTask is eventually retired.
     """
 
     def __init__(
@@ -151,6 +155,40 @@ class Scheduler(ReliableScheduler):
         )
         self._active_leases: dict[int, SchedulerTaskLeaseHandle] = {}
 
+    async def _project_runtime(
+        self,
+        session: AsyncSession,
+        post: PostTask,
+    ) -> None:
+        try:
+            await PublicationRuntimeProjector(session).project_task(
+                int(post.id),
+                dict(post.payload or {}),
+            )
+        except Exception as exc:
+            await self._rollback(session, "publication runtime projection")
+            logger.warning(
+                "Scheduler: publication runtime projection failed post_id={} type={}",
+                int(post.id),
+                type(exc).__name__,
+            )
+
+    async def _project_task_by_id(self, task_id: int) -> None:
+        if self.session_factory is None:
+            return
+        try:
+            async with self.session_factory() as projection_session:
+                post = await projection_session.get(PostTask, int(task_id))
+                if post is None:
+                    return
+                await self._project_runtime(projection_session, post)
+        except Exception as exc:
+            logger.warning(
+                "Scheduler: delayed runtime projection failed post_id={} type={}",
+                int(task_id),
+                type(exc).__name__,
+            )
+
     async def _project_publication(
         self,
         session: AsyncSession,
@@ -166,8 +204,12 @@ class Scheduler(ReliableScheduler):
                     publication = await LegacyPublicationBridge(
                         projection_session
                     ).reconcile_task(projection_task)
+                    if publication is not None:
+                        await self._project_runtime(projection_session, projection_task)
             else:
                 publication = await LegacyPublicationBridge(session).reconcile_task(post)
+                if publication is not None:
+                    await self._project_runtime(session, post)
         except Exception as exc:
             if self.session_factory is None:
                 await self._rollback(session, "publication projection")
@@ -300,6 +342,57 @@ class Scheduler(ReliableScheduler):
             self._active_leases.pop(task_id, None)
         else:
             logger.warning("Scheduler: lease release lost ownership post_id={}", task_id)
+
+    async def _del_later(
+        self,
+        bot,
+        chat_id: int,
+        msg_ids: list[int],
+        delay: int,
+        post_id_val: int,
+        report: bool,
+        link_val: str | None,
+    ) -> None:
+        await super()._del_later(
+            bot,
+            chat_id,
+            msg_ids,
+            delay,
+            post_id_val,
+            report,
+            link_val,
+        )
+        await self._project_task_by_id(int(post_id_val))
+
+    async def _due_autodelete_candidate_ids(
+        self,
+        session: AsyncSession,
+    ) -> list[int]:
+        result = await session.execute(
+            select(PostTask.id)
+            .where(
+                (PostTask.status == "done")
+                & (
+                    (PostTask.payload["autodelete_at"].as_string().is_not(None))
+                    | (PostTask.payload["autodelete_seconds"].as_integer() > 0)
+                )
+                & (
+                    (PostTask.payload["autodeleted"].as_boolean().is_(None))
+                    | (PostTask.payload["autodeleted"].as_boolean().is_(False))
+                )
+            )
+            .order_by(PostTask.id.desc())
+            .limit(50)
+        )
+        return [int(task_id) for task_id in result.scalars().all()]
+
+    async def _process_due_deletions(self, session: AsyncSession) -> None:
+        candidate_ids = await self._due_autodelete_candidate_ids(session)
+        await super()._process_due_deletions(session)
+        for task_id in candidate_ids:
+            post = await session.get(PostTask, task_id)
+            if post is not None:
+                await self._project_runtime(session, post)
 
     async def _process_items(
         self,
