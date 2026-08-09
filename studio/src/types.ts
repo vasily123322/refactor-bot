@@ -105,7 +105,6 @@ export type Publication = {
   channel_id: number;
   status: string;
   schedule_entry_id: number | null;
-  legacy_post_task_id: number | null;
 };
 
 export type PlannerEntry = {
@@ -128,7 +127,6 @@ export type PlannerEntry = {
   attempt_status: string | null;
   attempt_started_at: string | null;
   attempt_finished_at: string | null;
-  legacy_post_task_id: number | null;
 };
 
 export type SourceConnectorView = {
