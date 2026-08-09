@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
@@ -54,6 +55,24 @@ def _scheduler_payload(
             "post_document": document.to_dict(),
         }
     raise PublicationBridgeError(f"unsupported Telegram render plan: {plan.kind}")
+
+
+def _delivery_meta(
+    metadata: Mapping[str, Any] | None,
+    runtime_options: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Build durable new-domain metadata from caller intent only.
+
+    `runtime_options` is a reserved canonical field. It records the options supplied
+    at queue time, before the legacy scheduler adds result/runtime-generated fields.
+    Deep copies keep ScheduleEntry, Publication and PostTask payload independent.
+    """
+    meta = deepcopy(dict(metadata or {}))
+    meta.pop("runtime_options", None)
+    runtime_intent = deepcopy(dict(runtime_options or {}))
+    if runtime_intent:
+        meta["runtime_options"] = runtime_intent
+    return meta
 
 
 class LegacyPublicationBridge:
@@ -119,9 +138,11 @@ class LegacyPublicationBridge:
             payload["repeat_on"] = False
             payload.pop("repeat_seconds", None)
 
-        for key, value in dict(runtime_options or {}).items():
-            payload[str(key)] = value
+        runtime_intent = deepcopy(dict(runtime_options or {}))
+        for key, value in runtime_intent.items():
+            payload[str(key)] = deepcopy(value)
 
+        canonical_meta = _delivery_meta(metadata, runtime_intent)
         schedule = ScheduleEntry(
             content_item_id=int(item.id),
             content_revision=revision_number,
@@ -130,7 +151,7 @@ class LegacyPublicationBridge:
             timezone=timezone_name,
             status="pending",
             repeat_rule=rule,
-            meta=dict(metadata or {}),
+            meta=deepcopy(canonical_meta),
         )
         publication = Publication(
             schedule_entry_id=None,
@@ -138,7 +159,7 @@ class LegacyPublicationBridge:
             content_revision=revision_number,
             channel_id=int(item.channel_id),
             status="queued",
-            meta=dict(metadata or {}),
+            meta=deepcopy(canonical_meta),
         )
         self.session.add_all([schedule, publication])
         try:
@@ -160,7 +181,7 @@ class LegacyPublicationBridge:
             await self.session.flush()
             publication.legacy_post_task_id = int(task.id)
             schedule.meta = {
-                **dict(schedule.meta or {}),
+                **deepcopy(dict(schedule.meta or {})),
                 "legacy_post_task_id": int(task.id),
             }
             await self.session.commit()
