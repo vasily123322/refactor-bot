@@ -23,6 +23,11 @@ from app.services.source_lifecycle import (
     SourceLifecyclePatch,
     SourceLifecycleService,
 )
+from app.services.source_worker_policy import (
+    clear_source_worker_failure,
+    source_worker_failure_count,
+    source_worker_retry_after,
+)
 from app.services.telegram_source_ingestion import (
     TelegramSourceIngestionService,
     telegram_backlog_hint,
@@ -86,6 +91,8 @@ class SourceResponse(BaseModel):
     legacy_grab_source_id: int | None
     cursor_message_id: int | None
     backlog_hint: bool
+    worker_failure_count: int
+    worker_retry_after: datetime | None
 
 
 class SourceIngestionResponse(BaseModel):
@@ -159,6 +166,8 @@ def _response(row: SourceConnector) -> SourceResponse:
         legacy_grab_source_id=row.legacy_grab_source_id,
         cursor_message_id=(cursor or None) if is_telegram else None,
         backlog_hint=telegram_backlog_hint(row) if is_telegram else False,
+        worker_failure_count=source_worker_failure_count(row),
+        worker_retry_after=source_worker_retry_after(row),
     )
 
 
@@ -349,6 +358,9 @@ async def ingest_source(
             raise HTTPException(status_code=409, detail="Unsupported source adapter")
     except SourceIngestionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if clear_source_worker_failure(row):
+        await session.commit()
     return SourceIngestionResponse(
         connector_id=result.connector_id,
         documents_seen=result.documents_seen,
