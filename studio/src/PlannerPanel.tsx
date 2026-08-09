@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
+import { plannerAttemptLabel } from './plannerAttempts';
 import type { Channel, PlannerEntry } from './types';
 import './planner.css';
 
@@ -181,6 +182,7 @@ export function PlannerPanel({
                     const mutable =
                       entry.schedule_status === 'pending' &&
                       (entry.publication_status === 'queued' || entry.publication_status === null);
+                    const attemptLabel = plannerAttemptLabel(entry);
                     return (
                       <article className={`planner-card publication-${entry.publication_status || entry.schedule_status}`} key={entry.schedule_id}>
                         <button className="planner-card-main" onClick={() => onOpenContent(entry.content_item_id)}>
@@ -192,6 +194,7 @@ export function PlannerPanel({
                           </time>
                           <strong>{entry.content_title || `Пост #${entry.content_item_id}`}</strong>
                           <span className="planner-card-status">{statusLabel(entry)}</span>
+                          {attemptLabel && <small>{attemptLabel}</small>}
                           {entry.repeat_rule.enabled === true && <small>↻ повтор</small>}
                           {entry.last_error && <small className="planner-error-text">{entry.last_error}</small>}
                         </button>
