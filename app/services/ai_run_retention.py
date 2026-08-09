@@ -48,8 +48,8 @@ class AIRunRetentionService:
     - active Inbox candidates (`status=new`) are never cleaned;
     - `running` rows are never eligible;
     - current run IDs referenced by candidate metadata are always preserved;
-    - the newest N terminal rows of each kind are always preserved;
-    - only rows older than the retention horizon are deleted.
+    - the newest N old terminal rows that would otherwise be eligible are preserved;
+    - rows newer than the retention horizon are always preserved separately.
     """
 
     def __init__(self, session: AsyncSession):
@@ -61,22 +61,27 @@ class AIRunRetentionService:
         model,
         candidate_id: int,
         current_run_id: int | None,
+        cutoff: datetime,
         keep_recent: int,
     ) -> set[int]:
-        newest = list(
+        # Recent rows are already excluded by the delete cutoff and must not consume
+        # the keep_recent budget. Preserve the newest rows among the old terminal
+        # population that would otherwise be eligible for deletion.
+        newest_old = list(
             (
                 await self.session.execute(
                     select(model.id)
                     .where(
                         model.candidate_id == int(candidate_id),
                         model.status.in_(TERMINAL_AI_RUN_STATUSES),
+                        model.created_at < cutoff,
                     )
-                    .order_by(model.id.desc())
+                    .order_by(model.created_at.desc(), model.id.desc())
                     .limit(max(0, int(keep_recent)))
                 )
             ).scalars().all()
         )
-        protected = {int(value) for value in newest}
+        protected = {int(value) for value in newest_old}
         if current_run_id is not None:
             protected.add(int(current_run_id))
         return protected
@@ -94,6 +99,7 @@ class AIRunRetentionService:
             model=model,
             candidate_id=candidate_id,
             current_run_id=current_run_id,
+            cutoff=cutoff,
             keep_recent=keep_recent,
         )
         stmt = delete(model).where(
