@@ -78,7 +78,7 @@ def test_mirror_creates_content_schedule_and_publication_idempotently() -> None:
                 assert task.payload["_content_item_id"] == item.id
                 assert task.payload["_content_revision"] == 1
                 assert task.payload["_content_channel_id"] == 42
-                assert task.payload["_publication_id"] == publication.id
+                assert "_publication_id" not in task.payload
 
                 same = await mirror_legacy_post_task(session, task)
                 assert same is not None
@@ -126,7 +126,7 @@ def test_repeat_child_reuses_content_but_gets_distinct_publication() -> None:
                 assert "_publication_id" not in child_payload
 
                 # Simulate a child created before the cleanup fix: the stale parent
-                # publication marker must be ignored and repaired during mirroring.
+                # publication marker must be ignored and removed during mirroring.
                 child_payload["_publication_id"] = int(first.id)
                 child = PostTask(
                     channel_id=42,
@@ -147,7 +147,7 @@ def test_repeat_child_reuses_content_but_gets_distinct_publication() -> None:
                 assert second.meta["reused_content_provenance"] is True
 
                 await session.refresh(child)
-                assert child.payload["_publication_id"] == second.id
+                assert "_publication_id" not in child.payload
                 assert child.payload["_content_item_id"] == first.content_item_id
 
                 items = (await session.execute(select(ContentItem))).scalars().all()
@@ -249,10 +249,14 @@ def test_batch_mirror_preserves_unknown_payload_as_opaque_content() -> None:
                 assert skipped == 0
 
                 await session.refresh(unknown)
-                publication = await session.get(
-                    Publication, int(unknown.payload["_publication_id"])
-                )
-                assert publication is not None
+                assert "_publication_id" not in unknown.payload
+                publication = (
+                    await session.execute(
+                        select(Publication).where(
+                            Publication.legacy_post_task_id == int(unknown.id)
+                        )
+                    )
+                ).scalar_one()
                 revision = (
                     await session.execute(
                         select(ContentRevision).where(

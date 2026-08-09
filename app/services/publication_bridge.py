@@ -212,7 +212,6 @@ class LegacyPublicationBridge:
             payload["_content_item_id"] = int(item.id)
             payload["_content_revision"] = revision_number
             payload["_content_channel_id"] = int(item.channel_id)
-            payload["_publication_id"] = int(publication.id)
 
             task = PostTask(
                 channel_id=int(item.channel_id),
