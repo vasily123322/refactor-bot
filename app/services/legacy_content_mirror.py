@@ -340,11 +340,13 @@ async def mirror_legacy_post_task(
                 )
             )
 
-        payload["_content_item_id"] = int(item.id)
-        payload["_content_revision"] = revision_number
+        # Content delivery identity is now canonical in Publication/ScheduleEntry.
+        # Keep historical marker reads above, but stop perpetuating these IDs in the
+        # mutable transport payload. `_content_channel_id` remains required by the
+        # rich MediaAsset transport edge until that lookup is moved out of payload.
+        payload.pop("_content_item_id", None)
+        payload.pop("_content_revision", None)
         payload["_content_channel_id"] = channel_id
-        # `_publication_id` is read-only historical compatibility now. Domain
-        # delivery identity is authoritative in Publication.legacy_post_task_id.
         payload.pop("_publication_id", None)
         task.payload = payload
         await session.commit()
