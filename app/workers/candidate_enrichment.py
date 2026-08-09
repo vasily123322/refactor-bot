@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass
-from typing import Callable
+from typing import Awaitable, Callable
 
 from loguru import logger
 from sqlalchemy import select
@@ -41,13 +42,16 @@ class LocalCandidateEnrichmentWorker:
         self,
         *,
         session_factory: async_sessionmaker[AsyncSession] = AsyncSessionLocal,
+        interval_seconds: float = 15.0,
         batch_size: int = 20,
         candidate_timeout_seconds: float = 10.0,
     ) -> None:
         self.session_factory = session_factory
+        self.interval_seconds = max(1.0, float(interval_seconds))
         self.batch_size = max(1, min(int(batch_size), 100))
         self.candidate_timeout_seconds = max(1.0, min(float(candidate_timeout_seconds), 60.0))
         self.provider = LocalCandidateEnricher()
+        self._task: asyncio.Task[None] | None = None
 
     async def _candidate_keys(self) -> list[tuple[int, int]]:
         async with self.session_factory() as session:
@@ -97,7 +101,7 @@ class LocalCandidateEnrichmentWorker:
                     completed += 1
             except CandidateEnrichmentBusy:
                 skipped_busy += 1
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 timeouts += 1
                 logger.warning("Local enrichment worker: candidate enrichment timed out")
             except CandidateEnrichmentError:
@@ -117,16 +121,41 @@ class LocalCandidateEnrichmentWorker:
             timeouts=timeouts,
         )
 
+    async def start(self) -> None:
+        if self._task is not None and not self._task.done():
+            return
+        self._task = asyncio.create_task(
+            local_enrichment_worker_loop(
+                self,
+                interval_seconds=self.interval_seconds,
+            ),
+            name="local-candidate-enrichment-worker",
+        )
+        logger.info(
+            "Local enrichment worker started: interval={}s batch_size={}",
+            self.interval_seconds,
+            self.batch_size,
+        )
+
+    async def stop(self) -> None:
+        task = self._task
+        self._task = None
+        if task is None:
+            return
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        logger.info("Local enrichment worker stopped")
+
 
 async def local_enrichment_worker_loop(
     worker: LocalCandidateEnrichmentWorker,
     *,
     interval_seconds: float = 15.0,
-    sleep: Callable[[float], object] | None = None,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> None:
     """Run bounded ticks until cancellation; cancellation is never swallowed."""
     delay = max(1.0, float(interval_seconds))
-    sleeper = sleep or asyncio.sleep
     while True:
         try:
             tick = await worker.run_once()
@@ -144,4 +173,4 @@ async def local_enrichment_worker_loop(
             raise
         except Exception:
             logger.exception("Local enrichment worker tick failed")
-        await sleeper(delay)  # type: ignore[misc]
+        await sleep(delay)
