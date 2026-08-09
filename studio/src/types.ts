@@ -134,6 +134,8 @@ export type SourceConnectorView = {
   legacy_grab_source_id: number | null;
   cursor_message_id: number | null;
   backlog_hint: boolean;
+  worker_failure_count: number;
+  worker_retry_after: string | null;
 };
 
 export type SourceIngestionResult = {
