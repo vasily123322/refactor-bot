@@ -18,6 +18,7 @@ from app.repositories.sources_v2 import SourcesRepo
 from app.services.legacy_source_mirror import LegacySourceMirror
 from app.services.source_doctor import SourceDoctor
 from app.services.source_ingestion import SourceIngestionError, SourceIngestionService
+from app.services.source_ingestion_lease import SourceIngestionLeaseService
 from app.services.source_lifecycle import (
     SourceLifecycleError,
     SourceLifecyclePatch,
@@ -349,24 +350,39 @@ async def ingest_source(
     row = await SourcesRepo(session).get_connector_for_channel(connector_id, channel_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Source not found")
-    try:
-        if str(row.kind).lower() == "telegram":
-            result = await TelegramSourceIngestionService(session).ingest(row)
-        elif str(row.kind).lower() in {"rss", "url", "web"}:
-            result = await SourceIngestionService(session).ingest(row)
-        else:
-            raise HTTPException(status_code=409, detail="Unsupported source adapter")
-    except SourceIngestionError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    if clear_source_worker_failure(row):
-        await session.commit()
-    return SourceIngestionResponse(
-        connector_id=result.connector_id,
-        documents_seen=result.documents_seen,
-        documents_created=result.documents_created,
-        candidates_created=result.candidates_created,
+    lease_service = SourceIngestionLeaseService(session)
+    lease = await lease_service.acquire(
+        connector_id=int(row.id),
+        holder="studio",
     )
+    if lease is None:
+        raise HTTPException(status_code=409, detail="Source ingestion already running")
+
+    try:
+        try:
+            if str(row.kind).lower() == "telegram":
+                result = await TelegramSourceIngestionService(session).ingest(row)
+            elif str(row.kind).lower() in {"rss", "url", "web"}:
+                result = await SourceIngestionService(session).ingest(row)
+            else:
+                raise HTTPException(status_code=409, detail="Unsupported source adapter")
+        except SourceIngestionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        if clear_source_worker_failure(row):
+            await session.commit()
+        return SourceIngestionResponse(
+            connector_id=result.connector_id,
+            documents_seen=result.documents_seen,
+            documents_created=result.documents_created,
+            candidates_created=result.candidates_created,
+        )
+    finally:
+        try:
+            await lease_service.release(lease)
+        except Exception:
+            await session.rollback()
 
 
 @router.get(
