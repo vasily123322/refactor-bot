@@ -73,6 +73,18 @@ def _message_text(message: UserbotMessage) -> str:
     return value[:MAX_SOURCE_DOCUMENT_CHARS].rstrip() + "…"
 
 
+def _message_content(message: UserbotMessage) -> str:
+    text = _message_text(message)
+    if text:
+        return text
+    if message.media is not None:
+        # Keep SourceDocument.content non-empty so media-only messages survive the
+        # normalized Sources/Inbox pipeline. Transport/session identifiers are not
+        # included; the safe descriptor lives separately in metadata.
+        return f"[Telegram {message.media.kind}]"
+    return ""
+
+
 def _message_url(chat: UserbotChat, message_id: int) -> str | None:
     username = (chat.username or "").strip().lstrip("@")
     if not username:
@@ -174,8 +186,8 @@ class TelegramSourceIngestionService:
                 fetched += 1
                 highest_message_id = max(highest_message_id, message_id)
 
-                text = _message_text(message)
-                if not text:
+                content = _message_content(message)
+                if not content:
                     continue
                 seen += 1
                 published_at = _normalize_message_date(message.date)
@@ -183,20 +195,23 @@ class TelegramSourceIngestionService:
                     latest_published_at is None or published_at > latest_published_at
                 ):
                     latest_published_at = published_at
+                metadata: dict[str, object] = {
+                    "connector_kind": "telegram",
+                    "telegram_chat_id": int(chat.id),
+                    "telegram_message_id": message_id,
+                    "citation_enabled": bool(connector.citation_enabled),
+                    "reuse_policy": str(connector.reuse_policy),
+                }
+                if message.media is not None:
+                    metadata["telegram_media"] = message.media.to_metadata()
                 document, created = await self.repo.upsert_document(
                     connector=connector,
                     external_id=f"telegram:{int(chat.id)}:{message_id}",
-                    content=text,
+                    content=content,
                     source_url=_message_url(chat, message_id),
                     title=chat.title,
                     published_at=published_at,
-                    metadata={
-                        "connector_kind": "telegram",
-                        "telegram_chat_id": int(chat.id),
-                        "telegram_message_id": message_id,
-                        "citation_enabled": bool(connector.citation_enabled),
-                        "reuse_policy": str(connector.reuse_policy),
-                    },
+                    metadata=metadata,
                 )
                 if created:
                     created_count += 1
@@ -255,7 +270,7 @@ class TelegramSourceIngestionService:
             await self.repo.update_health(
                 connector,
                 status="degraded",
-                reason="Telegram source returned no text messages",
+                reason="Telegram source returned no ingestible messages",
                 auth_state="ready",
                 success=False,
             )
