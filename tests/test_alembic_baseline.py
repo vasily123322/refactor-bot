@@ -6,8 +6,17 @@ import subprocess
 import sys
 from pathlib import Path
 
+from sqlalchemy import create_engine
 
-def _run_alembic(repo_root: Path, database_path: Path) -> subprocess.CompletedProcess[str]:
+import app.domain  # noqa: F401 register the complete ORM schema
+from app.core.db import Base
+
+
+def _run_alembic(
+    repo_root: Path,
+    database_path: Path,
+    target: str,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.update(
         {
@@ -18,7 +27,15 @@ def _run_alembic(repo_root: Path, database_path: Path) -> subprocess.CompletedPr
         }
     )
     return subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", "alembic.ini", "upgrade", "head"],
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            "alembic.ini",
+            "upgrade",
+            target,
+        ],
         cwd=repo_root,
         env=env,
         text=True,
@@ -27,44 +44,70 @@ def _run_alembic(repo_root: Path, database_path: Path) -> subprocess.CompletedPr
     )
 
 
-def test_alembic_baseline_creates_current_schema_and_is_idempotent(tmp_path) -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    database_path = tmp_path / "baseline.db"
-
-    first = _run_alembic(repo_root, database_path)
-    assert first.returncode == 0, first.stdout + first.stderr
-
+def _table_names(database_path: Path) -> set[str]:
     with sqlite3.connect(database_path) as connection:
-        table_names = {
+        return {
             str(row[0])
             for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
+            if not str(row[0]).startswith("sqlite_")
         }
-        assert {
-            "channels",
-            "post_tasks",
-            "content_items",
-            "content_revisions",
-            "schedule_entries",
-            "publications",
-            "publication_attempts",
-            "source_connectors",
-            "source_ingestion_leases",
-            "content_candidates",
-            "candidate_enrichment_runs",
-            "ai_auto_tasks",
-            "alembic_version",
-        }.issubset(table_names)
-        version = connection.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone()
-        assert version == ("20260809_0001",)
 
-    second = _run_alembic(repo_root, database_path)
-    assert second.returncode == 0, second.stdout + second.stderr
+
+def _version(database_path: Path) -> tuple[str] | None:
     with sqlite3.connect(database_path) as connection:
-        version = connection.execute(
+        return connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-        assert version == ("20260809_0001",)
+
+
+def test_alembic_baseline_is_frozen_and_followup_revision_is_idempotent(tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    database_path = tmp_path / "baseline.db"
+    current_orm_tables = set(Base.metadata.tables)
+    assert "scheduler_task_leases" in current_orm_tables
+
+    baseline = _run_alembic(repo_root, database_path, "20260809_0001")
+    assert baseline.returncode == 0, baseline.stdout + baseline.stderr
+
+    baseline_tables = _table_names(database_path)
+    assert baseline_tables == (
+        current_orm_tables - {"scheduler_task_leases"} | {"alembic_version"}
+    )
+    assert _version(database_path) == ("20260809_0001",)
+
+    head = _run_alembic(repo_root, database_path, "head")
+    assert head.returncode == 0, head.stdout + head.stderr
+    assert _table_names(database_path) == current_orm_tables | {"alembic_version"}
+    assert _version(database_path) == ("20260809_0002",)
+
+    repeated = _run_alembic(repo_root, database_path, "head")
+    assert repeated.returncode == 0, repeated.stdout + repeated.stderr
+    assert _table_names(database_path) == current_orm_tables | {"alembic_version"}
+    assert _version(database_path) == ("20260809_0002",)
+
+
+def test_scheduler_lease_revision_adopts_table_precreated_by_legacy_create_all(tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    database_path = tmp_path / "legacy-precreated.db"
+
+    baseline = _run_alembic(repo_root, database_path, "20260809_0001")
+    assert baseline.returncode == 0, baseline.stdout + baseline.stderr
+    assert "scheduler_task_leases" not in _table_names(database_path)
+
+    sync_engine = create_engine(f"sqlite:///{database_path}")
+    try:
+        Base.metadata.tables["scheduler_task_leases"].create(
+            bind=sync_engine,
+            checkfirst=True,
+        )
+    finally:
+        sync_engine.dispose()
+    assert "scheduler_task_leases" in _table_names(database_path)
+    assert _version(database_path) == ("20260809_0001",)
+
+    adopted = _run_alembic(repo_root, database_path, "head")
+    assert adopted.returncode == 0, adopted.stdout + adopted.stderr
+    assert _version(database_path) == ("20260809_0002",)
+    assert _table_names(database_path) == set(Base.metadata.tables) | {"alembic_version"}

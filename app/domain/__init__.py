@@ -7,6 +7,7 @@ still import concrete models from their own modules rather than from this regist
 
 from app.domain import ai_auto_task as _ai_auto_task_models  # noqa: F401
 from app.domain import models as _legacy_models  # noqa: F401
+from app.domain import scheduler as _scheduler_models  # noqa: F401
 from app.domain.content import models as _content_models  # noqa: F401
 from app.domain.publishing import models as _publishing_models  # noqa: F401
 from app.domain.sources import enrichment as _source_enrichment_models  # noqa: F401
