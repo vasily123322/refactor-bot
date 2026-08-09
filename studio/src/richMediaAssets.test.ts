@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import type { MediaAssetView } from './api';
-import { mediaAssetBlockPatch, mediaAssetOptionLabel } from './richMediaAssets';
+import {
+  mediaAssetBlockPatch,
+  mediaAssetOptionLabel,
+  mediaCollectionItem,
+  mediaCollectionItems,
+  moveMediaCollectionItem,
+} from './richMediaAssets';
 
 const asset: MediaAssetView = {
   id: 42,
@@ -33,5 +39,32 @@ describe('Rich media asset document boundary', () => {
 
   it('renders a useful redacted selector label', () => {
     expect(mediaAssetOptionLabel(asset)).toBe('Trailer · https');
+  });
+
+  it('creates collection items from durable identity only', () => {
+    expect(mediaCollectionItem(asset)).toEqual({ type: 'media', asset_id: 42, kind: 'video' });
+    expect(JSON.stringify(mediaCollectionItem(asset))).not.toContain('https');
+  });
+
+  it('sanitizes malformed collection input', () => {
+    expect(mediaCollectionItems([
+      { type: 'media', asset_id: 3, kind: 'photo', storage_url: 'https://secret.invalid/a' },
+      { media_asset_id: '4', media_type: 'video' },
+      { asset_id: 0, kind: 'photo' },
+      null,
+    ])).toEqual([
+      { type: 'media', asset_id: 3, kind: 'photo' },
+      { type: 'media', asset_id: 4, kind: 'video' },
+    ]);
+  });
+
+  it('reorders without mutating the original array', () => {
+    const items = [
+      { type: 'media' as const, asset_id: 1, kind: 'photo' },
+      { type: 'media' as const, asset_id: 2, kind: 'video' },
+    ];
+    const moved = moveMediaCollectionItem(items, 0, 1);
+    expect(moved.map((item) => item.asset_id)).toEqual([2, 1]);
+    expect(items.map((item) => item.asset_id)).toEqual([1, 2]);
   });
 });
