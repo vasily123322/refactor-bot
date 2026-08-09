@@ -35,7 +35,8 @@
 .rich-media-select,
 .rich-media-caption,
 .rich-media-file-picker,
-.rich-media-collection-editor select {
+.rich-media-collection-editor select,
+.rich-map-field input {
   min-width: 0;
   border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 20%, transparent);
   border-radius: 7px;
@@ -78,7 +79,8 @@
 .rich-media-warning { color: #f59e0b; font-size: 9px; }
 .rich-block-media,
 .rich-block-gallery,
-.rich-block-slideshow { border-color: color-mix(in srgb, #a855f7 30%, transparent); }
+.rich-block-slideshow,
+.rich-block-map { border-color: color-mix(in srgb, #a855f7 30%, transparent); }
 .rich-media-collection-editor { display: grid; gap: 8px; }
 .rich-media-collection-items { display: grid; gap: 5px; }
 .rich-media-collection-row {
@@ -104,7 +106,20 @@
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px;
 }
-.visual-rich-media {
+.rich-map-editor { display: grid; gap: 8px; }
+.rich-map-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.rich-map-field {
+  display: grid;
+  gap: 4px;
+  color: var(--tg-theme-hint-color, #94a3b8);
+  font-size: 9px;
+}
+.visual-rich-media,
+.visual-rich-map {
   display: grid;
   gap: 5px;
   min-height: 74px;
@@ -113,11 +128,17 @@
   background: linear-gradient(135deg, #e9d5ff, #dbeafe);
   color: #374151;
 }
-.visual-rich-media > div { display: flex; align-items: center; gap: 6px; }
-.visual-rich-media > div > span { font-size: 18px; }
-.visual-rich-media strong { font-size: 10px; text-transform: uppercase; }
-.visual-rich-media small { margin-left: auto; color: #6b7280; font-size: 8px; }
-.visual-rich-media p { margin: 0; white-space: pre-wrap; font-size: 9px; line-height: 1.35; }
+.visual-rich-map { min-height: 68px; background: linear-gradient(135deg, #dcfce7, #dbeafe); }
+.visual-rich-media > div,
+.visual-rich-map > div { display: flex; align-items: center; gap: 6px; }
+.visual-rich-media > div > span,
+.visual-rich-map > div > span { font-size: 18px; }
+.visual-rich-media strong,
+.visual-rich-map strong { font-size: 10px; text-transform: uppercase; }
+.visual-rich-media small,
+.visual-rich-map small { margin-left: auto; color: #6b7280; font-size: 8px; }
+.visual-rich-media p,
+.visual-rich-map p { margin: 0; white-space: pre-wrap; font-size: 9px; line-height: 1.35; }
 
 @media (max-width: 900px) {
   .rich-media-register { grid-template-columns: 1fr 1fr; }
@@ -129,4 +150,5 @@
   .rich-media-register { grid-template-columns: 1fr; }
   .rich-media-register > :nth-child(3) { grid-column: auto; }
   .rich-media-collection-row { grid-template-columns: 22px minmax(0, 1fr) 28px 28px 28px; }
+  .rich-map-grid { grid-template-columns: 1fr; }
 }
