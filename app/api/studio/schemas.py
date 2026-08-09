@@ -111,6 +111,10 @@ class PlannerEntryResponse(BaseModel):
     telegram_message_ids: list[int] | None
     result_link: str | None
     last_error: str | None
+    attempt_number: int | None
+    attempt_status: str | None
+    attempt_started_at: datetime | None
+    attempt_finished_at: datetime | None
     legacy_post_task_id: int | None
 
 
