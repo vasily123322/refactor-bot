@@ -20,10 +20,23 @@ from app.domain.models import AISource
 from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
 from app.repositories.sources_v2 import SourcesRepo
+from app.services.source_ingestion import IngestionResult
+from app.services.source_worker_policy import (
+    mark_source_worker_failure,
+    source_worker_failure_count,
+)
 from app.services.telegram_source_ingestion import (
     TELEGRAM_BACKLOG_HINT_KEY,
     TELEGRAM_CURSOR_KEY,
 )
+
+
+class _SuccessfulSourceIngestionService:
+    def __init__(self, session) -> None:
+        self.session = session
+
+    async def ingest(self, connector):
+        return IngestionResult(int(connector.id), 0, 0, 0)
 
 
 def _init_data(user_id: int) -> str:
@@ -131,7 +144,7 @@ def test_source_settings_api_updates_owner_source_and_legacy_projection(monkeypa
     asyncio.run(run())
 
 
-def test_sources_api_exposes_only_safe_telegram_cursor_fields(monkeypatch) -> None:
+def test_sources_api_exposes_only_safe_runtime_fields(monkeypatch) -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         try:
@@ -144,7 +157,7 @@ def test_sources_api_exposes_only_safe_telegram_cursor_fields(monkeypatch) -> No
             async with Session() as session:
                 owner = await ClientsRepo(session).create_or_get(9111, "owner", "Owner")
                 channel = await ChannelsRepo(session).create(owner.id, -1009111, "Telegram")
-                await SourcesRepo(session).create_connector(
+                connector = await SourcesRepo(session).create_connector(
                     channel_id=channel.id,
                     kind="telegram",
                     value="@safe_cursor_source",
@@ -154,6 +167,12 @@ def test_sources_api_exposes_only_safe_telegram_cursor_fields(monkeypatch) -> No
                         "internal_fixture_secret": "must-not-leak",
                     },
                 )
+                mark_source_worker_failure(
+                    connector,
+                    failure_kind="timeout",
+                    now=datetime.now(timezone.utc),
+                )
+                await session.commit()
 
             app = create_studio_app(_config())
             transport = httpx.ASGITransport(app=app)
@@ -169,8 +188,61 @@ def test_sources_api_exposes_only_safe_telegram_cursor_fields(monkeypatch) -> No
                 source = body[0]
                 assert source["cursor_message_id"] == 456
                 assert source["backlog_hint"] is True
+                assert source["worker_failure_count"] == 1
+                assert source["worker_retry_after"] is not None
                 assert "config" not in source
                 assert "must-not-leak" not in response.text
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_successful_manual_ingest_clears_worker_backoff(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            monkeypatch.setattr(studio_app_module, "AsyncSessionLocal", Session)
+            monkeypatch.setattr(sources_api_module, "AsyncSessionLocal", Session)
+            monkeypatch.setattr(
+                sources_api_module,
+                "SourceIngestionService",
+                _SuccessfulSourceIngestionService,
+            )
+
+            async with Session() as session:
+                owner = await ClientsRepo(session).create_or_get(9121, "owner", "Owner")
+                channel = await ChannelsRepo(session).create(owner.id, -1009121, "Recovery")
+                connector = await SourcesRepo(session).create_connector(
+                    channel_id=channel.id,
+                    kind="url",
+                    value="https://example.com/recovery",
+                )
+                mark_source_worker_failure(
+                    connector,
+                    failure_kind="timeout",
+                    now=datetime.now(timezone.utc),
+                )
+                await session.commit()
+
+            app = create_studio_app(_config())
+            transport = httpx.ASGITransport(app=app)
+            headers = {"X-Telegram-Init-Data": _init_data(9121)}
+            async with httpx.AsyncClient(transport=transport, base_url="http://studio") as client:
+                response = await client.post(
+                    f"/api/studio/channels/{channel.id}/sources/{connector.id}/ingest",
+                    headers=headers,
+                    json={},
+                )
+                assert response.status_code == 200
+
+            async with Session() as session:
+                recovered = await SourcesRepo(session).get_connector(connector.id)
+                assert recovered is not None
+                assert source_worker_failure_count(recovered) == 0
         finally:
             await engine.dispose()
 
