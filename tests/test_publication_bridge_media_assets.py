@@ -45,7 +45,7 @@ def test_publication_bridge_validates_asset_but_persists_durable_asset_id() -> N
                 task = await session.get(PostTask, int(publication.legacy_post_task_id))
                 assert task is not None
                 assert task.payload["type"] == "rich_document"
-                assert task.payload["_content_channel_id"] == 601
+                assert "_content_channel_id" not in task.payload
                 stored_block = task.payload["post_document"]["blocks"][0]
                 assert stored_block["asset_id"] == int(asset.id)
                 assert "telegram_file_id" not in stored_block

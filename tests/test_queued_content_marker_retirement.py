@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -11,12 +12,13 @@ from app.domain.content import PostDocument
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import PostTask
 from app.repositories.content import ContentRepo
+from app.services.document_posting import DocumentPostingService
 from app.services.legacy_content_mirror import mirror_legacy_post_task
 from app.services.publication_bridge import LegacyPublicationBridge
 from app.services.scheduling import cleanup_runtime_fields, inherit_flags_for_repeat
 
 
-def test_new_queue_keeps_only_channel_transport_marker_and_repeat_reuses_root() -> None:
+def test_new_queue_has_no_content_markers_and_repeat_reuses_root() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         try:
@@ -42,14 +44,14 @@ def test_new_queue_keeps_only_channel_transport_marker_and_repeat_reuses_root() 
                 assert "_publication_id" not in root_task.payload
                 assert "_content_item_id" not in root_task.payload
                 assert "_content_revision" not in root_task.payload
-                assert root_task.payload["_content_channel_id"] == 908
+                assert "_content_channel_id" not in root_task.payload
 
                 child_payload = cleanup_runtime_fields(dict(root_task.payload or {}))
                 child_payload = inherit_flags_for_repeat(child_payload, int(root_task.id))
                 assert child_payload["repeat_group_id"] == int(root_task.id)
                 assert "_content_item_id" not in child_payload
                 assert "_content_revision" not in child_payload
-                assert child_payload["_content_channel_id"] == 908
+                assert "_content_channel_id" not in child_payload
 
                 child = PostTask(
                     channel_id=908,
@@ -84,7 +86,7 @@ def test_new_queue_keeps_only_channel_transport_marker_and_repeat_reuses_root() 
     asyncio.run(run())
 
 
-def test_rich_queue_still_keeps_channel_marker_for_media_asset_resolution() -> None:
+def test_rich_queue_uses_scheduler_task_context_without_channel_marker() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         try:
@@ -105,10 +107,27 @@ def test_rich_queue_still_keeps_channel_marker_for_media_asset_resolution() -> N
                 )
                 task = await session.get(PostTask, int(publication.legacy_post_task_id or 0))
                 assert task is not None
+                task_id = int(task.id)
                 assert task.payload["type"] == "rich_document"
-                assert task.payload["_content_channel_id"] == 909
+                assert "_content_channel_id" not in task.payload
                 assert "_content_item_id" not in task.payload
                 assert "_content_revision" not in task.payload
+                scheduler_payload = {
+                    **dict(task.payload or {}),
+                    "_post_task_id": task_id,
+                }
+
+            service = DocumentPostingService(SimpleNamespace(), Session)
+            captured: list[int | None] = []
+
+            async def fake_send_document(chat_id, document, *, asset_channel_id=None):
+                captured.append(asset_channel_id)
+                return [90901]
+
+            service.send_document = fake_send_document  # type: ignore[method-assign]
+            result = await service._dispatch(-100909, scheduler_payload)
+            assert result == [90901]
+            assert captured == [909]
         finally:
             await engine.dispose()
 
