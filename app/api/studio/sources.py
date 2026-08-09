@@ -23,6 +23,7 @@ from app.services.source_ingestion_lease import (
     SourceIngestionLeaseStatus,
 )
 from app.services.source_lifecycle import (
+    SourceLifecycleBusy,
     SourceLifecycleError,
     SourceLifecyclePatch,
     SourceLifecycleService,
@@ -328,6 +329,8 @@ async def update_source_settings(
             connector_id=connector_id,
             patch=patch,
         )
+    except SourceLifecycleBusy as exc:
+        raise HTTPException(status_code=409, detail="Source ingestion is running") from exc
     except SourceLifecycleError as exc:
         if str(exc) == "source not found":
             raise HTTPException(status_code=404, detail="Source not found") from exc
