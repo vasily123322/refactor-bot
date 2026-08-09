@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content import PostDocument
-from app.domain.content.models import ContentItem, ContentRevision
+from app.domain.content.models import ContentItem, ContentRevision, MediaAsset
 from app.domain.sources.models import ContentCandidate, SourceDocument
 from app.repositories.sources_v2 import SourcesRepo
 from app.services.candidate_rewrite import current_candidate_rewrite_run
@@ -25,6 +25,7 @@ class CandidateDraftResult:
 
 _MAX_DRAFT_TEXT = 3900
 _MAX_QUOTE_CHARS = 700
+_PROMOTABLE_MEDIA_KINDS = {"photo", "video", "animation", "audio", "voice_note"}
 
 
 def _source_label(document: SourceDocument) -> str:
@@ -91,12 +92,36 @@ def _draft_text(
     return _clip(text, _MAX_DRAFT_TEXT)
 
 
+def _media_asset_id(document: SourceDocument) -> int | None:
+    try:
+        value = int(dict(document.meta or {}).get("media_asset_id") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return value if value > 0 else None
+
+
 class CandidateDraftService:
     """Accept an Inbox candidate into Content while enforcing source reuse policy."""
 
     def __init__(self, session: AsyncSession):
         self.session = session
         self.sources = SourcesRepo(session)
+
+    async def _source_media_asset(
+        self,
+        *,
+        source_document: SourceDocument,
+        channel_id: int,
+    ) -> MediaAsset | None:
+        asset_id = _media_asset_id(source_document)
+        if asset_id is None:
+            return None
+        asset = await self.session.get(MediaAsset, asset_id)
+        if asset is None or int(asset.channel_id) != int(channel_id):
+            return None
+        if str(asset.kind).lower() not in _PROMOTABLE_MEDIA_KINDS:
+            return None
+        return asset
 
     async def create(
         self,
@@ -164,25 +189,55 @@ class CandidateDraftService:
             summary=candidate.summary,
             generated_rewrite=(rewrite_run.text if rewrite_run is not None else None),
         )
-        document = PostDocument(
-            blocks=[{"id": "b1", "type": "text", "text": text, "entities": []}],
-            metadata={
-                "source_candidate_id": int(candidate.id),
-                "source_document_id": int(source_document.id),
-                "source_connector_id": int(connector.id),
-                "source_url": source_document.source_url,
-                "reuse_policy": policy,
-                "suggested_action": candidate.suggested_action,
-                "source_body_truncated": bool(truncated),
-                "rewrite_run_id": (
-                    int(rewrite_run.id) if rewrite_run is not None else None
-                ),
-                "rewrite_provider": (
-                    str(rewrite_run.provider) if rewrite_run is not None else None
-                ),
-                "rewrite_model": rewrite_run.model if rewrite_run is not None else None,
-            },
+        source_media_asset = await self._source_media_asset(
+            source_document=source_document,
+            channel_id=channel_id,
         )
+        source_media_asset_id = (
+            int(source_media_asset.id) if source_media_asset is not None else None
+        )
+        source_media_attached = bool(
+            source_media_asset is not None and policy == "mirror_authorized"
+        )
+        document_metadata = {
+            "source_candidate_id": int(candidate.id),
+            "source_document_id": int(source_document.id),
+            "source_connector_id": int(connector.id),
+            "source_url": source_document.source_url,
+            "reuse_policy": policy,
+            "suggested_action": candidate.suggested_action,
+            "source_body_truncated": bool(truncated),
+            "source_media_asset_id": source_media_asset_id,
+            "source_media_attached": source_media_attached,
+            "rewrite_run_id": (
+                int(rewrite_run.id) if rewrite_run is not None else None
+            ),
+            "rewrite_provider": (
+                str(rewrite_run.provider) if rewrite_run is not None else None
+            ),
+            "rewrite_model": rewrite_run.model if rewrite_run is not None else None,
+        }
+        if source_media_attached:
+            assert source_media_asset is not None
+            document = PostDocument(
+                mode="rich",
+                blocks=[
+                    {"id": "p1", "type": "paragraph", "content": text},
+                    {
+                        "id": "m1",
+                        "type": "media",
+                        "asset_id": source_media_asset_id,
+                        "kind": str(source_media_asset.kind),
+                        "caption": "",
+                    },
+                ],
+                metadata=document_metadata,
+            )
+        else:
+            document = PostDocument(
+                blocks=[{"id": "b1", "type": "text", "text": text, "entities": []}],
+                metadata=document_metadata,
+            )
         document.validate()
 
         item = ContentItem(
@@ -197,6 +252,8 @@ class CandidateDraftService:
                 "created_from": "source_candidate",
                 "source_candidate_id": int(candidate.id),
                 "reuse_policy": policy,
+                "source_media_asset_id": source_media_asset_id,
+                "source_media_attached": source_media_attached,
                 "rewrite_run_id": (
                     int(rewrite_run.id) if rewrite_run is not None else None
                 ),
@@ -213,6 +270,8 @@ class CandidateDraftService:
                 created_by_tg_user_id=created_by_tg_user_id,
                 meta={
                     "source_document_id": int(source_document.id),
+                    "source_media_asset_id": source_media_asset_id,
+                    "source_media_attached": source_media_attached,
                     "rewrite_run_id": (
                         int(rewrite_run.id) if rewrite_run is not None else None
                     ),
