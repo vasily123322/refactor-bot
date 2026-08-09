@@ -77,11 +77,10 @@ def test_repeat_child_reuses_root_publication_without_content_markers() -> None:
                 assert len(items) == 1
                 assert len(revisions) == 1
 
-                # Stage #102 keeps marker compatibility. The important invariant is
-                # that the lookup succeeded before these fields were restored.
                 await session.refresh(child)
-                assert child.payload["_content_item_id"] == root.content_item_id
-                assert child.payload["_content_revision"] == root.content_revision
+                assert "_content_item_id" not in child.payload
+                assert "_content_revision" not in child.payload
+                assert child.payload["_content_channel_id"] == 905
         finally:
             await engine.dispose()
 

@@ -16,7 +16,11 @@ from app.services.legacy_content_mirror import (
     mirror_legacy_post_task,
     mirror_unlinked_legacy_tasks,
 )
-from app.services.scheduling import as_utc, cleanup_runtime_fields
+from app.services.scheduling import (
+    as_utc,
+    cleanup_runtime_fields,
+    inherit_flags_for_repeat,
+)
 
 
 def test_mirror_creates_content_schedule_and_publication_idempotently() -> None:
@@ -75,8 +79,8 @@ def test_mirror_creates_content_schedule_and_publication_idempotently() -> None:
                 assert schedule.repeat_rule == {"enabled": True, "seconds": 7200}
 
                 await session.refresh(task)
-                assert task.payload["_content_item_id"] == item.id
-                assert task.payload["_content_revision"] == 1
+                assert "_content_item_id" not in task.payload
+                assert "_content_revision" not in task.payload
                 assert task.payload["_content_channel_id"] == 42
                 assert "_publication_id" not in task.payload
 
@@ -120,13 +124,15 @@ def test_repeat_child_reuses_content_but_gets_distinct_publication() -> None:
                 await session.refresh(parent)
 
                 child_payload = cleanup_runtime_fields(dict(parent.payload or {}))
-                assert child_payload["_content_item_id"] == first.content_item_id
-                assert child_payload["_content_revision"] == first.content_revision
+                child_payload = inherit_flags_for_repeat(child_payload, int(parent.id))
+                assert "_content_item_id" not in child_payload
+                assert "_content_revision" not in child_payload
                 assert child_payload["_content_channel_id"] == 42
+                assert child_payload["repeat_group_id"] == parent.id
                 assert "_publication_id" not in child_payload
 
-                # Simulate a child created before the cleanup fix: the stale parent
-                # publication marker must be ignored and removed during mirroring.
+                # Simulate an older child carrying stale parent publication identity;
+                # DB repeat-root provenance must win and the stale marker is removed.
                 child_payload["_publication_id"] = int(first.id)
                 child = PostTask(
                     channel_id=42,
@@ -145,10 +151,13 @@ def test_repeat_child_reuses_content_but_gets_distinct_publication() -> None:
                 assert second.content_item_id == first.content_item_id
                 assert second.content_revision == first.content_revision
                 assert second.meta["reused_content_provenance"] is True
+                assert second.meta["repeat_root_provenance"] is True
 
                 await session.refresh(child)
                 assert "_publication_id" not in child.payload
-                assert child.payload["_content_item_id"] == first.content_item_id
+                assert "_content_item_id" not in child.payload
+                assert "_content_revision" not in child.payload
+                assert child.payload["_content_channel_id"] == 42
 
                 items = (await session.execute(select(ContentItem))).scalars().all()
                 revisions = (await session.execute(select(ContentRevision))).scalars().all()
@@ -250,6 +259,8 @@ def test_batch_mirror_preserves_unknown_payload_as_opaque_content() -> None:
 
                 await session.refresh(unknown)
                 assert "_publication_id" not in unknown.payload
+                assert "_content_item_id" not in unknown.payload
+                assert "_content_revision" not in unknown.payload
                 publication = (
                     await session.execute(
                         select(Publication).where(
