@@ -23,7 +23,11 @@ from app.services.source_lifecycle import (
     SourceLifecyclePatch,
     SourceLifecycleService,
 )
-from app.services.telegram_source_ingestion import TelegramSourceIngestionService
+from app.services.telegram_source_ingestion import (
+    TelegramSourceIngestionService,
+    telegram_backlog_hint,
+    telegram_cursor_message_id,
+)
 from app.userbot.client import app as userbot
 
 
@@ -80,6 +84,8 @@ class SourceResponse(BaseModel):
     last_document_at: datetime | None
     legacy_ai_source_id: int | None
     legacy_grab_source_id: int | None
+    cursor_message_id: int | None
+    backlog_hint: bool
 
 
 class SourceIngestionResponse(BaseModel):
@@ -130,6 +136,8 @@ async def _require_owned_channel(
 
 
 def _response(row: SourceConnector) -> SourceResponse:
+    is_telegram = str(row.kind).lower() == "telegram"
+    cursor = telegram_cursor_message_id(row) if is_telegram else 0
     return SourceResponse(
         id=int(row.id),
         channel_id=int(row.channel_id),
@@ -149,6 +157,8 @@ def _response(row: SourceConnector) -> SourceResponse:
         last_document_at=row.last_document_at,
         legacy_ai_source_id=row.legacy_ai_source_id,
         legacy_grab_source_id=row.legacy_grab_source_id,
+        cursor_message_id=(cursor or None) if is_telegram else None,
+        backlog_hint=telegram_backlog_hint(row) if is_telegram else False,
     )
 
 
