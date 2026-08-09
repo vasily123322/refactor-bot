@@ -252,6 +252,8 @@ class Scheduler(ReliableScheduler):
         limit: int = 20,
     ) -> int:
         """Mirror pending repeat children for one committed repeat group immediately."""
+        parent_id = int(parent.id)
+        channel_id = int(parent.channel_id)
         group_id = self._repeat_group_id(parent)
         if group_id is None:
             return 0
@@ -260,7 +262,7 @@ class Scheduler(ReliableScheduler):
             parent_link = (
                 await session.execute(
                     select(Publication.id).where(
-                        Publication.legacy_post_task_id == int(parent.id)
+                        Publication.legacy_post_task_id == parent_id
                     )
                 )
             ).scalar_one_or_none()
@@ -270,20 +272,21 @@ class Scheduler(ReliableScheduler):
             await self._rollback(session, "repeat parent publication mirror")
             logger.warning(
                 "Scheduler: repeat parent mirror failed post_id={} type={}",
-                int(parent.id),
+                parent_id,
                 type(exc).__name__,
             )
+            return 0
 
         try:
             result = await session.execute(
-                select(PostTask)
+                select(PostTask.id)
                 .outerjoin(
                     Publication,
                     Publication.legacy_post_task_id == PostTask.id,
                 )
                 .where(
-                    PostTask.id != int(parent.id),
-                    PostTask.channel_id == int(parent.channel_id),
+                    PostTask.id != parent_id,
+                    PostTask.channel_id == channel_id,
                     PostTask.status == "pending",
                     PostTask.payload["repeat_group_id"].as_integer() == group_id,
                     Publication.id.is_(None),
@@ -291,25 +294,28 @@ class Scheduler(ReliableScheduler):
                 .order_by(PostTask.scheduled_at.asc(), PostTask.id.asc())
                 .limit(max(1, min(int(limit), 100)))
             )
-            children = list(result.scalars().all())
+            child_ids = [int(value) for value in result.scalars().all()]
         except Exception as exc:
             await self._rollback(session, "repeat child publication lookup")
             logger.warning(
                 "Scheduler: repeat child lookup failed parent_id={} type={}",
-                int(parent.id),
+                parent_id,
                 type(exc).__name__,
             )
             return 0
 
         mirrored = 0
-        for child in children:
+        for child_id in child_ids:
             try:
+                child = await session.get(PostTask, child_id)
+                if child is None:
+                    continue
                 publication = await mirror_legacy_post_task(session, child)
             except Exception as exc:
                 await self._rollback(session, "repeat child publication mirror")
                 logger.warning(
                     "Scheduler: repeat child mirror failed post_id={} type={}",
-                    int(child.id),
+                    child_id,
                     type(exc).__name__,
                 )
                 continue
@@ -319,7 +325,7 @@ class Scheduler(ReliableScheduler):
         if mirrored:
             logger.debug(
                 "Scheduler: repeat publications mirrored parent_id={} count={}",
-                int(parent.id),
+                parent_id,
                 mirrored,
             )
         return mirrored
