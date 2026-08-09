@@ -13,6 +13,7 @@ from app.domain.scheduler import SchedulerTaskLease
 
 
 DEFAULT_SCHEDULER_LEASE_SECONDS = 180
+DEFAULT_RECOVERY_LEASE_SECONDS = 60
 
 
 def _utc(value: datetime | None = None) -> datetime:
@@ -27,6 +28,13 @@ class SchedulerTaskLeaseHandle:
     task_id: int
     lease_token: str
     holder: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class SchedulerExpiredLeaseRef:
+    task_id: int
+    lease_token: str
     expires_at: datetime
 
 
@@ -51,14 +59,10 @@ class SchedulerTaskLeaseService:
         holder_value = str(holder).strip()[:64] or "scheduler"
 
         try:
-            # Remove only an already-expired orphan from a previous execution. An
-            # active row makes the lease INSERT fail and rolls the status CAS back.
-            await self.session.execute(
-                delete(SchedulerTaskLease).where(
-                    SchedulerTaskLease.task_id == int(task_id),
-                    SchedulerTaskLease.expires_at <= current,
-                )
-            )
+            # Any existing lease, including an expired one, is a recovery barrier.
+            # Never delete it from the normal claim path: an expired processing lease
+            # represents an ambiguous Telegram side effect and must be resolved by the
+            # fail-closed recovery path before the task can ever become claimable again.
             result = await self.session.execute(
                 update(PostTask)
                 .where(
@@ -82,6 +86,8 @@ class SchedulerTaskLeaseService:
             )
             await self.session.commit()
         except IntegrityError:
+            # Most commonly an existing active/expired lease. Roll back the status
+            # compare-and-set as part of the same transaction.
             await self.session.rollback()
             return None
         except Exception:
@@ -90,6 +96,89 @@ class SchedulerTaskLeaseService:
 
         return SchedulerTaskLeaseHandle(
             task_id=int(task_id),
+            lease_token=token,
+            holder=holder_value,
+            expires_at=expires_at,
+        )
+
+    async def expired(
+        self,
+        *,
+        limit: int = 100,
+        now: datetime | None = None,
+    ) -> list[SchedulerExpiredLeaseRef]:
+        current = _utc(now)
+        rows = (
+            await self.session.execute(
+                select(
+                    SchedulerTaskLease.task_id,
+                    SchedulerTaskLease.lease_token,
+                    SchedulerTaskLease.expires_at,
+                )
+                .where(SchedulerTaskLease.expires_at <= current)
+                .order_by(
+                    SchedulerTaskLease.expires_at.asc(),
+                    SchedulerTaskLease.task_id.asc(),
+                )
+                .limit(max(1, min(int(limit), 500)))
+            )
+        ).all()
+        return [
+            SchedulerExpiredLeaseRef(
+                task_id=int(row.task_id),
+                lease_token=str(row.lease_token),
+                expires_at=_utc(row.expires_at),
+            )
+            for row in rows
+        ]
+
+    async def take_expired(
+        self,
+        reference: SchedulerExpiredLeaseRef,
+        *,
+        holder: str = "recovery",
+        ttl_seconds: int = DEFAULT_RECOVERY_LEASE_SECONDS,
+        now: datetime | None = None,
+    ) -> SchedulerTaskLeaseHandle | None:
+        """Atomically take ownership of one still-expired lease for recovery.
+
+        The token + expiry compare-and-set makes recovery race-safe with a late live
+        heartbeat. If the original worker renewed first, rowcount is zero and recovery
+        must leave the task untouched.
+        """
+        current = _utc(now)
+        ttl = max(30, min(int(ttl_seconds), 600))
+        expires_at = current + timedelta(seconds=ttl)
+        token = uuid.uuid4().hex
+        holder_value = str(holder).strip()[:64] or "recovery"
+
+        try:
+            result = await self.session.execute(
+                update(SchedulerTaskLease)
+                .where(
+                    SchedulerTaskLease.task_id == int(reference.task_id),
+                    SchedulerTaskLease.lease_token == str(reference.lease_token),
+                    SchedulerTaskLease.expires_at <= current,
+                )
+                .values(
+                    lease_token=token,
+                    holder=holder_value,
+                    expires_at=expires_at,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            await self.session.commit()
+        except IntegrityError:
+            await self.session.rollback()
+            return None
+        except Exception:
+            await self.session.rollback()
+            raise
+
+        if int(result.rowcount or 0) != 1:
+            return None
+        return SchedulerTaskLeaseHandle(
+            task_id=int(reference.task_id),
             lease_token=token,
             holder=holder_value,
             expires_at=expires_at,
