@@ -67,6 +67,7 @@ class TelegramPreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     document: dict[str, Any]
+    channel_id: int | None = Field(default=None, ge=1)
     replace_message_ids: list[int] = Field(default_factory=list, max_length=50)
 
 
