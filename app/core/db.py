@@ -76,6 +76,13 @@ def _sqlite_file_path(db_url: str) -> str | None:
     return path
 
 
+def prepare_db_storage_sync() -> None:
+    """Create only filesystem prerequisites; never mutate database schema."""
+    path = _sqlite_file_path(settings.db_url)
+    if path:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+
+
 def _is_legacy_schema(sqlite_path: str) -> bool:
     if not os.path.exists(sqlite_path):
         return False
@@ -101,7 +108,7 @@ def init_db_if_needed_sync() -> None:
     path = _sqlite_file_path(settings.db_url)
     if not path:
         return
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    prepare_db_storage_sync()
     if _is_legacy_schema(path):
         backup = f"{path}.backup.{int(time.time())}.db"
         os.replace(path, backup)

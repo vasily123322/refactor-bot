@@ -37,17 +37,30 @@ alembic upgrade head
 ```
 
 The first revision (`20260809_0001`) is a non-destructive adoption baseline. On an
-empty database it creates the current ORM schema. On an existing current database it
-creates only missing tables and records the Alembic version; it does not drop tables
-or rewrite existing data. The historical SQLite compatibility shim in
-`init_db_if_needed_sync()` remains temporarily for older installations, but future
-schema changes should be implemented as explicit Alembic revisions rather than new
-ad-hoc `ALTER TABLE` code.
+empty database it creates the frozen baseline schema. On an existing current database
+it creates only missing baseline tables and records the Alembic version; it does not
+drop tables or rewrite existing data. Later schema changes are explicit revisions
+(e.g. `20260809_0002` for scheduler execution leases).
+
+Once a database contains `alembic_version`, application startup treats it as
+**Alembic-managed**. Managed databases do not run runtime `Base.metadata.create_all()`
+or the historical SQLite ad-hoc schema shim. Startup fails before workers are started
+when the database is behind the revision head shipped with the application. Apply:
+
+```bash
+alembic upgrade head
+```
+
+and start the application again.
+
+Databases that have not adopted Alembic yet retain the historical compatibility
+bootstrap so existing installations continue to start. This unmanaged path is
+transitional; future schema changes should be implemented only as Alembic revisions.
 
 Useful checks:
 
 ```bash
-alembic current
+alembic current --check-heads
 alembic history
 ```
 

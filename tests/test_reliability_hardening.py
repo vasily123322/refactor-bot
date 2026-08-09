@@ -77,6 +77,10 @@ def test_run_bot_cleans_up_after_partial_worker_start(monkeypatch) -> None:
     async def _cancel_bg_tasks():
         events.append("bg-cancel")
 
+    async def _legacy_schema_boundary(engine, *, unmanaged_initializer):
+        await unmanaged_initializer()
+        return SimpleNamespace(managed=False, current_heads=())
+
     monkeypatch.setattr(dispatcher, "engine", _FakeEngine())
     monkeypatch.setattr(dispatcher, "create_dispatcher", _create_dispatcher)
     monkeypatch.setattr(dispatcher, "ExternalBotsManager", _FakeExternalBotsManager)
@@ -84,6 +88,12 @@ def test_run_bot_cleans_up_after_partial_worker_start(monkeypatch) -> None:
     monkeypatch.setattr(dispatcher, "Scheduler", _FailingScheduler)
     monkeypatch.setattr(dispatcher, "PostingService", lambda *args, **kwargs: object())
     monkeypatch.setattr(dispatcher, "init_db_if_needed_sync", lambda: None)
+    monkeypatch.setattr(dispatcher, "prepare_db_storage_sync", lambda: None)
+    monkeypatch.setattr(
+        dispatcher,
+        "bootstrap_database_schema",
+        _legacy_schema_boundary,
+    )
     monkeypatch.setattr(dispatcher, "cancel_bg_tasks", _cancel_bg_tasks)
     monkeypatch.setattr(
         type(dispatcher.settings), "get_ai_models_config", lambda self: {}
