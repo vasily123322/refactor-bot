@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
+import {
+  candidateMediaLabel,
+  loadCandidateMedia,
+  type CandidateMediaView,
+} from './candidateMedia';
 import type { Channel, ContentCandidateView } from './types';
 
 type RewritePreview = {
@@ -42,6 +47,10 @@ function scoreLabel(score: number | null): string | null {
   return `${Math.round(Math.max(0, Math.min(1, score)) * 100)}%`;
 }
 
+function mediaMap(rows: CandidateMediaView[]): Record<number, CandidateMediaView> {
+  return Object.fromEntries(rows.map((row) => [row.candidate_id, row]));
+}
+
 export function InboxPanel({
   channel,
   onOpenContent,
@@ -50,6 +59,7 @@ export function InboxPanel({
   onOpenContent: (contentId: number) => void;
 }) {
   const [candidates, setCandidates] = useState<ContentCandidateView[]>([]);
+  const [candidateMedia, setCandidateMedia] = useState<Record<number, CandidateMediaView>>({});
   const [rewritePreviews, setRewritePreviews] = useState<Record<number, RewritePreview>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -58,9 +68,15 @@ export function InboxPanel({
   const load = useCallback(async () => {
     if (!channel) {
       setCandidates([]);
+      setCandidateMedia({});
       return;
     }
-    setCandidates(await studioApi.candidates(channel.id));
+    const [rows, mediaRows] = await Promise.all([
+      studioApi.candidates(channel.id),
+      loadCandidateMedia(channel.id),
+    ]);
+    setCandidates(rows);
+    setCandidateMedia(mediaMap(mediaRows));
   }, [channel]);
 
   useEffect(() => {
@@ -147,6 +163,11 @@ export function InboxPanel({
     run(`dismiss:${candidate.id}`, async () => {
       await studioApi.dismissCandidate(channel!.id, candidate.id);
       setCandidates((current) => current.filter((row) => row.id !== candidate.id));
+      setCandidateMedia((current) => {
+        const next = { ...current };
+        delete next[candidate.id];
+        return next;
+      });
       setRewritePreviews((current) => {
         const next = { ...current };
         delete next[candidate.id];
@@ -158,6 +179,11 @@ export function InboxPanel({
     run(`draft:${candidate.id}`, async () => {
       const draft = await studioApi.candidateDraft(channel!.id, candidate.id);
       setCandidates((current) => current.filter((row) => row.id !== candidate.id));
+      setCandidateMedia((current) => {
+        const next = { ...current };
+        delete next[candidate.id];
+        return next;
+      });
       setRewritePreviews((current) => {
         const next = { ...current };
         delete next[candidate.id];
@@ -205,12 +231,14 @@ export function InboxPanel({
           {candidates.map((candidate) => {
             const score = scoreLabel(candidate.score);
             const rewritePreview = rewritePreviews[candidate.id];
+            const media = candidateMedia[candidate.id];
             const canRewrite = candidate.reuse_policy === 'rewrite_with_attribution';
             return (
               <article key={candidate.id} className="candidate-card">
                 <div className="candidate-head">
                   <span className="candidate-action">{actionLabel(candidate.suggested_action)}</span>
                   <span className="candidate-policy">{candidate.reuse_policy}</span>
+                  {media && <span className="candidate-policy">{candidateMediaLabel(media)}</span>}
                   {score && <span className="candidate-policy">score {score}</span>}
                 </div>
                 <h3>{candidate.topic || candidate.source_title || `Материал #${candidate.source_document_id}`}</h3>
