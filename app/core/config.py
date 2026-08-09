@@ -31,6 +31,20 @@ class Settings(BaseSettings):
     # Scheduler settings
     repeat_overflow_limit: int = Field(default=2, alias="REPEAT_OVERFLOW_LIMIT")
 
+    # Optional deterministic Inbox enrichment worker (never uses AI providers)
+    local_enrichment_worker_enabled: bool = Field(
+        default=False, alias="LOCAL_ENRICHMENT_WORKER_ENABLED"
+    )
+    local_enrichment_worker_interval_seconds: float = Field(
+        default=15.0, alias="LOCAL_ENRICHMENT_WORKER_INTERVAL_SECONDS"
+    )
+    local_enrichment_worker_batch_size: int = Field(
+        default=20, alias="LOCAL_ENRICHMENT_WORKER_BATCH_SIZE"
+    )
+    local_enrichment_worker_candidate_timeout_seconds: float = Field(
+        default=10.0, alias="LOCAL_ENRICHMENT_WORKER_CANDIDATE_TIMEOUT_SECONDS"
+    )
+
     # SQLAlchemy: форсировать NullPool (всегда без пула)
     sqla_nullpool: bool = Field(default=False, alias="SQLA_NULLPOOL")
     # SQLAlchemy: для SQLite — StaticPool (один процессный коннект)
