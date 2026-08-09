@@ -87,11 +87,19 @@ class _RedactedPostingService:
 
     def __init__(self, delegate) -> None:
         self._delegate = delegate
-        self._bot = _RedactedTelegramBot(delegate.bot)
+        self._bot_delegate = None
+        self._bot_proxy = None
 
     @property
     def bot(self):
-        return self._bot
+        # Several state-machine tests intentionally supply a posting stub without a
+        # bot because they never execute Telegram calls. Preserve that constructor
+        # seam and only require/wrap `.bot` when legacy code actually accesses it.
+        raw_bot = getattr(self._delegate, "bot")
+        if self._bot_proxy is None or self._bot_delegate is not raw_bot:
+            self._bot_delegate = raw_bot
+            self._bot_proxy = _RedactedTelegramBot(raw_bot)
+        return self._bot_proxy
 
     def __getattr__(self, name: str):
         return getattr(self._delegate, name)
