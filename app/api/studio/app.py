@@ -291,7 +291,10 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
     async def exact_telegram_preview(
         request: TelegramPreviewRequest,
         principal: PrincipalDep,
+        session: SessionDep,
     ) -> TelegramPreviewResponse:
+        if request.channel_id is not None:
+            await _owned_channel(session, principal, request.channel_id)
         try:
             document = PostDocument.from_dict(request.document)
         except PostDocumentError as exc:
@@ -301,6 +304,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
                 tg_user_id=principal.tg_user_id,
                 document=document,
                 replace_message_ids=request.replace_message_ids,
+                asset_channel_id=request.channel_id,
             )
         except TelegramPreviewError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
