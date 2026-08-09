@@ -12,7 +12,12 @@ from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.services.content import LegacyPayloadError, document_from_legacy_payload
+from app.services.scheduler_errors import public_scheduler_error
 from app.services.scheduling import as_utc, cleanup_runtime_fields
+from app.services.telegram_results import (
+    normalize_telegram_message_ids,
+    normalize_telegram_result_link,
+)
 
 
 _TERMINAL_STATUS = {
@@ -173,8 +178,14 @@ async def mirror_legacy_post_task(
         "cancelled": "cancelled",
     }.get(task_status, "pending")
 
-    ids = [int(value) for value in list(payload.get("result_ids") or [])]
-    result_link = payload.get("result_link")
+    # Historical/unlinked PostTask rows are untrusted migration input. Reuse the
+    # same strict result/error boundary as the normal Publication bridge so malformed
+    # payloads cannot stall mirroring or leak arbitrary transport text into Studio.
+    ids = normalize_telegram_message_ids(payload.get("result_ids"))
+    result_link = normalize_telegram_result_link(payload.get("result_link"))
+    last_error = (
+        public_scheduler_error(task.error) if task_status == "failed" else None
+    )
     now = datetime.now(timezone.utc)
     when = as_utc(task.scheduled_at)
     reused_content = referenced is not None
@@ -231,7 +242,7 @@ async def mirror_legacy_post_task(
             legacy_post_task_id=task_id,
             telegram_message_ids=ids or None,
             result_link=result_link,
-            last_error=task.error if task_status == "failed" else None,
+            last_error=last_error,
             attempt_count=1 if task_status in _TERMINAL_STATUS else 0,
             meta=mirror_meta,
         )
