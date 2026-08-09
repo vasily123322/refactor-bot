@@ -36,6 +36,17 @@ class _FakeTelegramIngestionService:
         return IngestionResult(int(connector.id), 1, 1, 1)
 
 
+class _RecordingIngestionService:
+    calls: ClassVar[list[int]] = []
+
+    def __init__(self, session) -> None:
+        self.session = session
+
+    async def ingest(self, connector):
+        type(self).calls.append(int(connector.id))
+        return IngestionResult(int(connector.id), 0, 0, 0)
+
+
 def test_worker_isolates_connector_failures_and_dispatches_telegram(monkeypatch) -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -74,6 +85,44 @@ def test_worker_isolates_connector_failures_and_dispatches_telegram(monkeypatch)
             assert processed == 2
             assert len(_FakeIngestionService.calls) == 2
             assert len(_FakeTelegramIngestionService.calls) == 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_worker_rotates_bounded_connector_window_without_starvation(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                for index in range(5):
+                    await SourcesRepo(session).create_connector(
+                        channel_id=52,
+                        kind="url",
+                        value=f"https://example.com/{index}",
+                    )
+
+            _RecordingIngestionService.calls = []
+            monkeypatch.setattr(
+                worker_module,
+                "SourceIngestionService",
+                _RecordingIngestionService,
+            )
+            worker = SourceIngestionWorker(
+                session_factory=Session,
+                interval_seconds=15,
+                max_connectors_per_tick=2,
+            )
+
+            assert await worker.run_once() == 2
+            assert await worker.run_once() == 2
+            assert await worker.run_once() == 2
+            assert _RecordingIngestionService.calls == [1, 2, 3, 4, 5, 1]
+            assert worker._last_connector_id == 1
         finally:
             await engine.dispose()
 
