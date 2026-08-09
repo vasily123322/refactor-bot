@@ -23,13 +23,20 @@ def compute_next_repeat_time(
 
 
 def cleanup_runtime_fields(payload: dict) -> dict:
-    """Удалить временные поля из payload перед созданием повтора."""
+    """Удалить временные поля из payload перед созданием повтора.
+
+    Content provenance intentionally survives so the repeat can create a new
+    ScheduleEntry/Publication for the same immutable ContentRevision. Publication
+    identity itself must never survive: every delivery occurrence gets its own
+    Publication and attempts.
+    """
     pl = dict(payload or {})
     pl.pop("result_ids", None)
     pl.pop("result_link", None)
     pl.pop("autodeleted", None)
     pl.pop("autodeleted_at", None)
     pl.pop("autodelete_at", None)
+    pl.pop("_publication_id", None)
     return pl
 
 
