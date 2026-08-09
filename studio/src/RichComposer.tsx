@@ -6,6 +6,7 @@ import {
   type MediaAssetKind,
   type MediaAssetView,
 } from './api';
+import { mediaAssetBlockPatch, mediaAssetOptionLabel } from './richMediaAssets';
 import { RichTextField } from './RichTextField';
 import type { PostBlock, PostDocument, RichSegmentValue } from './types';
 
@@ -74,11 +75,6 @@ function textValue(value: unknown): string {
 function numberValue(value: unknown, fallback: number): number {
   const result = Number(value);
   return Number.isFinite(result) ? result : fallback;
-}
-
-function assetOptionLabel(asset: MediaAssetView): string {
-  const title = asset.label?.trim() || `${asset.kind} #${asset.id}`;
-  return `${title} · ${asset.transport}`;
 }
 
 function errorMessage(error: unknown): string {
@@ -248,16 +244,13 @@ function BlockEditor({
                 value={selectedAssetId || ''}
                 onChange={(event) => {
                   const assetId = Number(event.target.value || 0);
-                  const asset = assets.find((candidate) => candidate.id === assetId);
-                  onPatch({
-                    asset_id: asset ? asset.id : undefined,
-                    kind: asset ? asset.kind : 'photo',
-                  });
+                  const asset = assets.find((candidate) => candidate.id === assetId) ?? null;
+                  onPatch(mediaAssetBlockPatch(asset));
                 }}
               >
                 <option value="">Выберите asset…</option>
                 {assets.map((asset) => (
-                  <option key={asset.id} value={asset.id}>{assetOptionLabel(asset)}</option>
+                  <option key={asset.id} value={asset.id}>{mediaAssetOptionLabel(asset)}</option>
                 ))}
               </select>
             </label>
