@@ -101,7 +101,7 @@ class LocalCandidateEnrichmentWorker:
                     completed += 1
             except CandidateEnrichmentBusy:
                 skipped_busy += 1
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 timeouts += 1
                 logger.warning("Local enrichment worker: candidate enrichment timed out")
             except CandidateEnrichmentError:

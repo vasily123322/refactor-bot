@@ -150,6 +150,26 @@ def test_local_enrichment_worker_isolates_candidate_failures(monkeypatch) -> Non
     asyncio.run(run())
 
 
+def test_local_enrichment_worker_counts_wait_for_timeout_separately(monkeypatch) -> None:
+    async def run() -> None:
+        worker = LocalCandidateEnrichmentWorker(batch_size=1)
+        worker.candidate_timeout_seconds = 0.01
+        monkeypatch.setattr(worker, "_candidate_keys", lambda: _async_value([(1, 10)]))
+
+        async def enrich_one(channel_id: int, candidate_id: int):
+            await asyncio.sleep(1)
+            return SimpleNamespace(reused_existing=False)
+
+        monkeypatch.setattr(worker, "_enrich_one", enrich_one)
+        tick = await worker.run_once()
+        assert tick.selected == 1
+        assert tick.completed == 0
+        assert tick.timeouts == 1
+        assert tick.failures == 0
+
+    asyncio.run(run())
+
+
 def test_local_enrichment_worker_start_stop_is_idempotent(monkeypatch) -> None:
     async def run() -> None:
         worker = LocalCandidateEnrichmentWorker(interval_seconds=60)
