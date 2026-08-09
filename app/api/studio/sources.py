@@ -28,6 +28,7 @@ from app.services.source_lifecycle import (
     SourceLifecyclePatch,
     SourceLifecycleService,
 )
+from app.services.source_worker_health import source_worker_health
 from app.services.source_worker_policy import (
     clear_source_worker_failure,
     source_worker_failure_count,
@@ -232,6 +233,11 @@ def _candidate_response(
             or "reference_only"
         ),
     )
+
+
+@router.get("/source-worker/health")
+async def source_worker_health_snapshot(_principal: PrincipalDep) -> dict[str, Any]:
+    return source_worker_health.snapshot()
 
 
 @router.get(
