@@ -49,6 +49,7 @@ def test_new_queue_keeps_only_channel_transport_marker_and_repeat_reuses_root() 
                 assert child_payload["repeat_group_id"] == int(root_task.id)
                 assert "_content_item_id" not in child_payload
                 assert "_content_revision" not in child_payload
+                assert child_payload["_content_channel_id"] == 908
 
                 child = PostTask(
                     channel_id=908,
@@ -69,7 +70,7 @@ def test_new_queue_keeps_only_channel_transport_marker_and_repeat_reuses_root() 
                 await session.refresh(child)
                 assert "_content_item_id" not in child.payload
                 assert "_content_revision" not in child.payload
-                assert child.payload["_content_channel_id"] == 908
+                assert "_content_channel_id" not in child.payload
 
                 items = list((await session.execute(select(ContentItem))).scalars().all())
                 revisions = list(

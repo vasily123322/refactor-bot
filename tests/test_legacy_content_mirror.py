@@ -81,7 +81,7 @@ def test_mirror_creates_content_schedule_and_publication_idempotently() -> None:
                 await session.refresh(task)
                 assert "_content_item_id" not in task.payload
                 assert "_content_revision" not in task.payload
-                assert task.payload["_content_channel_id"] == 42
+                assert "_content_channel_id" not in task.payload
                 assert "_publication_id" not in task.payload
 
                 same = await mirror_legacy_post_task(session, task)
@@ -127,13 +127,14 @@ def test_repeat_child_reuses_content_but_gets_distinct_publication() -> None:
                 child_payload = inherit_flags_for_repeat(child_payload, int(parent.id))
                 assert "_content_item_id" not in child_payload
                 assert "_content_revision" not in child_payload
-                assert child_payload["_content_channel_id"] == 42
+                assert "_content_channel_id" not in child_payload
                 assert child_payload["repeat_group_id"] == parent.id
                 assert "_publication_id" not in child_payload
 
-                # Simulate an older child carrying stale parent publication identity;
-                # DB repeat-root provenance must win and the stale marker is removed.
+                # Simulate an older child carrying stale parent publication/channel
+                # identity; DB repeat-root provenance wins and stale markers are removed.
                 child_payload["_publication_id"] = int(first.id)
+                child_payload["_content_channel_id"] = 42
                 child = PostTask(
                     channel_id=42,
                     status="pending",
@@ -157,7 +158,7 @@ def test_repeat_child_reuses_content_but_gets_distinct_publication() -> None:
                 assert "_publication_id" not in child.payload
                 assert "_content_item_id" not in child.payload
                 assert "_content_revision" not in child.payload
-                assert child.payload["_content_channel_id"] == 42
+                assert "_content_channel_id" not in child.payload
 
                 items = (await session.execute(select(ContentItem))).scalars().all()
                 revisions = (await session.execute(select(ContentRevision))).scalars().all()
@@ -261,6 +262,7 @@ def test_batch_mirror_preserves_unknown_payload_as_opaque_content() -> None:
                 assert "_publication_id" not in unknown.payload
                 assert "_content_item_id" not in unknown.payload
                 assert "_content_revision" not in unknown.payload
+                assert "_content_channel_id" not in unknown.payload
                 publication = (
                     await session.execute(
                         select(Publication).where(
