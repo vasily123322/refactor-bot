@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.db import AsyncSessionLocal
 from app.domain.sources.models import SourceConnector
 from app.services.source_ingestion import SourceIngestionError, SourceIngestionService
+from app.services.source_ingestion_lease import SourceIngestionLeaseService
 from app.services.source_worker_policy import (
     clear_source_worker_failure,
     mark_source_worker_failure,
@@ -29,9 +30,8 @@ _SUPPORTED_KINDS = ("rss", "url", "web", "telegram")
 class SourceIngestionWorker:
     """Continuously project enabled source connectors into normalized documents.
 
-    Work is bounded both by a rotating connector window and by a per-connector
-    timeout. Repeated failures open a durable exponential backoff circuit stored in
-    connector config; manual Studio ingestion remains outside that circuit.
+    Work is bounded by a rotating connector window, per-connector timeout, durable
+    backoff and a DB-backed ingestion lease shared with Studio manual ingestion.
     """
 
     def __init__(
@@ -136,8 +136,6 @@ class SourceIngestionWorker:
         failure_kind: str,
     ) -> None:
         await session.rollback()
-        # Refresh config so an overlapping manual run cannot have its newer state
-        # overwritten by a stale worker snapshot.
         await session.refresh(connector, attribute_names=["config"])
         retry_after = mark_source_worker_failure(
             connector,
@@ -194,44 +192,77 @@ class SourceIngestionWorker:
                         int(connector.id),
                     )
                     continue
+
+                lease_service = SourceIngestionLeaseService(session)
                 try:
-                    kind, result = await self._ingest_connector(session, connector)
-                    processed += 1
-                    if result.documents_created:
-                        logger.info(
-                            "Sources v2 connector={} kind={} new_documents={} candidates={}",
-                            int(connector.id),
-                            kind,
-                            result.documents_created,
-                            result.candidates_created,
-                        )
-                    if kind == "telegram" and telegram_backlog_hint(connector):
-                        logger.info(
-                            "Sources v2 connector={} Telegram backlog may remain cursor={}",
-                            int(connector.id),
-                            telegram_cursor_message_id(connector),
-                        )
-                except asyncio.TimeoutError:
-                    await self._record_failure(
-                        session,
-                        connector,
-                        failure_kind="timeout",
-                    )
-                except SourceIngestionError:
-                    await self._record_failure(
-                        session,
-                        connector,
-                        failure_kind="ingestion_error",
+                    lease = await lease_service.acquire(
+                        connector_id=int(connector.id),
+                        holder="worker",
                     )
                 except Exception as exc:
-                    await self._record_failure(
-                        session,
-                        connector,
-                        failure_kind="unexpected",
-                    )
+                    await session.rollback()
                     logger.warning(
-                        "Sources v2 connector={} unexpected ingestion failure type={}",
+                        "Sources v2 connector={} lease acquisition failed type={}",
                         int(connector.id),
                         type(exc).__name__,
                     )
+                    continue
+                if lease is None:
+                    logger.trace(
+                        "Sources v2 connector={} skipped because ingestion lease is busy",
+                        int(connector.id),
+                    )
+                    continue
+
+                try:
+                    try:
+                        kind, result = await self._ingest_connector(session, connector)
+                        processed += 1
+                        if result.documents_created:
+                            logger.info(
+                                "Sources v2 connector={} kind={} new_documents={} candidates={}",
+                                int(connector.id),
+                                kind,
+                                result.documents_created,
+                                result.candidates_created,
+                            )
+                        if kind == "telegram" and telegram_backlog_hint(connector):
+                            logger.info(
+                                "Sources v2 connector={} Telegram backlog may remain cursor={}",
+                                int(connector.id),
+                                telegram_cursor_message_id(connector),
+                            )
+                    except asyncio.TimeoutError:
+                        await self._record_failure(
+                            session,
+                            connector,
+                            failure_kind="timeout",
+                        )
+                    except SourceIngestionError:
+                        await self._record_failure(
+                            session,
+                            connector,
+                            failure_kind="ingestion_error",
+                        )
+                    except Exception as exc:
+                        await self._record_failure(
+                            session,
+                            connector,
+                            failure_kind="unexpected",
+                        )
+                        logger.warning(
+                            "Sources v2 connector={} unexpected ingestion failure type={}",
+                            int(connector.id),
+                            type(exc).__name__,
+                        )
+                finally:
+                    try:
+                        await lease_service.release(lease)
+                    except Exception as exc:
+                        await session.rollback()
+                        logger.warning(
+                            "Sources v2 connector={} lease release failed type={}",
+                            int(connector.id),
+                            type(exc).__name__,
+                        )
         return processed
