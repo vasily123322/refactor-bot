@@ -170,21 +170,11 @@ class LegacyPublicationBridge:
             await self.session.rollback()
             raise
 
-    async def reconcile(self, publication_id: int) -> Publication:
-        publication = await self.session.get(Publication, int(publication_id))
-        if publication is None:
-            raise PublicationBridgeError(f"publication {publication_id} not found")
-        if publication.legacy_post_task_id is None:
-            raise PublicationBridgeError("publication has no legacy scheduler task")
-
-        task = await self.session.get(PostTask, int(publication.legacy_post_task_id))
-        if task is None:
-            publication.status = "failed"
-            publication.last_error = "legacy scheduler task is missing"
-            await self.session.commit()
-            await self.session.refresh(publication)
-            return publication
-
+    async def _apply_task_state(
+        self,
+        publication: Publication,
+        task: PostTask,
+    ) -> Publication:
         task_status = str(task.status or "pending")
         publication.status = _TASK_TO_PUBLICATION_STATUS.get(task_status, task_status)
         payload = dict(task.payload or {})
@@ -204,7 +194,10 @@ class LegacyPublicationBridge:
             elif task_status in {"failed", "skipped", "cancelled"}:
                 schedule.status = task_status
 
-        if task_status in _TERMINAL_TASK_STATUSES and int(publication.attempt_count or 0) == 0:
+        if (
+            task_status in _TERMINAL_TASK_STATUSES
+            and int(publication.attempt_count or 0) == 0
+        ):
             publication.attempt_count = 1
             self.session.add(
                 PublicationAttempt(
@@ -225,6 +218,41 @@ class LegacyPublicationBridge:
         except Exception:
             await self.session.rollback()
             raise
+
+    async def reconcile_task(self, task: PostTask) -> Publication | None:
+        """Project one scheduler task into its linked Publication, if any.
+
+        Linkage is resolved from Publication.legacy_post_task_id instead of trusting
+        payload markers. This makes synchronous scheduler projection safe for old
+        repeat rows that may still carry stale `_publication_id` values.
+        """
+        publication = (
+            await self.session.execute(
+                select(Publication).where(
+                    Publication.legacy_post_task_id == int(task.id)
+                )
+            )
+        ).scalar_one_or_none()
+        if publication is None:
+            return None
+        return await self._apply_task_state(publication, task)
+
+    async def reconcile(self, publication_id: int) -> Publication:
+        publication = await self.session.get(Publication, int(publication_id))
+        if publication is None:
+            raise PublicationBridgeError(f"publication {publication_id} not found")
+        if publication.legacy_post_task_id is None:
+            raise PublicationBridgeError("publication has no legacy scheduler task")
+
+        task = await self.session.get(PostTask, int(publication.legacy_post_task_id))
+        if task is None:
+            publication.status = "failed"
+            publication.last_error = "legacy scheduler task is missing"
+            await self.session.commit()
+            await self.session.refresh(publication)
+            return publication
+
+        return await self._apply_task_state(publication, task)
 
     async def reconcile_active(self, *, limit: int = 100) -> int:
         result = await self.session.execute(

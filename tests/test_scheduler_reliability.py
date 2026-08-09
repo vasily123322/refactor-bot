@@ -6,18 +6,20 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from app.bot import dispatcher
-from app.workers.reliable_scheduler import Scheduler
+from app.workers.publication_scheduler import Scheduler as PublicationAwareScheduler
+from app.workers.reliable_scheduler import Scheduler as ReliableScheduler
 from app.workers.scheduler import Scheduler as BaseScheduler
 
 
-def _scheduler() -> Scheduler:
+def _scheduler() -> ReliableScheduler:
     posting = SimpleNamespace(bot=SimpleNamespace())
-    return Scheduler(lambda: None, posting, interval_seconds=1)
+    return ReliableScheduler(lambda: None, posting, interval_seconds=1)
 
 
-def test_dispatcher_uses_reliability_hardened_scheduler() -> None:
-    assert dispatcher.Scheduler is Scheduler
-    assert issubclass(Scheduler, BaseScheduler)
+def test_dispatcher_uses_publication_aware_reliability_scheduler() -> None:
+    assert dispatcher.Scheduler is PublicationAwareScheduler
+    assert issubclass(PublicationAwareScheduler, ReliableScheduler)
+    assert issubclass(ReliableScheduler, BaseScheduler)
 
 
 def test_overdue_repeat_commit_failure_rolls_back_and_propagates() -> None:
@@ -128,7 +130,7 @@ def test_autodelete_worker_continues_after_iteration_failure() -> None:
     def _factory():
         return _SessionContext()
 
-    scheduler = Scheduler(
+    scheduler = ReliableScheduler(
         _factory,
         SimpleNamespace(bot=SimpleNamespace()),
         interval_seconds=1,
