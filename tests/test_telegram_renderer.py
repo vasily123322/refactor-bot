@@ -116,7 +116,116 @@ def test_renderer_builds_structured_rich_message() -> None:
     assert plan.reply_markup is not None
 
 
-def test_renderer_validates_sizes_and_unsupported_media() -> None:
+def test_renderer_builds_native_rich_media_blocks() -> None:
+    document = PostDocument(
+        mode="rich",
+        blocks=[
+            {
+                "id": "photo",
+                "type": "image",
+                "telegram_file_id": "photo-file-id",
+                "caption": {
+                    "text": [{"text": "Photo", "marks": ["bold"]}],
+                    "credit": "Source",
+                },
+            },
+            {
+                "id": "video",
+                "type": "media",
+                "kind": "video",
+                "media": "https://example.com/video.mp4",
+                "width": 1280,
+                "height": 720,
+                "duration": 30,
+                "supports_streaming": True,
+                "has_spoiler": True,
+            },
+            {
+                "id": "animation",
+                "type": "media",
+                "kind": "animation",
+                "media": "animation-file-id",
+                "duration": 4,
+            },
+            {
+                "id": "audio",
+                "type": "media",
+                "kind": "audio",
+                "media": "audio-file-id",
+                "performer": "Artist",
+                "title": "Track",
+            },
+            {
+                "id": "voice",
+                "type": "media",
+                "kind": "voice",
+                "media": "voice-file-id",
+                "duration": 12,
+            },
+            {
+                "id": "gallery",
+                "type": "gallery",
+                "caption": "Gallery",
+                "items": [
+                    {"type": "image", "media": "gallery-photo"},
+                    {"type": "media", "kind": "video", "media": "gallery-video"},
+                ],
+            },
+            {
+                "id": "slides",
+                "type": "slideshow",
+                "items": [
+                    {"type": "image", "media": "slide-one"},
+                    {"type": "image", "media": "slide-two"},
+                ],
+            },
+            {
+                "id": "map",
+                "type": "map",
+                "latitude": 48.8566,
+                "longitude": 2.3522,
+                "zoom": 12,
+                "width": 640,
+                "height": 360,
+                "caption": "Paris",
+            },
+        ],
+    )
+
+    plan = TelegramRenderer().render(document)
+
+    assert plan.rich_message is not None
+    assert plan.rich_message.blocks is not None
+    blocks = plan.rich_message.blocks
+    assert [block.type.value for block in blocks] == [
+        "photo",
+        "video",
+        "animation",
+        "audio",
+        "voice_note",
+        "collage",
+        "slideshow",
+        "map",
+    ]
+    assert blocks[0].photo.media == "photo-file-id"
+    assert blocks[0].caption is not None
+    assert isinstance(blocks[0].caption.text, list)
+    assert blocks[0].caption.text[0].type == "bold"
+    assert blocks[0].caption.credit == "Source"
+    assert blocks[1].video.media == "https://example.com/video.mp4"
+    assert blocks[1].video.supports_streaming is True
+    assert blocks[1].video.has_spoiler is True
+    assert blocks[2].animation.media == "animation-file-id"
+    assert blocks[3].audio.performer == "Artist"
+    assert blocks[4].voice_note.duration == 12
+    assert blocks[5].blocks[0].type.value == "photo"
+    assert blocks[5].blocks[1].type.value == "video"
+    assert blocks[6].blocks[1].photo.media == "slide-two"
+    assert blocks[7].location.latitude == pytest.approx(48.8566)
+    assert blocks[7].zoom == 12
+
+
+def test_renderer_validates_sizes_and_unresolved_media_assets() -> None:
     with pytest.raises(TelegramRenderError, match="heading.size"):
         TelegramRenderer().render(
             PostDocument(
@@ -127,11 +236,26 @@ def test_renderer_validates_sizes_and_unsupported_media() -> None:
             )
         )
 
-    with pytest.raises(TelegramRenderError, match="file-attachment renderer"):
+    with pytest.raises(TelegramRenderError, match="must be resolved"):
         TelegramRenderer().render(
             PostDocument(
                 mode="rich",
                 blocks=[{"id": "i", "type": "image", "asset_id": "asset-1"}],
+            )
+        )
+
+    with pytest.raises(TelegramRenderError, match="map.latitude"):
+        TelegramRenderer().render(
+            PostDocument(
+                mode="rich",
+                blocks=[
+                    {
+                        "id": "map",
+                        "type": "map",
+                        "latitude": 120,
+                        "longitude": 2,
+                    }
+                ],
             )
         )
 
