@@ -75,7 +75,7 @@ def test_legacy_mirror_fails_soft_on_malformed_numeric_metadata() -> None:
                 assert "_publication_id" not in task.payload
                 assert "_content_item_id" not in task.payload
                 assert "_content_revision" not in task.payload
-                assert task.payload["_content_channel_id"] == 903
+                assert "_content_channel_id" not in task.payload
         finally:
             await engine.dispose()
 
