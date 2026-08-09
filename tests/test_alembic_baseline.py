@@ -44,6 +44,7 @@ def test_alembic_baseline_creates_current_schema_and_is_idempotent(tmp_path) -> 
         assert {
             "channels",
             "post_tasks",
+            "scheduler_task_leases",
             "content_items",
             "content_revisions",
             "schedule_entries",
@@ -59,7 +60,7 @@ def test_alembic_baseline_creates_current_schema_and_is_idempotent(tmp_path) -> 
         version = connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-        assert version == ("20260809_0001",)
+        assert version == ("20260809_0002",)
 
     second = _run_alembic(repo_root, database_path)
     assert second.returncode == 0, second.stdout + second.stderr
@@ -67,4 +68,4 @@ def test_alembic_baseline_creates_current_schema_and_is_idempotent(tmp_path) -> 
         version = connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-        assert version == ("20260809_0001",)
+        assert version == ("20260809_0002",)
