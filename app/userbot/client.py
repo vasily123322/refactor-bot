@@ -197,11 +197,21 @@ class UserbotGateway:
         return UserbotMember(status=status)
 
     async def get_chat_history(
-        self, target: str | int, *, limit: int = 100
+        self,
+        target: str | int,
+        *,
+        limit: int = 100,
+        min_id: int = 0,
+        reverse: bool = False,
     ) -> AsyncIterator[UserbotMessage]:
         entity = await self._client.get_entity(_public_target(target))
         chat = self._adapt_chat(entity)
-        async for message in self._client.iter_messages(entity, limit=limit):
+        async for message in self._client.iter_messages(
+            entity,
+            limit=limit,
+            min_id=max(0, int(min_id)),
+            reverse=bool(reverse),
+        ):
             yield self._adapt_message(message, chat=chat)
 
     def on_command(self, commands: list[str] | tuple[str, ...]):
