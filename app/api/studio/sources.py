@@ -18,7 +18,10 @@ from app.repositories.sources_v2 import SourcesRepo
 from app.services.legacy_source_mirror import LegacySourceMirror
 from app.services.source_doctor import SourceDoctor
 from app.services.source_ingestion import SourceIngestionError, SourceIngestionService
-from app.services.source_ingestion_lease import SourceIngestionLeaseService
+from app.services.source_ingestion_lease import (
+    SourceIngestionLeaseService,
+    SourceIngestionLeaseStatus,
+)
 from app.services.source_lifecycle import (
     SourceLifecycleError,
     SourceLifecyclePatch,
@@ -94,6 +97,9 @@ class SourceResponse(BaseModel):
     backlog_hint: bool
     worker_failure_count: int
     worker_retry_after: datetime | None
+    ingestion_busy: bool
+    ingestion_holder: str | None
+    ingestion_lease_expires_at: datetime | None
 
 
 class SourceIngestionResponse(BaseModel):
@@ -144,17 +150,17 @@ async def _require_owned_channel(
 
 
 async def _release_ingestion_lease(lease) -> None:
-    # Never reuse the ingestion transaction for lease cleanup. Otherwise a finally
-    # block could accidentally commit dirty state left by a failed adapter.
     try:
         async with AsyncSessionLocal() as lease_session:
             await SourceIngestionLeaseService(lease_session).release(lease)
     except Exception:
-        # TTL recovery is the fallback if cleanup itself loses database connectivity.
         pass
 
 
-def _response(row: SourceConnector) -> SourceResponse:
+def _response(
+    row: SourceConnector,
+    lease: SourceIngestionLeaseStatus | None = None,
+) -> SourceResponse:
     is_telegram = str(row.kind).lower() == "telegram"
     cursor = telegram_cursor_message_id(row) if is_telegram else 0
     return SourceResponse(
@@ -180,7 +186,15 @@ def _response(row: SourceConnector) -> SourceResponse:
         backlog_hint=telegram_backlog_hint(row) if is_telegram else False,
         worker_failure_count=source_worker_failure_count(row),
         worker_retry_after=source_worker_retry_after(row),
+        ingestion_busy=lease is not None,
+        ingestion_holder=(lease.holder if lease is not None else None),
+        ingestion_lease_expires_at=(lease.expires_at if lease is not None else None),
     )
+
+
+async def _single_response(session: AsyncSession, row: SourceConnector) -> SourceResponse:
+    statuses = await SourceIngestionLeaseService(session).active_statuses([int(row.id)])
+    return _response(row, statuses.get(int(row.id)))
 
 
 def _excerpt(value: str, *, limit: int = 700) -> str:
@@ -235,7 +249,10 @@ async def list_sources(
     for row in rows:
         if not row.capabilities:
             row.capabilities = doctor.capabilities(row.kind)
-    return [_response(row) for row in rows]
+    lease_statuses = await SourceIngestionLeaseService(session).active_statuses(
+        [int(row.id) for row in rows]
+    )
+    return [_response(row, lease_statuses.get(int(row.id))) for row in rows]
 
 
 @router.post(
@@ -289,7 +306,7 @@ async def create_source(
     except Exception:
         await session.rollback()
         raise
-    return _response(row)
+    return await _single_response(session, row)
 
 
 @router.post(
@@ -315,7 +332,7 @@ async def update_source_settings(
         if str(exc) == "source not found":
             raise HTTPException(status_code=404, detail="Source not found") from exc
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _response(row)
+    return await _single_response(session, row)
 
 
 @router.post(
@@ -344,7 +361,7 @@ async def check_source(
         health=result.health,
         success=result.success,
     )
-    return _response(row)
+    return await _single_response(session, row)
 
 
 @router.post(

@@ -202,7 +202,10 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
         <div className="source-list">
           {sources.length === 0 && <div className="empty-state">Источников пока нет.</div>}
           {sources.map((source) => {
-            const canIngest = source.enabled && ['rss', 'url', 'web', 'telegram'].includes(source.kind);
+            const canIngest =
+              source.enabled &&
+              !source.ingestion_busy &&
+              ['rss', 'url', 'web', 'telegram'].includes(source.kind);
             const ingestLabel = source.kind === 'telegram' ? 'MTProto ingest' : 'Ingest now';
             const lifecycleEditable = !(
               source.legacy_grab_source_id !== null && source.legacy_ai_source_id === null
@@ -232,6 +235,11 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
                       worker backoff ×{source.worker_failure_count} до {dateLabel(source.worker_retry_after)}
                     </span>
                   )}
+                  {source.ingestion_busy && (
+                    <span>
+                      ingest: {source.ingestion_holder || 'busy'} до {dateLabel(source.ingestion_lease_expires_at)}
+                    </span>
+                  )}
                 </div>
                 {source.status_reason && <p className="source-reason">{source.status_reason}</p>}
                 <div className="source-times">
@@ -241,7 +249,7 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
                 {lifecycleEditable ? (
                   <SourceSettingsControls
                     source={source}
-                    busy={busyId === `settings:${source.id}`}
+                    busy={busyId === `settings:${source.id}` || source.ingestion_busy}
                     onSave={(patch) => saveSettings(source, patch)}
                   />
                 ) : (
@@ -263,11 +271,13 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
                     title={
                       !source.enabled
                         ? 'Сначала включите источник'
-                        : source.worker_failure_count > 0
-                          ? 'Ручной ingest проверит источник сейчас и сбросит backoff при успехе'
-                          : source.kind === 'telegram'
-                            ? 'Получить историю через userbot MTProto session'
-                            : 'Получить новые документы сейчас'
+                        : source.ingestion_busy
+                          ? `Ingest уже выполняет ${source.ingestion_holder || 'другой процесс'}`
+                          : source.worker_failure_count > 0
+                            ? 'Ручной ingest проверит источник сейчас и сбросит backoff при успехе'
+                            : source.kind === 'telegram'
+                              ? 'Получить историю через userbot MTProto session'
+                              : 'Получить новые документы сейчас'
                     }
                     onClick={() => void ingest(source)}
                   >

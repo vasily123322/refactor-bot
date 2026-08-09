@@ -29,13 +29,15 @@ class SourceIngestionLeaseHandle:
     expires_at: datetime
 
 
-class SourceIngestionLeaseService:
-    """Cross-task/process lease for one source connector ingestion run.
+@dataclass(frozen=True, slots=True)
+class SourceIngestionLeaseStatus:
+    connector_id: int
+    holder: str
+    expires_at: datetime
 
-    Acquisition is serialized by the connector_id primary key. Expired leases are
-    deleted before insert so a crashed worker/manual request self-recovers after TTL.
-    Release is token-checked so an old finally block cannot release a newer lease.
-    """
+
+class SourceIngestionLeaseService:
+    """Cross-task/process lease for one source connector ingestion run."""
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -105,3 +107,33 @@ class SourceIngestionLeaseService:
                 )
             )
         ).scalar_one_or_none()
+
+    async def active_statuses(
+        self,
+        connector_ids: list[int] | tuple[int, ...],
+        *,
+        now: datetime | None = None,
+    ) -> dict[int, SourceIngestionLeaseStatus]:
+        """Return active lease metadata without exposing lease tokens."""
+        ids = sorted({int(value) for value in connector_ids if int(value) > 0})
+        if not ids:
+            return {}
+        current = _utc(now)
+        rows = list(
+            (
+                await self.session.execute(
+                    select(SourceIngestionLease).where(
+                        SourceIngestionLease.connector_id.in_(ids),
+                        SourceIngestionLease.expires_at > current,
+                    )
+                )
+            ).scalars().all()
+        )
+        return {
+            int(row.connector_id): SourceIngestionLeaseStatus(
+                connector_id=int(row.connector_id),
+                holder=str(row.holder),
+                expires_at=_utc(row.expires_at),
+            )
+            for row in rows
+        }

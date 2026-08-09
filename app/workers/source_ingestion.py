@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from datetime import datetime, timezone
 
 from loguru import logger
 from sqlalchemy import select
@@ -27,11 +28,31 @@ from app.services.telegram_source_ingestion import (
 _SUPPORTED_KINDS = ("rss", "url", "web", "telegram")
 
 
+def _utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _source_priority_key(connector: SourceConnector) -> tuple[int, int, datetime]:
+    """Prioritize urgent work while stable ties keep rotating-window order."""
+    backlog_rank = 0 if telegram_backlog_hint(connector) else 1
+    success = _utc_datetime(connector.last_success_at)
+    never_succeeded_rank = 0 if success is None else 1
+    oldest_success = success or datetime.min.replace(tzinfo=timezone.utc)
+    return backlog_rank, never_succeeded_rank, oldest_success
+
+
 class SourceIngestionWorker:
     """Continuously project enabled source connectors into normalized documents.
 
     Work is bounded by a rotating connector window, per-connector timeout, durable
     backoff and a DB-backed ingestion lease shared with Studio manual ingestion.
+    Within each rotating window, Telegram backlog and the stalest sources run first.
+    Exact priority ties retain the raw rotating order so wrap-around fairness is
+    unchanged.
     """
 
     def __init__(
@@ -93,7 +114,7 @@ class SourceIngestionWorker:
             except asyncio.CancelledError:
                 break
 
-    async def _next_connector_ids(self, session: AsyncSession) -> list[int]:
+    async def _rotating_connector_ids(self, session: AsyncSession) -> list[int]:
         common = (
             SourceConnector.enabled.is_(True),
             SourceConnector.kind.in_(_SUPPORTED_KINDS),
@@ -127,6 +148,32 @@ class SourceIngestionWorker:
                 )
             )
         return [int(value) for value in ids]
+
+    async def _next_connector_ids(
+        self,
+        session: AsyncSession,
+    ) -> tuple[list[int], int]:
+        raw_ids = await self._rotating_connector_ids(session)
+        if not raw_ids:
+            return [], 0
+        boundary = int(raw_ids[-1])
+        rows = list(
+            (
+                await session.execute(
+                    select(SourceConnector).where(SourceConnector.id.in_(raw_ids))
+                )
+            ).scalars().all()
+        )
+        rows_by_id = {int(row.id): row for row in rows}
+        # SQL IN(...) does not preserve the raw rotating order. Restore it before
+        # stable sorting so exact priority ties (especially wrap windows like [5,1])
+        # retain the fairness order selected by _rotating_connector_ids().
+        ordered_rows = [rows_by_id[connector_id] for connector_id in raw_ids if connector_id in rows_by_id]
+        eligible = [
+            row for row in ordered_rows if not source_worker_backoff_active(row)
+        ]
+        eligible.sort(key=_source_priority_key)
+        return [int(row.id) for row in eligible], boundary
 
     @staticmethod
     async def _record_failure(
@@ -183,13 +230,13 @@ class SourceIngestionWorker:
 
     async def run_once(self) -> int:
         async with self.session_factory() as session:
-            connector_ids = await self._next_connector_ids(session)
+            connector_ids, rotation_boundary = await self._next_connector_ids(session)
 
-        if not connector_ids:
+        if rotation_boundary == 0:
             self._last_connector_id = 0
             return 0
 
-        self._last_connector_id = int(connector_ids[-1])
+        self._last_connector_id = rotation_boundary
         processed = 0
         for connector_id in connector_ids:
             if self._stop.is_set():
