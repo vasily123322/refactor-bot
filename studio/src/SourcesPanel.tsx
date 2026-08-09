@@ -227,6 +227,11 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
                   {source.kind === 'telegram' && source.backlog_hint && (
                     <span>backlog: догоняет</span>
                   )}
+                  {source.worker_failure_count > 0 && (
+                    <span>
+                      worker backoff ×{source.worker_failure_count} до {dateLabel(source.worker_retry_after)}
+                    </span>
+                  )}
                 </div>
                 {source.status_reason && <p className="source-reason">{source.status_reason}</p>}
                 <div className="source-times">
@@ -258,9 +263,11 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
                     title={
                       !source.enabled
                         ? 'Сначала включите источник'
-                        : source.kind === 'telegram'
-                          ? 'Получить историю через userbot MTProto session'
-                          : 'Получить новые документы сейчас'
+                        : source.worker_failure_count > 0
+                          ? 'Ручной ingest проверит источник сейчас и сбросит backoff при успехе'
+                          : source.kind === 'telegram'
+                            ? 'Получить историю через userbot MTProto session'
+                            : 'Получить новые документы сейчас'
                     }
                     onClick={() => void ingest(source)}
                   >
