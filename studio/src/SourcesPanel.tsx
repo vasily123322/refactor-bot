@@ -221,6 +221,12 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
                   <span>{source.mode}</span>
                   <span>{source.reuse_policy}</span>
                   <span>{source.citation_enabled ? 'citation on' : 'citation off'}</span>
+                  {source.kind === 'telegram' && source.cursor_message_id !== null && (
+                    <span>cursor #{source.cursor_message_id}</span>
+                  )}
+                  {source.kind === 'telegram' && source.backlog_hint && (
+                    <span>backlog: догоняет</span>
+                  )}
                 </div>
                 {source.status_reason && <p className="source-reason">{source.status_reason}</p>}
                 <div className="source-times">
