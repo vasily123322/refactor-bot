@@ -1,4 +1,4 @@
-import { StudioApiError } from './api';
+import { StudioApiError, type MediaAssetView } from './api';
 import { getRawInitData } from './telegram';
 
 export type CandidateMediaView = {
@@ -11,20 +11,21 @@ export type CandidateMediaView = {
   height: number | null;
   duration_seconds: number | null;
   promotable: boolean;
+  media_asset_id: number | null;
 };
 
-export async function loadCandidateMedia(
-  channelId: number,
-  limit = 100,
-): Promise<CandidateMediaView[]> {
+async function authenticatedJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const initData = getRawInitData();
   if (!initData) {
     throw new StudioApiError('Откройте Studio из Telegram, чтобы авторизоваться.', 401);
   }
-  const response = await fetch(
-    `/api/studio/channels/${channelId}/candidate-media?limit=${encodeURIComponent(String(limit))}`,
-    { headers: { 'X-Telegram-Init-Data': initData } },
-  );
+  const response = await fetch(path, {
+    ...init,
+    headers: {
+      'X-Telegram-Init-Data': initData,
+      ...init.headers,
+    },
+  });
   if (!response.ok) {
     let detail = response.statusText;
     try {
@@ -35,7 +36,26 @@ export async function loadCandidateMedia(
     }
     throw new StudioApiError(detail || 'Studio API error', response.status);
   }
-  return (await response.json()) as CandidateMediaView[];
+  return (await response.json()) as T;
+}
+
+export function loadCandidateMedia(
+  channelId: number,
+  limit = 100,
+): Promise<CandidateMediaView[]> {
+  return authenticatedJson<CandidateMediaView[]>(
+    `/api/studio/channels/${channelId}/candidate-media?limit=${encodeURIComponent(String(limit))}`,
+  );
+}
+
+export function promoteCandidateMedia(
+  channelId: number,
+  candidateId: number,
+): Promise<MediaAssetView> {
+  return authenticatedJson<MediaAssetView>(
+    `/api/studio/channels/${channelId}/candidates/${candidateId}/media-asset`,
+    { method: 'POST' },
+  );
 }
 
 function kindLabel(kind: string): string {
@@ -64,6 +84,9 @@ export function candidateMediaLabel(media: CandidateMediaView): string {
   if (size) parts.push(size);
   if (media.duration_seconds && media.duration_seconds > 0) {
     parts.push(`${media.duration_seconds}s`);
+  }
+  if (media.media_asset_id) {
+    parts.push(`Asset #${media.media_asset_id}`);
   }
   return parts.join(' · ');
 }
