@@ -67,7 +67,7 @@ function RichPreviewBlock({ block }: { block: PostBlock }) {
             <strong>{String(block.kind || (block.type === 'image' ? 'photo' : 'media'))}</strong>
             <small>{block.asset_id ? `asset #${String(block.asset_id)}` : 'asset не выбран'}</small>
           </div>
-          {block.caption ? <p>{String(block.caption)}</p> : null}
+          {block.caption ? <p>{richText(block.caption)}</p> : null}
         </div>
       );
     default:
