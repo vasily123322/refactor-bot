@@ -16,6 +16,10 @@ class DatabaseSchemaOutOfDate(RuntimeError):
     pass
 
 
+class DatabaseSchemaShapeError(RuntimeError):
+    pass
+
+
 class DatabaseForeignKeyIntegrityError(RuntimeError):
     pass
 
@@ -58,12 +62,52 @@ def _inspect_schema_sync(connection: Connection) -> AlembicSchemaState:
     )
 
 
+def _verify_required_schema_shape_sync(connection: Connection) -> None:
+    # Import the registry here so direct callers of app.core.schema do not depend on
+    # dispatcher import order when validating current ORM requirements.
+    import app.domain  # noqa: F401
+    from app.core.db import Base
+
+    inspector = inspect(connection)
+    actual_tables = set(inspector.get_table_names())
+    expected_tables = set(Base.metadata.tables)
+
+    missing_tables = sorted(expected_tables - actual_tables)
+    missing_columns: list[str] = []
+    for table_name in sorted(expected_tables & actual_tables):
+        expected = set(Base.metadata.tables[table_name].columns.keys())
+        actual = {str(column["name"]) for column in inspector.get_columns(table_name)}
+        for column_name in sorted(expected - actual):
+            missing_columns.append(f"{table_name}.{column_name}")
+
+    if not missing_tables and not missing_columns:
+        return
+
+    parts: list[str] = []
+    if missing_tables:
+        parts.append("missing tables=" + ",".join(missing_tables[:20]))
+    if missing_columns:
+        parts.append("missing columns=" + ",".join(missing_columns[:20]))
+    if len(missing_tables) > 20 or len(missing_columns) > 20:
+        parts.append("additional mismatches omitted")
+    raise DatabaseSchemaShapeError(
+        "managed database schema does not satisfy current ORM requirements ("
+        + "; ".join(parts)
+        + "); apply the correct migration or repair the schema before startup"
+    )
+
+
 def _enable_sqlite_foreign_keys_on_connect(dbapi_connection, _connection_record) -> None:
     cursor = dbapi_connection.cursor()
     try:
         cursor.execute("PRAGMA foreign_keys=ON")
     finally:
         cursor.close()
+
+
+async def _verify_managed_schema_shape(engine: AsyncEngine) -> None:
+    async with engine.connect() as connection:
+        await connection.run_sync(_verify_required_schema_shape_sync)
 
 
 async def _verify_and_enable_sqlite_foreign_keys(engine: AsyncEngine) -> None:
@@ -120,9 +164,9 @@ async def bootstrap_database_schema(
 
     Databases without an alembic_version table keep the historical bootstrap path.
     Once managed, runtime schema mutation is disabled and startup fails closed when
-    the database is behind the revision scripts shipped with the application.
-    Managed SQLite additionally audits existing FK integrity before enforcing foreign
-    keys on every subsequent connection.
+    the database is behind the revision scripts shipped with the application or lacks
+    current ORM tables/columns. Managed SQLite additionally audits existing FK
+    integrity before enforcing foreign keys on every subsequent connection.
     """
     state = await inspect_alembic_schema(engine)
     if not state.managed:
@@ -141,5 +185,6 @@ async def bootstrap_database_schema(
             f"(current={current}, expected={expected}); run `alembic upgrade head`"
         )
 
+    await _verify_managed_schema_shape(engine)
     await _verify_and_enable_sqlite_foreign_keys(engine)
     return state
