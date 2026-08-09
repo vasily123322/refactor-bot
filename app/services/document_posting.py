@@ -4,14 +4,49 @@ from typing import Any
 
 from app.domain.content import PostDocument
 from app.services.posting import PostingService
+from app.services.rich_media_assets import RichMediaAssetError, RichMediaAssetResolver
 from app.services.telegram_renderer import TelegramRenderError, TelegramRenderer
 
 
 class DocumentPostingService(PostingService):
     """PostingService extension for versioned PostDocument/Rich Message delivery."""
 
-    async def send_document(self, chat_id: int, document: PostDocument) -> list[int]:
-        plan = TelegramRenderer().render(document)
+    async def _resolve_media_assets(
+        self,
+        document: PostDocument,
+        *,
+        asset_channel_id: int | None,
+    ) -> PostDocument:
+        if asset_channel_id is None:
+            return document
+        try:
+            if self.session_factory is not None:
+                async with self.session_factory() as session:
+                    return await RichMediaAssetResolver(session).resolve(
+                        document,
+                        channel_id=int(asset_channel_id),
+                    )
+            if self.session is not None:
+                return await RichMediaAssetResolver(self.session).resolve(
+                    document,
+                    channel_id=int(asset_channel_id),
+                )
+        except RichMediaAssetError as exc:
+            raise TelegramRenderError(str(exc)) from exc
+        raise TelegramRenderError("media asset resolution requires a database session")
+
+    async def send_document(
+        self,
+        chat_id: int,
+        document: PostDocument,
+        *,
+        asset_channel_id: int | None = None,
+    ) -> list[int]:
+        render_document = await self._resolve_media_assets(
+            document,
+            asset_channel_id=asset_channel_id,
+        )
+        plan = TelegramRenderer().render(render_document)
         if plan.kind == "classic":
             if plan.classic_payload is None:
                 raise TelegramRenderError("classic renderer returned no payload")
@@ -42,4 +77,12 @@ class DocumentPostingService(PostingService):
         document = PostDocument.from_dict(raw_document)
         if document.mode != "rich":
             raise TelegramRenderError("rich_document task requires rich PostDocument")
-        return await self.send_document(int(channel_id), document)
+        raw_asset_channel_id = payload.get("_content_channel_id")
+        asset_channel_id = (
+            int(raw_asset_channel_id) if raw_asset_channel_id is not None else None
+        )
+        return await self.send_document(
+            int(channel_id),
+            document,
+            asset_channel_id=asset_channel_id,
+        )
