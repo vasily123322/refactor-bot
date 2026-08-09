@@ -12,6 +12,7 @@ from app.core.db import AsyncSessionLocal
 from app.domain.sources.models import SourceConnector
 from app.services.source_ingestion import SourceIngestionError, SourceIngestionService
 from app.services.source_ingestion_lease import SourceIngestionLeaseService
+from app.services.source_worker_health import SourceWorkerTickStats, source_worker_health
 from app.services.source_worker_policy import (
     clear_source_worker_failure,
     mark_source_worker_failure,
@@ -52,7 +53,7 @@ class SourceIngestionWorker:
     backoff and a DB-backed ingestion lease shared with Studio manual ingestion.
     Within each rotating window, Telegram backlog and the stalest sources run first.
     Exact priority ties retain the raw rotating order so wrap-around fairness is
-    unchanged.
+    unchanged. Each completed tick also emits one low-cardinality health summary.
     """
 
     def __init__(
@@ -78,6 +79,7 @@ class SourceIngestionWorker:
         if self._task is not None and not self._task.done():
             return
         self._stop.clear()
+        source_worker_health.set_running(True)
         self._task = asyncio.create_task(self._run(), name="source-ingestion")
         logger.info(
             "Sources v2 ingestion worker started interval={}s max_connectors_per_tick={} timeout={}s",
@@ -89,6 +91,7 @@ class SourceIngestionWorker:
     async def stop(self) -> None:
         self._stop.set()
         if self._task is None:
+            source_worker_health.set_running(False)
             return
         try:
             await asyncio.wait_for(self._task, timeout=5)
@@ -98,21 +101,27 @@ class SourceIngestionWorker:
                 await self._task
         finally:
             self._task = None
+            source_worker_health.set_running(False)
 
     async def _run(self) -> None:
-        while not self._stop.is_set():
-            try:
-                await self.run_once()
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                logger.exception("Sources v2 ingestion iteration failed")
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self.interval_seconds)
-            except asyncio.TimeoutError:
-                pass
-            except asyncio.CancelledError:
-                break
+        try:
+            while not self._stop.is_set():
+                try:
+                    await self.run_once()
+                except asyncio.CancelledError:
+                    break
+                except Exception:
+                    logger.exception("Sources v2 ingestion iteration failed")
+                try:
+                    await asyncio.wait_for(
+                        self._stop.wait(), timeout=self.interval_seconds
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                except asyncio.CancelledError:
+                    break
+        finally:
+            source_worker_health.set_running(False)
 
     async def _rotating_connector_ids(self, session: AsyncSession) -> list[int]:
         common = (
@@ -152,10 +161,10 @@ class SourceIngestionWorker:
     async def _next_connector_ids(
         self,
         session: AsyncSession,
-    ) -> tuple[list[int], int]:
+    ) -> tuple[list[int], int, int, int]:
         raw_ids = await self._rotating_connector_ids(session)
         if not raw_ids:
-            return [], 0
+            return [], 0, 0, 0
         boundary = int(raw_ids[-1])
         rows = list(
             (
@@ -165,15 +174,21 @@ class SourceIngestionWorker:
             ).scalars().all()
         )
         rows_by_id = {int(row.id): row for row in rows}
-        # SQL IN(...) does not preserve the raw rotating order. Restore it before
-        # stable sorting so exact priority ties (especially wrap windows like [5,1])
-        # retain the fairness order selected by _rotating_connector_ids().
-        ordered_rows = [rows_by_id[connector_id] for connector_id in raw_ids if connector_id in rows_by_id]
+        ordered_rows = [
+            rows_by_id[connector_id]
+            for connector_id in raw_ids
+            if connector_id in rows_by_id
+        ]
         eligible = [
             row for row in ordered_rows if not source_worker_backoff_active(row)
         ]
         eligible.sort(key=_source_priority_key)
-        return [int(row.id) for row in eligible], boundary
+        return (
+            [int(row.id) for row in eligible],
+            boundary,
+            len(raw_ids),
+            len(ordered_rows) - len(eligible),
+        )
 
     @staticmethod
     async def _record_failure(
@@ -228,18 +243,106 @@ class SourceIngestionWorker:
             await session.commit()
         return kind, result
 
+    @staticmethod
+    def _record_tick(
+        *,
+        started_at: datetime,
+        window_selected: int,
+        scheduled: int,
+        processed: int,
+        skipped_backoff: int,
+        skipped_busy: int,
+        lease_errors: int,
+        failures: int,
+        timeouts: int,
+        ingestion_errors: int,
+        unexpected_errors: int,
+        new_documents: int,
+        candidates_created: int,
+        backlog_remaining: int,
+        stopped_early: bool,
+    ) -> None:
+        stats = SourceWorkerTickStats(
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+            window_selected=window_selected,
+            scheduled=scheduled,
+            processed=processed,
+            skipped_backoff=skipped_backoff,
+            skipped_busy=skipped_busy,
+            lease_errors=lease_errors,
+            failures=failures,
+            timeouts=timeouts,
+            ingestion_errors=ingestion_errors,
+            unexpected_errors=unexpected_errors,
+            new_documents=new_documents,
+            candidates_created=candidates_created,
+            backlog_remaining=backlog_remaining,
+            stopped_early=stopped_early,
+        )
+        source_worker_health.record(stats)
+        logger.info(
+            "Sources v2 tick selected={} scheduled={} processed={} backoff={} busy={} failures={} timeouts={} new_documents={} candidates={} backlog_remaining={} duration_ms={}",
+            stats.window_selected,
+            stats.scheduled,
+            stats.processed,
+            stats.skipped_backoff,
+            stats.skipped_busy,
+            stats.failures,
+            stats.timeouts,
+            stats.new_documents,
+            stats.candidates_created,
+            stats.backlog_remaining,
+            stats.duration_ms,
+        )
+
     async def run_once(self) -> int:
+        started_at = datetime.now(timezone.utc)
         async with self.session_factory() as session:
-            connector_ids, rotation_boundary = await self._next_connector_ids(session)
+            (
+                connector_ids,
+                rotation_boundary,
+                window_selected,
+                skipped_backoff,
+            ) = await self._next_connector_ids(session)
 
         if rotation_boundary == 0:
             self._last_connector_id = 0
+            self._record_tick(
+                started_at=started_at,
+                window_selected=0,
+                scheduled=0,
+                processed=0,
+                skipped_backoff=0,
+                skipped_busy=0,
+                lease_errors=0,
+                failures=0,
+                timeouts=0,
+                ingestion_errors=0,
+                unexpected_errors=0,
+                new_documents=0,
+                candidates_created=0,
+                backlog_remaining=0,
+                stopped_early=False,
+            )
             return 0
 
         self._last_connector_id = rotation_boundary
         processed = 0
+        skipped_busy = 0
+        lease_errors = 0
+        failures = 0
+        timeouts = 0
+        ingestion_errors = 0
+        unexpected_errors = 0
+        new_documents = 0
+        candidates_created = 0
+        backlog_remaining = 0
+        stopped_early = False
+
         for connector_id in connector_ids:
             if self._stop.is_set():
+                stopped_early = True
                 break
             current_connector_id = int(connector_id)
             async with self.session_factory() as session:
@@ -247,6 +350,7 @@ class SourceIngestionWorker:
                 if connector is None or not connector.enabled:
                     continue
                 if source_worker_backoff_active(connector):
+                    skipped_backoff += 1
                     logger.trace(
                         "Sources v2 connector={} skipped by worker backoff",
                         current_connector_id,
@@ -261,6 +365,7 @@ class SourceIngestionWorker:
                     )
                 except Exception as exc:
                     await session.rollback()
+                    lease_errors += 1
                     logger.warning(
                         "Sources v2 connector={} lease acquisition failed type={}",
                         current_connector_id,
@@ -268,6 +373,7 @@ class SourceIngestionWorker:
                     )
                     continue
                 if lease is None:
+                    skipped_busy += 1
                     logger.trace(
                         "Sources v2 connector={} skipped because ingestion lease is busy",
                         current_connector_id,
@@ -278,6 +384,8 @@ class SourceIngestionWorker:
                     try:
                         kind, result = await self._ingest_connector(session, connector)
                         processed += 1
+                        new_documents += int(result.documents_created or 0)
+                        candidates_created += int(result.candidates_created or 0)
                         if result.documents_created:
                             logger.info(
                                 "Sources v2 connector={} kind={} new_documents={} candidates={}",
@@ -287,12 +395,15 @@ class SourceIngestionWorker:
                                 result.candidates_created,
                             )
                         if kind == "telegram" and telegram_backlog_hint(connector):
+                            backlog_remaining += 1
                             logger.info(
                                 "Sources v2 connector={} Telegram backlog may remain cursor={}",
                                 current_connector_id,
                                 telegram_cursor_message_id(connector),
                             )
                     except asyncio.TimeoutError:
+                        failures += 1
+                        timeouts += 1
                         await self._record_failure(
                             session,
                             connector,
@@ -300,6 +411,8 @@ class SourceIngestionWorker:
                             failure_kind="timeout",
                         )
                     except SourceIngestionError:
+                        failures += 1
+                        ingestion_errors += 1
                         await self._record_failure(
                             session,
                             connector,
@@ -307,6 +420,8 @@ class SourceIngestionWorker:
                             failure_kind="ingestion_error",
                         )
                     except Exception as exc:
+                        failures += 1
+                        unexpected_errors += 1
                         await self._record_failure(
                             session,
                             connector,
@@ -323,4 +438,22 @@ class SourceIngestionWorker:
                         lease,
                         connector_id=current_connector_id,
                     )
+
+        self._record_tick(
+            started_at=started_at,
+            window_selected=window_selected,
+            scheduled=len(connector_ids),
+            processed=processed,
+            skipped_backoff=skipped_backoff,
+            skipped_busy=skipped_busy,
+            lease_errors=lease_errors,
+            failures=failures,
+            timeouts=timeouts,
+            ingestion_errors=ingestion_errors,
+            unexpected_errors=unexpected_errors,
+            new_documents=new_documents,
+            candidates_created=candidates_created,
+            backlog_remaining=backlog_remaining,
+            stopped_early=stopped_early,
+        )
         return processed
