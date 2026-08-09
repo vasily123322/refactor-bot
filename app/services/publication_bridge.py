@@ -10,6 +10,7 @@ from app.domain.content import PostDocument
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
+from app.services.rich_media_assets import RichMediaAssetError, RichMediaAssetResolver
 from app.services.scheduling import as_utc
 from app.services.telegram_renderer import TelegramRenderError, TelegramRenderer
 
@@ -30,10 +31,14 @@ _TASK_TO_PUBLICATION_STATUS = {
 _TERMINAL_TASK_STATUSES = frozenset({"done", "failed", "skipped", "cancelled"})
 
 
-def _scheduler_payload(document: PostDocument) -> dict[str, Any]:
+def _scheduler_payload(
+    document: PostDocument,
+    *,
+    render_document: PostDocument | None = None,
+) -> dict[str, Any]:
     """Validate with the shared renderer and build a serializable scheduler payload."""
     try:
-        plan = TelegramRenderer().render(document)
+        plan = TelegramRenderer().render(render_document or document)
     except TelegramRenderError as exc:
         raise PublicationBridgeError(str(exc)) from exc
 
@@ -42,8 +47,8 @@ def _scheduler_payload(document: PostDocument) -> dict[str, Any]:
             raise PublicationBridgeError("classic renderer returned no payload")
         return dict(plan.classic_payload)
     if plan.kind == "rich":
-        # aiogram models are transport-edge objects and must never be persisted.
-        # Store the domain document and render again at the actual delivery edge.
+        # aiogram models and resolved Telegram file IDs are transport-edge details and
+        # must never replace durable asset identities in the persisted PostDocument.
         return {
             "type": "rich_document",
             "post_document": document.to_dict(),
@@ -90,7 +95,14 @@ class LegacyPublicationBridge:
             )
 
         document = PostDocument.from_dict(revision_row.document)
-        payload = _scheduler_payload(document)
+        try:
+            render_document = await RichMediaAssetResolver(self.session).resolve(
+                document,
+                channel_id=int(item.channel_id),
+            )
+        except RichMediaAssetError as exc:
+            raise PublicationBridgeError(str(exc)) from exc
+        payload = _scheduler_payload(document, render_document=render_document)
 
         # Keep one canonical timestamp contract across SQLite/PostgreSQL and the
         # existing scheduler. SQLite may deserialize timezone=True columns as naive,
@@ -134,6 +146,7 @@ class LegacyPublicationBridge:
             publication.schedule_entry_id = int(schedule.id)
             payload["_content_item_id"] = int(item.id)
             payload["_content_revision"] = revision_number
+            payload["_content_channel_id"] = int(item.channel_id)
             payload["_publication_id"] = int(publication.id)
 
             task = PostTask(
