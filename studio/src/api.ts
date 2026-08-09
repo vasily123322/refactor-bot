@@ -187,10 +187,15 @@ export const studioApi = {
   telegramPreview: (
     document: PostDocument,
     replaceMessageIds: number[] = [],
+    channelId: number | null = null,
   ) =>
     request<TelegramPreviewResult>('/api/studio/preview/telegram', {
       method: 'POST',
-      body: JSON.stringify({ document, replace_message_ids: replaceMessageIds }),
+      body: JSON.stringify({
+        document,
+        replace_message_ids: replaceMessageIds,
+        channel_id: channelId,
+      }),
     }),
   publishNow: (channelId: number, contentId: number) =>
     request<Publication>(
