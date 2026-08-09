@@ -129,6 +129,41 @@ export type AIActivityView = {
   runs: AIActivityRunView[];
 };
 
+export type SourceWorkerTickView = {
+  started_at: string;
+  finished_at: string;
+  window_selected: number;
+  scheduled: number;
+  processed: number;
+  skipped_backoff: number;
+  skipped_busy: number;
+  lease_errors: number;
+  failures: number;
+  timeouts: number;
+  ingestion_errors: number;
+  unexpected_errors: number;
+  new_documents: number;
+  candidates_created: number;
+  backlog_remaining: number;
+  stopped_early: boolean;
+  duration_ms: number;
+};
+
+export type SourceWorkerTotalsView = Omit<
+  SourceWorkerTickView,
+  'started_at' | 'finished_at' | 'stopped_early' | 'duration_ms'
+>;
+
+export type SourceWorkerHealthView = {
+  running: boolean;
+  started_at: string;
+  ticks: number;
+  history_size: number;
+  last_tick: SourceWorkerTickView | null;
+  history: SourceWorkerTickView[];
+  totals: SourceWorkerTotalsView;
+};
+
 export const studioApi = {
   me: () => request<StudioUser>('/api/studio/me'),
   channels: () => request<Channel[]>('/api/studio/channels'),
@@ -191,6 +226,8 @@ export const studioApi = {
       `/api/studio/channels/${channelId}/planner/${scheduleId}/cancel`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
+  sourceWorkerHealth: () =>
+    request<SourceWorkerHealthView>('/api/studio/source-worker/health'),
   sources: (channelId: number) =>
     request<SourceConnectorView[]>(`/api/studio/channels/${channelId}/sources`),
   createSource: (channelId: number, input: CreateSourceInput) =>
