@@ -14,6 +14,7 @@ from app.domain.publishing.models import Publication, PublicationAttempt, Schedu
 from app.services.rich_media_assets import RichMediaAssetError, RichMediaAssetResolver
 from app.services.scheduling import as_utc
 from app.services.telegram_renderer import TelegramRenderError, TelegramRenderer
+from app.services.telegram_results import normalize_telegram_message_ids
 
 
 class PublicationBridgeError(RuntimeError):
@@ -304,7 +305,7 @@ class LegacyPublicationBridge:
         task_status = str(task.status or "pending")
         publication.status = _TASK_TO_PUBLICATION_STATUS.get(task_status, task_status)
         payload = dict(task.payload or {})
-        ids = [int(value) for value in list(payload.get("result_ids") or [])]
+        ids = normalize_telegram_message_ids(payload.get("result_ids"))
         publication.telegram_message_ids = ids or None
         publication.result_link = payload.get("result_link")
         publication.last_error = task.error if task_status == "failed" else None

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Callable
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,7 @@ from app.services.scheduler_task_lease import (
     SchedulerExpiredLeaseRef,
     SchedulerTaskLeaseService,
 )
+from app.services.telegram_results import normalize_telegram_message_ids
 
 
 UNKNOWN_DELIVERY_ERROR = (
@@ -27,26 +28,6 @@ def _utc(value: datetime | None = None) -> datetime:
     if current.tzinfo is None:
         return current.replace(tzinfo=timezone.utc)
     return current.astimezone(timezone.utc)
-
-
-def _confirmed_result_ids(payload: dict[str, Any]) -> list[int]:
-    """Return durable Telegram delivery evidence only when the whole value is valid."""
-    raw = payload.get("result_ids")
-    if not isinstance(raw, (list, tuple)) or not raw:
-        return []
-
-    result: list[int] = []
-    for value in raw:
-        if isinstance(value, bool):
-            return []
-        try:
-            message_id = int(value)
-        except (TypeError, ValueError):
-            return []
-        if message_id <= 0:
-            return []
-        result.append(message_id)
-    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +84,7 @@ class SchedulerTaskRecoveryService:
                 return "terminal_cleaned"
 
             payload = dict(task.payload or {})
-            result_ids = _confirmed_result_ids(payload)
+            result_ids = normalize_telegram_message_ids(payload.get("result_ids"))
             if result_ids:
                 # Scheduler persists result_ids immediately after send_now succeeds,
                 # before pin/forward/owner notification/final done. That is durable
