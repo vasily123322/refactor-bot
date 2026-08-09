@@ -31,6 +31,20 @@ class Settings(BaseSettings):
     # Scheduler settings
     repeat_overflow_limit: int = Field(default=2, alias="REPEAT_OVERFLOW_LIMIT")
 
+    # Opt-in cleanup for canonicalized unsuccessful legacy scheduler rows.
+    post_task_retention_enabled: bool = Field(
+        default=False, alias="POST_TASK_RETENTION_ENABLED"
+    )
+    post_task_retention_days: int = Field(
+        default=90, alias="POST_TASK_RETENTION_DAYS"
+    )
+    post_task_retention_batch_size: int = Field(
+        default=100, alias="POST_TASK_RETENTION_BATCH_SIZE"
+    )
+    post_task_retention_interval_seconds: int = Field(
+        default=3600, alias="POST_TASK_RETENTION_INTERVAL_SECONDS"
+    )
+
     # Optional deterministic Inbox enrichment worker (never uses AI providers)
     local_enrichment_worker_enabled: bool = Field(
         default=False, alias="LOCAL_ENRICHMENT_WORKER_ENABLED"
