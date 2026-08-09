@@ -4,6 +4,7 @@ import { StudioApiError, studioApi } from './api';
 import {
   candidateMediaLabel,
   loadCandidateMedia,
+  promoteCandidateMedia,
   type CandidateMediaView,
 } from './candidateMedia';
 import type { Channel, ContentCandidateView } from './types';
@@ -159,6 +160,20 @@ export function InboxPanel({
       );
     });
 
+  const promoteMedia = (candidate: ContentCandidateView) =>
+    run(`promote-media:${candidate.id}`, async () => {
+      const asset = await promoteCandidateMedia(channel!.id, candidate.id);
+      setCandidateMedia((current) => {
+        const media = current[candidate.id];
+        if (!media) return current;
+        return {
+          ...current,
+          [candidate.id]: { ...media, media_asset_id: asset.id },
+        };
+      });
+      setNotice(`MediaAsset #${asset.id} сохранён в медиатеке канала`);
+    });
+
   const dismiss = (candidate: ContentCandidateView) =>
     run(`dismiss:${candidate.id}`, async () => {
       await studioApi.dismissCandidate(channel!.id, candidate.id);
@@ -233,6 +248,7 @@ export function InboxPanel({
             const rewritePreview = rewritePreviews[candidate.id];
             const media = candidateMedia[candidate.id];
             const canRewrite = candidate.reuse_policy === 'rewrite_with_attribution';
+            const canPromoteMedia = Boolean(media?.promotable && !media.media_asset_id);
             return (
               <article key={candidate.id} className="candidate-card">
                 <div className="candidate-head">
@@ -257,6 +273,16 @@ export function InboxPanel({
                   <div>
                     {candidate.source_url && (
                       <a className="button secondary compact" href={candidate.source_url} target="_blank" rel="noreferrer">Источник ↗</a>
+                    )}
+                    {canPromoteMedia && (
+                      <button
+                        className="button secondary compact"
+                        disabled={busyId !== null}
+                        title="Сохранить исходное Telegram media как reusable MediaAsset текущего канала"
+                        onClick={() => void promoteMedia(candidate)}
+                      >
+                        {busyId === `promote-media:${candidate.id}` ? 'Сохраняю media…' : '▣ В медиатеку'}
+                      </button>
                     )}
                     <button
                       className="button secondary compact"
