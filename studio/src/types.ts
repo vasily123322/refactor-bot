@@ -132,6 +132,8 @@ export type SourceConnectorView = {
   last_document_at: string | null;
   legacy_ai_source_id: number | null;
   legacy_grab_source_id: number | null;
+  cursor_message_id: number | null;
+  backlog_hint: boolean;
 };
 
 export type SourceIngestionResult = {
