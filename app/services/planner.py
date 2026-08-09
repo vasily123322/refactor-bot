@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content.models import ContentItem
@@ -212,6 +212,35 @@ class PlannerService:
                 f"scheduler task is no longer pending (status={task.status})"
             )
 
+    async def _cas_pending_task(
+        self,
+        task: PostTask | None,
+        **values,
+    ) -> None:
+        if task is None:
+            return
+        try:
+            result = await self.session.execute(
+                update(PostTask)
+                .where(
+                    PostTask.id == int(task.id),
+                    PostTask.status == "pending",
+                )
+                .values(**values)
+                .execution_options(synchronize_session=False)
+            )
+        except Exception:
+            await self.session.rollback()
+            raise
+
+        if int(getattr(result, "rowcount", 0) or 0) != 1:
+            await self.session.rollback()
+            raise PlannerConflictError("scheduler task is no longer pending")
+
+        # Keep expire_on_commit=False identity map coherent after synchronize_session=False.
+        for key, value in values.items():
+            setattr(task, key, value)
+
     async def reschedule(
         self,
         *,
@@ -225,11 +254,10 @@ class PlannerService:
         )
         self._ensure_mutable(schedule, publication, task)
         when = as_utc(scheduled_at)
+        await self._cas_pending_task(task, scheduled_at=when)
         schedule.scheduled_at = when
         if timezone_name is not None:
             schedule.timezone = timezone_name
-        if task is not None:
-            task.scheduled_at = when
         try:
             await self.session.commit()
         except Exception:
@@ -242,12 +270,11 @@ class PlannerService:
             channel_id=channel_id, schedule_id=schedule_id
         )
         self._ensure_mutable(schedule, publication, task)
+        await self._cas_pending_task(task, status="cancelled")
         schedule.status = "cancelled"
         if publication is not None:
             publication.status = "cancelled"
             publication.last_error = None
-        if task is not None:
-            task.status = "cancelled"
         try:
             await self.session.commit()
         except Exception:
