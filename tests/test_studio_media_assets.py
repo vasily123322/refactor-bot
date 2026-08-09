@@ -124,8 +124,9 @@ def test_media_asset_api_is_owner_scoped_and_never_exposes_transport_reference(m
             async with Session() as session:
                 rows = list((await session.execute(select(MediaAsset))).scalars().all())
                 assert len(rows) == 2
-                assert rows[0].telegram_file_id == "opaque-telegram-file-id"
-                assert rows[1].storage_url == "https://cdn.example.test/video.mp4"
+                by_source = {str(row.source): row for row in rows}
+                assert by_source["studio_telegram"].telegram_file_id == "opaque-telegram-file-id"
+                assert by_source["studio_https"].storage_url == "https://cdn.example.test/video.mp4"
         finally:
             await engine.dispose()
 
