@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models import PostTask
 from app.services.publication_bridge import LegacyPublicationBridge
+from app.services.scheduler_errors import SAFE_DELIVERY_ERROR
 from app.services.scheduler_task_lease import (
     DEFAULT_SCHEDULER_LEASE_SECONDS,
     SchedulerTaskLeaseHandle,
@@ -17,11 +18,68 @@ from app.services.scheduler_task_lease import (
 from app.workers.reliable_scheduler import Scheduler as ReliableScheduler
 
 
-SAFE_DELIVERY_ERROR = "Telegram delivery failed"
+SAFE_AUXILIARY_ERROR = "Telegram auxiliary operation failed"
+SAFE_DELETE_NOT_FOUND = "message to delete not found"
+SAFE_DELETE_FORBIDDEN = "message can't be deleted"
 
 
 class SchedulerDeliveryError(RuntimeError):
     """Safe transport-boundary failure suitable for durable/user-visible state."""
+
+
+class SchedulerAuxiliaryError(RuntimeError):
+    """Safe Telegram auxiliary failure suitable for legacy logs/fallback logic."""
+
+
+def _safe_auxiliary_message(operation: str, exc: Exception) -> str:
+    if operation == "delete_message":
+        raw = str(exc).lower()
+        if "message to delete not found" in raw or "message_id_invalid" in raw:
+            return SAFE_DELETE_NOT_FOUND
+        if "can't be deleted" in raw or "message can't be deleted" in raw:
+            return SAFE_DELETE_FORBIDDEN
+    return SAFE_AUXILIARY_ERROR
+
+
+class _RedactedTelegramBot:
+    """Proxy auxiliary Bot API calls without exposing provider exception text."""
+
+    def __init__(self, delegate) -> None:
+        self._delegate = delegate
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
+
+    async def _call(self, operation: str, *args, **kwargs):
+        method = getattr(self._delegate, operation)
+        try:
+            return await method(*args, **kwargs)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug(
+                "Scheduler: Telegram auxiliary call failed operation={} type={}",
+                operation,
+                type(exc).__name__,
+            )
+            raise SchedulerAuxiliaryError(
+                _safe_auxiliary_message(operation, exc)
+            ) from None
+
+    async def get_chat(self, *args, **kwargs):
+        return await self._call("get_chat", *args, **kwargs)
+
+    async def delete_message(self, *args, **kwargs):
+        return await self._call("delete_message", *args, **kwargs)
+
+    async def send_message(self, *args, **kwargs):
+        return await self._call("send_message", *args, **kwargs)
+
+    async def pin_chat_message(self, *args, **kwargs):
+        return await self._call("pin_chat_message", *args, **kwargs)
+
+    async def forward_message(self, *args, **kwargs):
+        return await self._call("forward_message", *args, **kwargs)
 
 
 class _RedactedPostingService:
@@ -29,6 +87,11 @@ class _RedactedPostingService:
 
     def __init__(self, delegate) -> None:
         self._delegate = delegate
+        self._bot = _RedactedTelegramBot(delegate.bot)
+
+    @property
+    def bot(self):
+        return self._bot
 
     def __getattr__(self, name: str):
         return getattr(self._delegate, name)
@@ -53,8 +116,8 @@ class Scheduler(ReliableScheduler):
     """Reliable scheduler with leased atomic claim and Publication projection.
 
     PostTask remains the compatibility transport during migration. A durable lease
-    records liveness for each task owned in `processing`; provider exception text is
-    redacted before entering the legacy scheduler's durable/logging boundary.
+    records liveness for each task owned in `processing`; Telegram provider exception
+    text is redacted before entering legacy persistence/logging boundaries.
     """
 
     def __init__(
