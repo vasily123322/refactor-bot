@@ -234,7 +234,11 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const result = await studioApi.telegramPreview(document, previewMessageIds);
+      const result = await studioApi.telegramPreview(
+        document,
+        previewMessageIds,
+        selectedChannelId,
+      );
       setPreviewMessageIds(result.message_ids);
       setNotice('Настоящий preview отправлен в Telegram');
     } catch (reason) {
