@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import select
@@ -16,7 +16,7 @@ from app.services.legacy_content_mirror import (
     mirror_legacy_post_task,
     mirror_unlinked_legacy_tasks,
 )
-from app.services.scheduling import as_utc
+from app.services.scheduling import as_utc, cleanup_runtime_fields
 
 
 def test_mirror_creates_content_schedule_and_publication_idempotently() -> None:
@@ -77,6 +77,7 @@ def test_mirror_creates_content_schedule_and_publication_idempotently() -> None:
                 await session.refresh(task)
                 assert task.payload["_content_item_id"] == item.id
                 assert task.payload["_content_revision"] == 1
+                assert task.payload["_content_channel_id"] == 42
                 assert task.payload["_publication_id"] == publication.id
 
                 same = await mirror_legacy_post_task(session, task)
@@ -84,6 +85,79 @@ def test_mirror_creates_content_schedule_and_publication_idempotently() -> None:
                 assert same.id == publication.id
                 assert len((await session.execute(select(ContentItem))).scalars().all()) == 1
                 assert len((await session.execute(select(Publication))).scalars().all()) == 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_repeat_child_reuses_content_but_gets_distinct_publication() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                when = datetime(2026, 8, 10, 9, 30, tzinfo=timezone.utc)
+                parent = PostTask(
+                    channel_id=42,
+                    status="pending",
+                    scheduled_at=when,
+                    payload={
+                        "type": "text",
+                        "text": "Repeat me",
+                        "repeat_on": True,
+                        "repeat_seconds": 3600,
+                    },
+                )
+                session.add(parent)
+                await session.commit()
+                await session.refresh(parent)
+
+                first = await mirror_legacy_post_task(session, parent)
+                assert first is not None
+                await session.refresh(parent)
+
+                child_payload = cleanup_runtime_fields(dict(parent.payload or {}))
+                assert child_payload["_content_item_id"] == first.content_item_id
+                assert child_payload["_content_revision"] == first.content_revision
+                assert child_payload["_content_channel_id"] == 42
+                assert "_publication_id" not in child_payload
+
+                # Simulate a child created before the cleanup fix: the stale parent
+                # publication marker must be ignored and repaired during mirroring.
+                child_payload["_publication_id"] = int(first.id)
+                child = PostTask(
+                    channel_id=42,
+                    status="pending",
+                    scheduled_at=when + timedelta(hours=1),
+                    payload=child_payload,
+                )
+                session.add(child)
+                await session.commit()
+                await session.refresh(child)
+
+                second = await mirror_legacy_post_task(session, child)
+                assert second is not None
+                assert second.id != first.id
+                assert second.legacy_post_task_id == child.id
+                assert second.content_item_id == first.content_item_id
+                assert second.content_revision == first.content_revision
+                assert second.meta["reused_content_provenance"] is True
+
+                await session.refresh(child)
+                assert child.payload["_publication_id"] == second.id
+                assert child.payload["_content_item_id"] == first.content_item_id
+
+                items = (await session.execute(select(ContentItem))).scalars().all()
+                revisions = (await session.execute(select(ContentRevision))).scalars().all()
+                publications = (await session.execute(select(Publication))).scalars().all()
+                schedules = (await session.execute(select(ScheduleEntry))).scalars().all()
+                assert len(items) == 1
+                assert len(revisions) == 1
+                assert len(publications) == 2
+                assert len(schedules) == 2
         finally:
             await engine.dispose()
 

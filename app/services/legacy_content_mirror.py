@@ -27,6 +27,7 @@ _RUNTIME_ONLY_FIELDS = frozenset(
         "_publication_id",
         "_content_item_id",
         "_content_revision",
+        "_content_channel_id",
         "repeat_on",
         "repeat_seconds",
         "repeat_group_id",
@@ -70,6 +71,43 @@ def _title_from_document_text(text: str) -> str | None:
     return normalized[:120]
 
 
+async def _referenced_content(
+    session: AsyncSession,
+    payload: dict[str, Any],
+    *,
+    channel_id: int,
+) -> tuple[ContentItem, ContentRevision] | None:
+    item_marker = payload.get("_content_item_id")
+    revision_marker = payload.get("_content_revision")
+    if item_marker is None or revision_marker is None:
+        return None
+
+    try:
+        item_id = int(item_marker)
+        revision_number = int(revision_marker)
+        channel_marker = payload.get("_content_channel_id")
+        if channel_marker is not None and int(channel_marker) != int(channel_id):
+            return None
+    except (TypeError, ValueError):
+        return None
+
+    item = await session.get(ContentItem, item_id)
+    if item is None or int(item.channel_id) != int(channel_id):
+        return None
+
+    revision = (
+        await session.execute(
+            select(ContentRevision).where(
+                ContentRevision.content_item_id == item_id,
+                ContentRevision.revision == revision_number,
+            )
+        )
+    ).scalar_one_or_none()
+    if revision is None:
+        return None
+    return item, revision
+
+
 async def mirror_legacy_post_task(
     session: AsyncSession,
     task: PostTask,
@@ -78,9 +116,11 @@ async def mirror_legacy_post_task(
 
     The legacy task remains the delivery source of truth during migration. A mirror
     failure must never alter task status or prevent the existing scheduler from
-    processing it.
+    processing it. Repeat tasks may reuse immutable ContentItem/ContentRevision
+    provenance, but every delivery occurrence gets a distinct Publication.
     """
     task_id = int(task.id)
+    channel_id = int(task.channel_id)
     existing = (
         await session.execute(
             select(Publication).where(Publication.legacy_post_task_id == task_id)
@@ -92,20 +132,33 @@ async def mirror_legacy_post_task(
     payload = deepcopy(dict(task.payload or {}))
     publication_marker = payload.get("_publication_id")
     if publication_marker is not None:
-        marked = await session.get(Publication, int(publication_marker))
-        if marked is not None:
+        try:
+            marked = await session.get(Publication, int(publication_marker))
+        except (TypeError, ValueError):
+            marked = None
+        if marked is not None and int(marked.legacy_post_task_id or 0) == task_id:
             return marked
+        # Old repeat payloads could inherit the parent's publication marker. Treat
+        # that as stale delivery identity while retaining safe content provenance.
+        payload.pop("_publication_id", None)
 
-    try:
-        document = document_from_legacy_payload(_content_payload(payload))
-    except LegacyPayloadError as exc:
-        logger.info(
-            "Legacy content mirror skipped unsupported PostTask id={} type={} err={}",
-            task_id,
-            payload.get("type"),
-            exc,
-        )
-        return None
+    referenced = await _referenced_content(
+        session,
+        payload,
+        channel_id=channel_id,
+    )
+    document = None
+    if referenced is None:
+        try:
+            document = document_from_legacy_payload(_content_payload(payload))
+        except LegacyPayloadError as exc:
+            logger.info(
+                "Legacy content mirror skipped unsupported PostTask id={} type={} err={}",
+                task_id,
+                payload.get("type"),
+                exc,
+            )
+            return None
 
     task_status = str(task.status or "pending")
     publication_status = {
@@ -124,51 +177,65 @@ async def mirror_legacy_post_task(
     result_link = payload.get("result_link")
     now = datetime.now(timezone.utc)
     when = as_utc(task.scheduled_at)
-
-    item = ContentItem(
-        channel_id=int(task.channel_id),
-        kind="post",
-        status="ready" if task_status in {"pending", "processing"} else "archived",
-        title=_title_from_document_text(document.primary_text()),
-        current_revision=1,
-        meta={"legacy_post_task_id": task_id},
-    )
-    session.add(item)
+    reused_content = referenced is not None
 
     try:
-        await session.flush()
-        revision = ContentRevision(
-            content_item_id=int(item.id),
-            revision=1,
-            document=document.to_dict(),
-            source="legacy_mirror",
-            created_by_tg_user_id=_author_id(payload),
-            meta={"legacy_post_task_id": task_id},
-        )
+        if referenced is None:
+            assert document is not None
+            item = ContentItem(
+                channel_id=channel_id,
+                kind="post",
+                status="ready" if task_status in {"pending", "processing"} else "archived",
+                title=_title_from_document_text(document.primary_text()),
+                current_revision=1,
+                meta={"legacy_post_task_id": task_id},
+            )
+            session.add(item)
+            await session.flush()
+            revision = ContentRevision(
+                content_item_id=int(item.id),
+                revision=1,
+                document=document.to_dict(),
+                source="legacy_mirror",
+                created_by_tg_user_id=_author_id(payload),
+                meta={"legacy_post_task_id": task_id},
+            )
+            session.add(revision)
+            revision_number = 1
+        else:
+            item, revision = referenced
+            revision_number = int(revision.revision)
+
+        mirror_meta = {"mirrored_from_legacy": True}
+        schedule_meta: dict[str, Any] = {"legacy_post_task_id": task_id}
+        if reused_content:
+            mirror_meta["reused_content_provenance"] = True
+            schedule_meta["reused_content_provenance"] = True
+
         schedule = ScheduleEntry(
             content_item_id=int(item.id),
-            content_revision=1,
-            channel_id=int(task.channel_id),
+            content_revision=revision_number,
+            channel_id=channel_id,
             scheduled_at=when,
             timezone=None,
             status=schedule_status,
             repeat_rule=_repeat_rule(payload),
-            meta={"legacy_post_task_id": task_id},
+            meta=schedule_meta,
         )
         publication = Publication(
             schedule_entry_id=None,
             content_item_id=int(item.id),
-            content_revision=1,
-            channel_id=int(task.channel_id),
+            content_revision=revision_number,
+            channel_id=channel_id,
             status=publication_status,
             legacy_post_task_id=task_id,
             telegram_message_ids=ids or None,
             result_link=result_link,
             last_error=task.error if task_status == "failed" else None,
             attempt_count=1 if task_status in _TERMINAL_STATUS else 0,
-            meta={"mirrored_from_legacy": True},
+            meta=mirror_meta,
         )
-        session.add_all([revision, schedule, publication])
+        session.add_all([schedule, publication])
         await session.flush()
         publication.schedule_entry_id = int(schedule.id)
 
@@ -186,7 +253,8 @@ async def mirror_legacy_post_task(
             )
 
         payload["_content_item_id"] = int(item.id)
-        payload["_content_revision"] = 1
+        payload["_content_revision"] = revision_number
+        payload["_content_channel_id"] = channel_id
         payload["_publication_id"] = int(publication.id)
         task.payload = payload
         await session.commit()
