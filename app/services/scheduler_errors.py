@@ -9,6 +9,7 @@ UNKNOWN_DELIVERY_ERROR = (
     "automatic retry disabled"
 )
 NO_MESSAGE_IDS_ERROR = "no message ids returned"
+MISSING_SCHEDULER_TASK_ERROR = "Scheduler task is missing"
 GENERIC_SCHEDULER_ERROR = "Scheduler task failed"
 
 # Only strings fully controlled by our code may cross the legacy PostTask ->
@@ -19,6 +20,7 @@ _PUBLIC_SAFE_ERRORS = frozenset(
         SAFE_DELIVERY_ERROR,
         UNKNOWN_DELIVERY_ERROR,
         NO_MESSAGE_IDS_ERROR,
+        MISSING_SCHEDULER_TASK_ERROR,
         # Historical test/legacy builds used this fixed operator-safe message.
         "telegram unavailable",
     }
