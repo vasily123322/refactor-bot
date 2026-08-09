@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -9,7 +10,9 @@ from app.core.db import Base
 from app.domain.models import AISource, GrabSource
 from app.repositories.sources_v2 import SourcesRepo
 from app.services.legacy_source_mirror import LegacySourceMirror
+from app.services.source_ingestion_lease import SourceIngestionLeaseService
 from app.services.source_lifecycle import (
+    SourceLifecycleBusy,
     SourceLifecycleError,
     SourceLifecyclePatch,
     SourceLifecycleService,
@@ -156,6 +159,102 @@ def test_legacy_grab_mirror_is_read_only_in_sources_lifecycle() -> None:
                 assert connector.enabled is True
                 assert connector.reuse_policy == "reference_only"
                 assert "enabled" not in GrabSource.__table__.columns
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_active_ingestion_lease_blocks_lifecycle_without_mutation() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                legacy = AISource(
+                    channel_id=95,
+                    source_type="rss",
+                    source_value="https://example.com/busy.xml",
+                    mode="summary",
+                    enabled=True,
+                    citation_enabled=True,
+                )
+                session.add(legacy)
+                await session.commit()
+                await session.refresh(legacy)
+                connector = await SourcesRepo(session).create_connector(
+                    channel_id=95,
+                    kind="rss",
+                    value="https://example.com/busy.xml",
+                    mode="summary",
+                    citation_enabled=True,
+                    reuse_policy="reference_only",
+                    legacy_ai_source_id=legacy.id,
+                )
+                lease = await SourceIngestionLeaseService(session).acquire(
+                    connector_id=int(connector.id),
+                    holder="worker",
+                )
+                assert lease is not None
+
+                with pytest.raises(SourceLifecycleBusy, match="ingestion is running"):
+                    await SourceLifecycleService(session).update(
+                        channel_id=95,
+                        connector_id=connector.id,
+                        patch=SourceLifecyclePatch(
+                            enabled=False,
+                            mode="rewrite",
+                            citation_enabled=False,
+                            reuse_policy="rewrite_with_attribution",
+                        ),
+                    )
+
+                await session.refresh(connector)
+                await session.refresh(legacy)
+                assert connector.enabled is True
+                assert connector.mode == "summary"
+                assert connector.citation_enabled is True
+                assert connector.reuse_policy == "reference_only"
+                assert legacy.enabled is True
+                assert legacy.mode == "summary"
+                assert legacy.citation_enabled is True
+                assert await SourceIngestionLeaseService(session).release(lease) is True
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_expired_ingestion_lease_does_not_block_lifecycle_update() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                connector = await SourcesRepo(session).create_connector(
+                    channel_id=96,
+                    kind="url",
+                    value="https://example.com/expired",
+                    reuse_policy="reference_only",
+                )
+                expired = await SourceIngestionLeaseService(session).acquire(
+                    connector_id=int(connector.id),
+                    holder="worker",
+                    ttl_seconds=30,
+                    now=datetime(2020, 1, 1, tzinfo=timezone.utc),
+                )
+                assert expired is not None
+
+                updated = await SourceLifecycleService(session).update(
+                    channel_id=96,
+                    connector_id=connector.id,
+                    patch=SourceLifecyclePatch(reuse_policy="summarize"),
+                )
+                assert updated.reuse_policy == "summarize"
         finally:
             await engine.dispose()
 
