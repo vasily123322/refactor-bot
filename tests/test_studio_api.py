@@ -185,7 +185,7 @@ def test_studio_api_channel_scope_content_revisions_preview_and_schedule(monkeyp
                 assert schedule.status_code == 201
                 assert schedule.json()["status"] == "queued"
                 assert schedule.json()["content_revision"] == 2
-                assert schedule.json()["legacy_post_task_id"] is not None
+                assert "legacy_post_task_id" not in schedule.json()
         finally:
             await engine.dispose()
 
