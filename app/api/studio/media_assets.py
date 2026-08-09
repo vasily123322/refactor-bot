@@ -19,8 +19,6 @@ from app.repositories.content import MediaAssetsRepo
 
 router = APIRouter(prefix="/api/studio", tags=["media-assets"])
 
-_MEDIA_KINDS = ("photo", "video", "animation", "audio", "voice_note")
-
 
 class MediaAssetCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
