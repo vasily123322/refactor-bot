@@ -50,8 +50,10 @@ def test_alembic_baseline_creates_current_schema_and_is_idempotent(tmp_path) -> 
             "publications",
             "publication_attempts",
             "source_connectors",
+            "source_ingestion_leases",
             "content_candidates",
             "candidate_enrichment_runs",
+            "ai_auto_tasks",
             "alembic_version",
         }.issubset(table_names)
         version = connection.execute(
