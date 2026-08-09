@@ -16,6 +16,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.schema import (
     DatabaseForeignKeyIntegrityError,
     DatabaseSchemaOutOfDate,
+    DatabaseSchemaShapeError,
     bootstrap_database_schema,
     inspect_alembic_schema,
 )
@@ -257,6 +258,80 @@ def test_managed_sqlite_with_existing_foreign_key_violation_fails_closed(
             with pytest.raises(
                 DatabaseForeignKeyIntegrityError,
                 match="contains foreign key violations",
+            ):
+                await bootstrap_database_schema(
+                    engine,
+                    unmanaged_initializer=initialize,
+                )
+            assert calls == 0
+
+            async with engine.connect() as connection:
+                enabled = await connection.exec_driver_sql("PRAGMA foreign_keys")
+                assert int(enabled.scalar_one() or 0) == 0
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_managed_database_at_head_with_missing_table_fails_shape_guard(tmp_path) -> None:
+    async def run() -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        database_path = tmp_path / "managed-missing-table.db"
+        _upgrade(repo_root, database_path, "head")
+        with sqlite3.connect(database_path) as connection:
+            connection.execute("DROP TABLE scheduler_task_leases")
+            connection.commit()
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+        calls = 0
+
+        async def initialize() -> None:
+            nonlocal calls
+            calls += 1
+
+        try:
+            inspected = await inspect_alembic_schema(engine)
+            assert inspected.at_head is True
+            with pytest.raises(
+                DatabaseSchemaShapeError,
+                match=r"missing tables=scheduler_task_leases",
+            ):
+                await bootstrap_database_schema(
+                    engine,
+                    unmanaged_initializer=initialize,
+                )
+            assert calls == 0
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_managed_database_at_head_with_missing_column_fails_before_fk_enable(
+    tmp_path,
+) -> None:
+    async def run() -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        database_path = tmp_path / "managed-missing-column.db"
+        _upgrade(repo_root, database_path, "head")
+        with sqlite3.connect(database_path) as connection:
+            connection.execute("ALTER TABLE clients DROP COLUMN ui_settings")
+            connection.commit()
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+        calls = 0
+
+        async def initialize() -> None:
+            nonlocal calls
+            calls += 1
+
+        try:
+            inspected = await inspect_alembic_schema(engine)
+            assert inspected.at_head is True
+            with pytest.raises(
+                DatabaseSchemaShapeError,
+                match=r"missing columns=clients.ui_settings",
             ):
                 await bootstrap_database_schema(
                     engine,
