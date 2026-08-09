@@ -6,6 +6,7 @@ from typing import Any
 from loguru import logger
 
 from app.domain.content import PostDocument
+from app.domain.models import PostTask
 from app.services.posting import PostingService
 from app.services.rich_media_assets import RichMediaAssetError, RichMediaAssetResolver
 from app.services.telegram_renderer import TelegramRenderError, TelegramRenderer
@@ -51,6 +52,55 @@ class DocumentPostingService(PostingService):
                 type(exc).__name__,
             )
             return None
+
+    async def _task_channel_context(self, payload: dict[str, Any]) -> int | None:
+        """Resolve rich asset channel from canonical task state before legacy marker."""
+        raw_task_id = payload.get("_post_task_id")
+        if raw_task_id is not None:
+            try:
+                task_id = int(raw_task_id)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise TelegramRenderError("rich_document task context is invalid") from exc
+            if task_id <= 0:
+                raise TelegramRenderError("rich_document task context is invalid")
+
+            try:
+                if self.session_factory is not None:
+                    async with self.session_factory() as session:
+                        task = await session.get(PostTask, task_id)
+                elif self.session is not None:
+                    task = await self.session.get(PostTask, task_id)
+                else:
+                    raise TelegramRenderError(
+                        "rich_document task context requires a database session"
+                    )
+            except TelegramRenderError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Document posting: task context lookup failed error_type={}",
+                    type(exc).__name__,
+                )
+                raise TelegramRenderError(
+                    "rich_document task context lookup failed"
+                ) from None
+
+            if task is None:
+                raise TelegramRenderError("rich_document task context not found")
+            return int(task.channel_id)
+
+        # Historical/manual rich payload compatibility. Scheduler-owned deliveries
+        # always carry `_post_task_id` and therefore never trust this marker first.
+        raw_marker = payload.get("_content_channel_id")
+        if raw_marker is None:
+            return None
+        try:
+            channel_id = int(raw_marker)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise TelegramRenderError("rich_document asset channel context is invalid") from exc
+        if channel_id <= 0:
+            raise TelegramRenderError("rich_document asset channel context is invalid")
+        return channel_id
 
     async def _resolve_media_assets(
         self,
@@ -118,10 +168,7 @@ class DocumentPostingService(PostingService):
         document = PostDocument.from_dict(raw_document)
         if document.mode != "rich":
             raise TelegramRenderError("rich_document task requires rich PostDocument")
-        raw_asset_channel_id = payload.get("_content_channel_id")
-        asset_channel_id = (
-            int(raw_asset_channel_id) if raw_asset_channel_id is not None else None
-        )
+        asset_channel_id = await self._task_channel_context(payload)
         return await self.send_document(
             int(channel_id),
             document,
