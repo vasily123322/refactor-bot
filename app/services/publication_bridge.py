@@ -14,7 +14,10 @@ from app.domain.publishing.models import Publication, PublicationAttempt, Schedu
 from app.services.rich_media_assets import RichMediaAssetError, RichMediaAssetResolver
 from app.services.scheduling import as_utc
 from app.services.telegram_renderer import TelegramRenderError, TelegramRenderer
-from app.services.telegram_results import normalize_telegram_message_ids
+from app.services.telegram_results import (
+    normalize_telegram_message_ids,
+    normalize_telegram_result_link,
+)
 
 
 class PublicationBridgeError(RuntimeError):
@@ -31,6 +34,20 @@ _TASK_TO_PUBLICATION_STATUS = {
 }
 
 _TERMINAL_TASK_STATUSES = frozenset({"done", "failed", "skipped", "cancelled"})
+_RUNTIME_RESERVED_KEYS = frozenset(
+    {
+        "repeat_on",
+        "repeat_seconds",
+        "result_ids",
+        "result_link",
+        "autodelete_at",
+        "autodelete_effective_seconds",
+        "autodeleted",
+        "autodeleted_at",
+        "autosign_applied",
+        "repeat_group_id",
+    }
+)
 
 
 def _scheduler_payload(
@@ -56,6 +73,27 @@ def _scheduler_payload(
             "post_document": document.to_dict(),
         }
     raise PublicationBridgeError(f"unsupported Telegram render plan: {plan.kind}")
+
+
+def _runtime_intent(
+    runtime_options: Mapping[str, Any] | None,
+    *,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Keep extension options while protecting canonical/transport-owned fields."""
+    intent: dict[str, Any] = {}
+    existing_payload_keys = {str(key) for key in payload}
+    for raw_key, value in dict(runtime_options or {}).items():
+        key = str(raw_key)
+        if (
+            not key
+            or key.startswith("_")
+            or key in existing_payload_keys
+            or key in _RUNTIME_RESERVED_KEYS
+        ):
+            raise PublicationBridgeError(f"runtime option is reserved: {key or '<empty>'}")
+        intent[key] = deepcopy(value)
+    return intent
 
 
 def _delivery_meta(
@@ -139,9 +177,9 @@ class LegacyPublicationBridge:
             payload["repeat_on"] = False
             payload.pop("repeat_seconds", None)
 
-        runtime_intent = deepcopy(dict(runtime_options or {}))
+        runtime_intent = _runtime_intent(runtime_options, payload=payload)
         for key, value in runtime_intent.items():
-            payload[str(key)] = deepcopy(value)
+            payload[key] = deepcopy(value)
 
         canonical_meta = _delivery_meta(metadata, runtime_intent)
         schedule = ScheduleEntry(
@@ -307,7 +345,7 @@ class LegacyPublicationBridge:
         payload = dict(task.payload or {})
         ids = normalize_telegram_message_ids(payload.get("result_ids"))
         publication.telegram_message_ids = ids or None
-        publication.result_link = payload.get("result_link")
+        publication.result_link = normalize_telegram_result_link(payload.get("result_link"))
         publication.last_error = task.error if task_status == "failed" else None
 
         schedule = (
