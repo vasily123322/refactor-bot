@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import StaticPool
 
 from app.core.schema import (
     DatabaseSchemaOutOfDate,
@@ -57,6 +60,51 @@ def test_unmanaged_database_uses_legacy_initializer(tmp_path) -> None:
             assert state.expected_heads == ("20260809_0002",)
             assert state.at_head is False
             assert calls == 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_unmanaged_static_pool_reopens_database_after_legacy_file_rotation(tmp_path) -> None:
+    async def run() -> None:
+        database_path = tmp_path / "legacy-static.db"
+        backup_path = tmp_path / "legacy-static.backup.db"
+        with sqlite3.connect(database_path) as connection:
+            connection.execute("CREATE TABLE old_marker (id INTEGER PRIMARY KEY)")
+            connection.commit()
+
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{database_path}",
+            poolclass=StaticPool,
+            connect_args={"check_same_thread": False},
+        )
+
+        async def initialize() -> None:
+            os.replace(database_path, backup_path)
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("CREATE TABLE new_marker (id INTEGER PRIMARY KEY)")
+                connection.commit()
+
+        try:
+            state = await bootstrap_database_schema(
+                engine,
+                unmanaged_initializer=initialize,
+            )
+            assert state.managed is False
+            assert backup_path.exists()
+
+            async with engine.connect() as connection:
+                names = {
+                    str(row[0])
+                    for row in (
+                        await connection.execute(
+                            text("SELECT name FROM sqlite_master WHERE type='table'")
+                        )
+                    ).all()
+                }
+            assert "new_marker" in names
+            assert "old_marker" not in names
         finally:
             await engine.dispose()
 
