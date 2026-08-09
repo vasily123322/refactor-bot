@@ -23,6 +23,20 @@ export type TelegramEntity = {
 export type RichMark = string | { type: string; url?: string; href?: string };
 export type RichSegmentValue = { text: string; marks?: RichMark[] };
 export type RichContentValue = string | RichSegmentValue[];
+export type RichListItem = string | {
+  label?: string;
+  content?: RichContentValue;
+  text?: string;
+};
+export type RichMediaCollectionItem = {
+  type?: 'media' | 'image';
+  asset_id?: number;
+  media_asset_id?: number;
+  kind?: string;
+  media_type?: string;
+  caption?: RichContentValue;
+  [key: string]: unknown;
+};
 
 export type PostBlock = {
   id: string;
@@ -34,7 +48,7 @@ export type PostBlock = {
   content?: RichContentValue;
   credit?: RichContentValue;
   summary?: RichContentValue;
-  items?: Array<string | { label?: string; content?: RichContentValue; text?: string }>;
+  items?: Array<RichListItem | RichMediaCollectionItem>;
   size?: number;
   formula?: string;
   name?: string;
