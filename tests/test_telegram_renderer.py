@@ -209,7 +209,8 @@ def test_renderer_builds_native_rich_media_blocks() -> None:
     ]
     assert blocks[0].photo.media == "photo-file-id"
     assert blocks[0].caption is not None
-    assert blocks[0].caption.text.type == "bold"
+    assert isinstance(blocks[0].caption.text, list)
+    assert blocks[0].caption.text[0].type == "bold"
     assert blocks[0].caption.credit == "Source"
     assert blocks[1].video.media == "https://example.com/video.mp4"
     assert blocks[1].video.supports_streaming is True
