@@ -70,6 +70,25 @@ function RichPreviewBlock({ block }: { block: PostBlock }) {
           {block.caption ? <p>{richText(block.caption)}</p> : null}
         </div>
       );
+    case 'map': {
+      const latitude = Number(block.latitude ?? block.lat);
+      const longitude = Number(block.longitude ?? block.lon ?? block.lng);
+      const zoom = Number(block.zoom ?? 13);
+      const coordinates = Number.isFinite(latitude) && Number.isFinite(longitude)
+        ? `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`
+        : 'координаты не заданы';
+      return (
+        <div className="visual-rich-map">
+          <div>
+            <span>⌖</span>
+            <strong>Карта</strong>
+            <small>zoom {Number.isFinite(zoom) ? zoom : '—'}</small>
+          </div>
+          <p>{coordinates}</p>
+          {block.caption ? <p>{richText(block.caption)}</p> : null}
+        </div>
+      );
+    }
     default:
       return <div className="visual-rich-unsupported">{block.type}</div>;
   }

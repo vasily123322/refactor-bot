@@ -6,8 +6,10 @@ import {
   type MediaAssetKind,
   type MediaAssetView,
 } from './api';
+import { MapBlockEditor } from './MapBlockEditor';
 import { MediaCollectionEditor } from './MediaCollectionEditor';
 import { mediaAssetBlockPatch, mediaAssetOptionLabel } from './richMediaAssets';
+import { DEFAULT_RICH_MAP } from './richMap';
 import { RichTextField } from './RichTextField';
 import type { PostBlock, PostDocument, RichSegmentValue } from './types';
 
@@ -24,6 +26,7 @@ const BLOCK_OPTIONS = [
   ['media', '▣ Медиа'],
   ['gallery', '▦ Галерея'],
   ['slideshow', '▤ Слайдшоу'],
+  ['map', '⌖ Карта'],
 ] as const;
 
 const MEDIA_KINDS: Array<[MediaAssetKind, string]> = [
@@ -66,6 +69,8 @@ function newBlock(type: string): PostBlock {
     case 'gallery':
     case 'slideshow':
       return { id, type, items: [], caption: '' };
+    case 'map':
+      return { id, type, ...DEFAULT_RICH_MAP };
     default:
       return { id, type: 'paragraph', content: '' };
   }
@@ -287,6 +292,10 @@ function BlockEditor({
 
         {(block.type === 'gallery' || block.type === 'slideshow') && (
           <MediaCollectionEditor block={block} assets={assets} onPatch={onPatch} />
+        )}
+
+        {block.type === 'map' && (
+          <MapBlockEditor block={block} onPatch={onPatch} />
         )}
       </div>
     </article>
