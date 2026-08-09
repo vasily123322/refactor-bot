@@ -32,6 +32,7 @@ from app.workers.candidate_enrichment import LocalCandidateEnrichmentWorker
 from app.workers.grab_poll import GrabPoller
 from app.workers.publication_reconciler import PublicationReconcilerWorker
 from app.workers.publication_scheduler import Scheduler
+from app.workers.scheduler_recovery import SchedulerRecoveryWorker
 from app.workers.source_ingestion import SourceIngestionWorker
 
 try:
@@ -107,6 +108,7 @@ async def run_bot() -> None:
     studio_server = StudioServer()
     userbot_started = False
     scheduler = None
+    scheduler_recovery = None
     publication_reconciler = None
     source_ingestion = None
     poller = None
@@ -141,6 +143,13 @@ async def run_bot() -> None:
 
         scheduler = Scheduler(AsyncSessionLocal, posting)
         await scheduler.start()
+
+        scheduler_recovery = SchedulerRecoveryWorker(
+            session_factory=AsyncSessionLocal,
+            interval_seconds=60,
+            batch_size=100,
+        )
+        await scheduler_recovery.start()
 
         publication_reconciler = PublicationReconcilerWorker(interval_seconds=5)
         await publication_reconciler.start()
@@ -193,6 +202,8 @@ async def run_bot() -> None:
             await _safe_stop("source ingestion", source_ingestion.stop)
         if publication_reconciler is not None:
             await _safe_stop("publication reconciler", publication_reconciler.stop)
+        if scheduler_recovery is not None:
+            await _safe_stop("scheduler recovery", scheduler_recovery.stop)
         if scheduler is not None:
             await _safe_stop("scheduler", scheduler.stop)
 
