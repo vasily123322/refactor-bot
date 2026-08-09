@@ -21,13 +21,24 @@ class Scheduler(ReliableScheduler):
         session: AsyncSession,
         post: PostTask,
     ) -> None:
+        task_id = int(post.id)
         try:
-            publication = await LegacyPublicationBridge(session).reconcile_task(post)
+            if self.session_factory is not None:
+                async with self.session_factory() as projection_session:
+                    projection_task = await projection_session.get(PostTask, task_id)
+                    if projection_task is None:
+                        return
+                    publication = await LegacyPublicationBridge(
+                        projection_session
+                    ).reconcile_task(projection_task)
+            else:
+                publication = await LegacyPublicationBridge(session).reconcile_task(post)
         except Exception as exc:
-            await self._rollback(session, "publication projection")
+            if self.session_factory is None:
+                await self._rollback(session, "publication projection")
             logger.warning(
                 "Scheduler: publication projection failed post_id={} type={}",
-                int(post.id),
+                task_id,
                 type(exc).__name__,
             )
             return
@@ -35,7 +46,7 @@ class Scheduler(ReliableScheduler):
         if publication is not None:
             logger.trace(
                 "Scheduler: projected post_id={} publication_id={} status={}",
-                int(post.id),
+                task_id,
                 int(publication.id),
                 publication.status,
             )
@@ -48,8 +59,8 @@ class Scheduler(ReliableScheduler):
         await super()._mark_processing(session, items)
         for post in items:
             # The parent implementation uses a bulk UPDATE. Keep the identity-map
-            # object aligned so task-scoped reconciliation sees `processing` even on
-            # SQLAlchemy backends/configurations that do not synchronize that UPDATE.
+            # object aligned for the long-lived-session fallback; production uses an
+            # isolated projection session and re-reads the committed task state.
             post.status = "processing"
             await self._project_publication(session, post)
 
