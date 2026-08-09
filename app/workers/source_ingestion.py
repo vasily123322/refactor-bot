@@ -36,18 +36,13 @@ def _utc_datetime(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
-def _source_priority_key(connector: SourceConnector) -> tuple[int, int, datetime, int]:
-    """Prioritize urgent work without changing the global rotating fairness window."""
+def _source_priority_key(connector: SourceConnector) -> tuple[int, int, datetime]:
+    """Prioritize urgent work while stable ties keep rotating-window order."""
     backlog_rank = 0 if telegram_backlog_hint(connector) else 1
     success = _utc_datetime(connector.last_success_at)
     never_succeeded_rank = 0 if success is None else 1
     oldest_success = success or datetime.min.replace(tzinfo=timezone.utc)
-    return (
-        backlog_rank,
-        never_succeeded_rank,
-        oldest_success,
-        int(connector.id),
-    )
+    return backlog_rank, never_succeeded_rank, oldest_success
 
 
 class SourceIngestionWorker:
@@ -56,6 +51,8 @@ class SourceIngestionWorker:
     Work is bounded by a rotating connector window, per-connector timeout, durable
     backoff and a DB-backed ingestion lease shared with Studio manual ingestion.
     Within each rotating window, Telegram backlog and the stalest sources run first.
+    Exact priority ties retain the raw rotating order so wrap-around fairness is
+    unchanged.
     """
 
     def __init__(
@@ -167,7 +164,14 @@ class SourceIngestionWorker:
                 )
             ).scalars().all()
         )
-        eligible = [row for row in rows if not source_worker_backoff_active(row)]
+        rows_by_id = {int(row.id): row for row in rows}
+        # SQL IN(...) does not preserve the raw rotating order. Restore it before
+        # stable sorting so exact priority ties (especially wrap windows like [5,1])
+        # retain the fairness order selected by _rotating_connector_ids().
+        ordered_rows = [rows_by_id[connector_id] for connector_id in raw_ids if connector_id in rows_by_id]
+        eligible = [
+            row for row in ordered_rows if not source_worker_backoff_active(row)
+        ]
         eligible.sort(key=_source_priority_key)
         return [int(row.id) for row in eligible], boundary
 
@@ -242,7 +246,6 @@ class SourceIngestionWorker:
                 connector = await session.get(SourceConnector, current_connector_id)
                 if connector is None or not connector.enabled:
                     continue
-                # State may have changed after the bounded selection query.
                 if source_worker_backoff_active(connector):
                     logger.trace(
                         "Sources v2 connector={} skipped by worker backoff",
