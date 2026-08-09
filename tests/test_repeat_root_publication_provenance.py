@@ -10,7 +10,7 @@ from app.core.db import Base
 from app.domain.content import PostDocument
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import PostTask
-from app.domain.publishing.models import Publication, ScheduleEntry
+from app.domain.publishing.models import ScheduleEntry
 from app.repositories.content import ContentRepo
 from app.services.legacy_content_mirror import mirror_legacy_post_task
 from app.services.publication_bridge import LegacyPublicationBridge
