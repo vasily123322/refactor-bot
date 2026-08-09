@@ -92,7 +92,6 @@ class PublicationResponse(BaseModel):
     channel_id: int
     status: str
     schedule_entry_id: int | None
-    legacy_post_task_id: int | None
 
 
 class PlannerEntryResponse(BaseModel):
@@ -115,7 +114,6 @@ class PlannerEntryResponse(BaseModel):
     attempt_status: str | None
     attempt_started_at: datetime | None
     attempt_finished_at: datetime | None
-    legacy_post_task_id: int | None
 
 
 class PlannerRescheduleRequest(BaseModel):
