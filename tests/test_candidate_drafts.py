@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
 from app.domain.content.models import ContentItem, ContentRevision
-from app.domain.sources.models import ContentCandidate
+from app.domain.sources.models import ContentCandidate, SourceDocument
+from app.repositories.content import MediaAssetsRepo
 from app.repositories.sources_v2 import SourcesRepo
 from app.services.candidate_drafts import CandidateDraftError, CandidateDraftService
 
@@ -38,6 +39,26 @@ async def _seed(session, *, channel_id: int, policy: str, content: str, summary:
     candidate.summary = summary
     await session.commit()
     return candidate
+
+
+async def _link_media_asset(session, *, candidate: ContentCandidate, channel_id: int):
+    asset = await MediaAssetsRepo(session).create(
+        channel_id=channel_id,
+        kind="photo",
+        source="telegram_source",
+        telegram_file_id="opaque-photo-file-id",
+        mime_type="image/jpeg",
+        width=1200,
+        height=630,
+    )
+    document = await session.get(SourceDocument, int(candidate.source_document_id))
+    assert document is not None
+    document.meta = {
+        **dict(document.meta or {}),
+        "media_asset_id": int(asset.id),
+    }
+    await session.commit()
+    return asset
 
 
 def test_reference_only_candidate_draft_keeps_source_body_out_and_is_idempotent() -> None:
@@ -197,6 +218,86 @@ def test_candidate_draft_is_channel_scoped() -> None:
                         channel_id=999,
                         candidate_id=candidate.id,
                     )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_mirror_authorized_draft_attaches_promoted_media_as_rich_block() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                candidate = await _seed(
+                    session,
+                    channel_id=76,
+                    policy="mirror_authorized",
+                    content="Authorized source caption",
+                )
+                asset = await _link_media_asset(
+                    session,
+                    candidate=candidate,
+                    channel_id=76,
+                )
+                result = await CandidateDraftService(session).create(
+                    channel_id=76,
+                    candidate_id=int(candidate.id),
+                )
+
+                assert result.document.mode == "rich"
+                assert [block["type"] for block in result.document.blocks] == [
+                    "paragraph",
+                    "media",
+                ]
+                assert result.document.blocks[1] == {
+                    "id": "m1",
+                    "type": "media",
+                    "asset_id": int(asset.id),
+                    "kind": "photo",
+                    "caption": "",
+                }
+                assert result.document.metadata["source_media_asset_id"] == int(asset.id)
+                assert result.document.metadata["source_media_attached"] is True
+                assert "Authorized source caption" in result.document.primary_text()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_reference_only_promoted_media_remains_provenance_not_publishable_block() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                candidate = await _seed(
+                    session,
+                    channel_id=77,
+                    policy="reference_only",
+                    content="SOURCE MEDIA BODY MUST NOT AUTO-PUBLISH",
+                )
+                asset = await _link_media_asset(
+                    session,
+                    candidate=candidate,
+                    channel_id=77,
+                )
+                result = await CandidateDraftService(session).create(
+                    channel_id=77,
+                    candidate_id=int(candidate.id),
+                )
+
+                assert result.document.mode == "classic"
+                assert [block["type"] for block in result.document.blocks] == ["text"]
+                assert result.document.metadata["source_media_asset_id"] == int(asset.id)
+                assert result.document.metadata["source_media_attached"] is False
+                assert "SOURCE MEDIA BODY MUST NOT AUTO-PUBLISH" not in result.document.primary_text()
         finally:
             await engine.dispose()
 
