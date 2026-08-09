@@ -14,7 +14,7 @@ from app.services.publication_bridge import LegacyPublicationBridge, Publication
 from app.services.telegram_results import normalize_telegram_result_link
 
 
-def test_telegram_result_link_allows_only_canonical_tme_https() -> None:
+def test_telegram_result_link_allows_only_scheduler_post_forms() -> None:
     assert (
         normalize_telegram_result_link(" https://t.me/example/101 ")
         == "https://t.me/example/101"
@@ -31,6 +31,9 @@ def test_telegram_result_link_allows_only_canonical_tme_https() -> None:
     assert normalize_telegram_result_link("https://user@t.me/example/101") is None
     assert normalize_telegram_result_link("https://t.me/example/101?token=secret") is None
     assert normalize_telegram_result_link("https://t.me/example/101#fragment") is None
+    assert normalize_telegram_result_link("https://t.me/example/not-a-message") is None
+    assert normalize_telegram_result_link("https://t.me/c/not-a-chat/101") is None
+    assert normalize_telegram_result_link("https://t.me//evil/101") is None
     assert normalize_telegram_result_link("https://t.me/") is None
 
 
@@ -48,6 +51,7 @@ def test_queue_rejects_runtime_options_that_override_transport_owned_fields() ->
                         blocks=[{"id": "b1", "type": "text", "text": "Canonical"}]
                     ),
                 )
+                item_id = int(item.id)
                 bridge = LegacyPublicationBridge(session)
                 reserved_options = [
                     {"text": "spoofed content"},
@@ -67,13 +71,13 @@ def test_queue_rejects_runtime_options_that_override_transport_owned_fields() ->
                 for options in reserved_options:
                     with pytest.raises(PublicationBridgeError, match="runtime option is reserved"):
                         await bridge.queue(
-                            content_item_id=int(item.id),
+                            content_item_id=item_id,
                             runtime_options=options,
                         )
                     await session.rollback()
 
                 publication = await bridge.queue(
-                    content_item_id=int(item.id),
+                    content_item_id=item_id,
                     runtime_options={
                         "pin_on": True,
                         "silent": True,
