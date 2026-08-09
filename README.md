@@ -25,6 +25,32 @@ Alternatively, you can run the file directly:
 python app/bot/dispatcher.py
 ```
 
+## Database migrations
+
+Alembic is the schema-evolution boundary for new database changes. It uses the same
+`DB_URL` and ORM registry as the application.
+
+Before deploying code with a new schema revision, run:
+
+```bash
+alembic upgrade head
+```
+
+The first revision (`20260809_0001`) is a non-destructive adoption baseline. On an
+empty database it creates the current ORM schema. On an existing current database it
+creates only missing tables and records the Alembic version; it does not drop tables
+or rewrite existing data. The historical SQLite compatibility shim in
+`init_db_if_needed_sync()` remains temporarily for older installations, but future
+schema changes should be implemented as explicit Alembic revisions rather than new
+ad-hoc `ALTER TABLE` code.
+
+Useful checks:
+
+```bash
+alembic current
+alembic history
+```
+
 ## How to Test
 
 Make sure the virtual environment is activated:
