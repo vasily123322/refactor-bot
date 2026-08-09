@@ -53,6 +53,13 @@ alembic upgrade head
 
 and start the application again.
 
+For Alembic-managed SQLite databases, startup also runs `PRAGMA foreign_key_check`
+before enabling SQLite foreign-key enforcement on application connections. If an
+existing managed database contains orphaned FK rows, startup fails closed instead of
+silently grandfathering them. Repair the reported database integrity issue before
+starting the application again. Unmanaged legacy SQLite keeps its historical behavior
+until it explicitly adopts Alembic.
+
 Databases that have not adopted Alembic yet retain the historical compatibility
 bootstrap so existing installations continue to start. This unmanaged path is
 transitional; future schema changes should be implemented only as Alembic revisions.
