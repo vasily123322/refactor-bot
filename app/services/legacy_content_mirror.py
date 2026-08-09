@@ -42,6 +42,23 @@ _RUNTIME_ONLY_FIELDS = frozenset(
         "autodelete_effective_seconds",
     }
 )
+_MAX_DB_ID = (1 << 63) - 1
+
+
+def _legacy_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _legacy_db_id(value: Any) -> int | None:
+    parsed = _legacy_int(value)
+    if parsed is None or parsed <= 0 or parsed > _MAX_DB_ID:
+        return None
+    return parsed
 
 
 def _content_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -54,7 +71,9 @@ def _content_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _repeat_rule(payload: dict[str, Any]) -> dict[str, Any]:
     if not bool(payload.get("repeat_on", False)):
         return {}
-    seconds = int(payload.get("repeat_seconds") or 0)
+    seconds = _legacy_int(payload.get("repeat_seconds"))
+    if seconds is None:
+        return {"enabled": False, "seconds": 0}
     return {"enabled": seconds > 0, "seconds": max(0, seconds)}
 
 
@@ -62,11 +81,7 @@ def _author_id(payload: dict[str, Any]) -> int | None:
     meta = payload.get("meta")
     if not isinstance(meta, dict):
         return None
-    value = meta.get("author_user_id")
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
+    return _legacy_db_id(meta.get("author_user_id"))
 
 
 def _title_from_document_text(text: str) -> str | None:
@@ -82,19 +97,16 @@ async def _referenced_content(
     *,
     channel_id: int,
 ) -> tuple[ContentItem, ContentRevision] | None:
-    item_marker = payload.get("_content_item_id")
-    revision_marker = payload.get("_content_revision")
-    if item_marker is None or revision_marker is None:
+    item_id = _legacy_db_id(payload.get("_content_item_id"))
+    revision_number = _legacy_db_id(payload.get("_content_revision"))
+    if item_id is None or revision_number is None:
         return None
 
-    try:
-        item_id = int(item_marker)
-        revision_number = int(revision_marker)
-        channel_marker = payload.get("_content_channel_id")
-        if channel_marker is not None and int(channel_marker) != int(channel_id):
+    channel_marker = payload.get("_content_channel_id")
+    if channel_marker is not None:
+        marker_id = _legacy_db_id(channel_marker)
+        if marker_id is None or marker_id != int(channel_id):
             return None
-    except (TypeError, ValueError):
-        return None
 
     item = await session.get(ContentItem, item_id)
     if item is None or int(item.channel_id) != int(channel_id):
@@ -135,16 +147,15 @@ async def mirror_legacy_post_task(
         return existing
 
     payload = deepcopy(dict(task.payload or {}))
-    publication_marker = payload.get("_publication_id")
+    publication_marker = _legacy_db_id(payload.get("_publication_id"))
     if publication_marker is not None:
-        try:
-            marked = await session.get(Publication, int(publication_marker))
-        except (TypeError, ValueError):
-            marked = None
+        marked = await session.get(Publication, publication_marker)
         if marked is not None and int(marked.legacy_post_task_id or 0) == task_id:
             return marked
+    if "_publication_id" in payload:
         # Old repeat payloads could inherit the parent's publication marker. Treat
-        # that as stale delivery identity while retaining safe content provenance.
+        # invalid/stale delivery identity as migration input and remove it while
+        # retaining safe content provenance.
         payload.pop("_publication_id", None)
 
     referenced = await _referenced_content(
