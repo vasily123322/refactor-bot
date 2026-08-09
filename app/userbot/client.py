@@ -27,6 +27,35 @@ class UserbotMember:
     status: str
 
 
+@dataclass(frozen=True, slots=True)
+class UserbotMedia:
+    """Transport-neutral media facts safe to persist in source metadata.
+
+    Deliberately excludes Telethon file references, access hashes, entity objects,
+    session data and any identifiers needed to download the original media.
+    """
+
+    kind: str
+    mime_type: str | None = None
+    size_bytes: int | None = None
+    width: int | None = None
+    height: int | None = None
+    duration_seconds: int | None = None
+
+    def to_metadata(self) -> dict[str, object]:
+        values: dict[str, object] = {"kind": self.kind}
+        for key, value in (
+            ("mime_type", self.mime_type),
+            ("size_bytes", self.size_bytes),
+            ("width", self.width),
+            ("height", self.height),
+            ("duration_seconds", self.duration_seconds),
+        ):
+            if value is not None:
+                values[key] = value
+        return values
+
+
 @dataclass(slots=True)
 class UserbotMessage:
     id: int
@@ -34,6 +63,7 @@ class UserbotMessage:
     text: str | None = None
     caption: str | None = None
     date: datetime | None = None
+    media: UserbotMedia | None = None
     _reply: Callable[[str], Awaitable[Any]] | None = None
 
     async def reply_text(self, text: str):
@@ -106,6 +136,51 @@ def _public_target(target: str | int) -> str | int:
             if path and not path.startswith("+") and not path.startswith("joinchat/"):
                 return path.split("/", 1)[0]
     return value
+
+
+def _positive_int(value: object) -> int | None:
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _media_kind(message: Any) -> str | None:
+    # Order matters because Telethon convenience properties can overlap for
+    # document-backed media (voice/audio, GIF/video, round video/video).
+    for attribute, kind in (
+        ("photo", "photo"),
+        ("video_note", "video_note"),
+        ("gif", "animation"),
+        ("voice", "voice_note"),
+        ("video", "video"),
+        ("audio", "audio"),
+        ("sticker", "sticker"),
+        ("document", "document"),
+    ):
+        if getattr(message, attribute, None) is not None:
+            return kind
+    return None
+
+
+def _adapt_media(message: Any) -> UserbotMedia | None:
+    kind = _media_kind(message)
+    if kind is None:
+        return None
+    file = getattr(message, "file", None)
+    mime_type_value = getattr(file, "mime_type", None) if file is not None else None
+    mime_type = str(mime_type_value).strip()[:255] if mime_type_value else None
+    return UserbotMedia(
+        kind=kind,
+        mime_type=mime_type or None,
+        size_bytes=_positive_int(getattr(file, "size", None)) if file is not None else None,
+        width=_positive_int(getattr(file, "width", None)) if file is not None else None,
+        height=_positive_int(getattr(file, "height", None)) if file is not None else None,
+        duration_seconds=(
+            _positive_int(getattr(file, "duration", None)) if file is not None else None
+        ),
+    )
 
 
 class UserbotGateway:
@@ -278,13 +353,15 @@ class UserbotGateway:
         )
         # Telethon exposes text and media captions through the same `message`
         # field. Exposing it through both compatibility fields keeps existing
-        # source-processing semantics intact.
+        # source-processing semantics intact. Media is reduced to safe facts;
+        # transport/session identifiers are intentionally discarded here.
         return UserbotMessage(
             id=int(getattr(message, "id", 0) or 0),
             chat=chat,
             text=raw or None,
             caption=raw or None,
             date=getattr(message, "date", None),
+            media=_adapt_media(message),
             _reply=reply,
         )
 
