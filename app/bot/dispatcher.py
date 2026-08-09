@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from aiogram import Dispatcher
 from loguru import logger
 
+import app.domain  # noqa: F401 register complete ORM metadata before schema bootstrap
 from app.api.studio.server import StudioServer
 from app.bot.bot_instance import bot
 from app.bot.commands import register_bot_commands
