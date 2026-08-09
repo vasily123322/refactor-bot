@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
+
+from loguru import logger
 
 from app.domain.content import PostDocument
 from app.services.posting import PostingService
@@ -10,6 +13,44 @@ from app.services.telegram_renderer import TelegramRenderError, TelegramRenderer
 
 class DocumentPostingService(PostingService):
     """PostingService extension for versioned PostDocument/Rich Message delivery."""
+
+    async def send_now(self, channel_id: int, payload: dict) -> list[int] | None:
+        """Dispatch without persisting provider exception text in legacy logs.
+
+        The historical PostingService logs ``str(exception)`` in its outer catch. The
+        production scheduler uses this PostDocument-aware subclass, so keep the same
+        forward-fallback/dispatch contract here while logging only exception types.
+        """
+        try:
+            forward_chat = payload.get("forward_from_chat_id")
+            forward_message = payload.get("forward_from_message_id")
+            if forward_chat and forward_message:
+                try:
+                    message = await self._send_with_retry(
+                        self.bot.forward_message,
+                        chat_id=int(channel_id),
+                        from_chat_id=int(forward_chat),
+                        message_id=int(forward_message),
+                    )
+                    return [int(message.message_id)]
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.debug(
+                        "Document posting: forward fallback failed error_type={}",
+                        type(exc).__name__,
+                    )
+            return await self._dispatch(int(channel_id), payload)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Document posting failed target_chat_id={} payload_type={} error_type={}",
+                int(channel_id),
+                str(payload.get("type") or ""),
+                type(exc).__name__,
+            )
+            return None
 
     async def _resolve_media_assets(
         self,
