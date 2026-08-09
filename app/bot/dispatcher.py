@@ -23,7 +23,7 @@ from app.workers.ai_auto_tasks import AIAutoTasksWorker
 from app.workers.candidate_enrichment import LocalCandidateEnrichmentWorker
 from app.workers.grab_poll import GrabPoller
 from app.workers.publication_reconciler import PublicationReconcilerWorker
-from app.workers.reliable_scheduler import Scheduler
+from app.workers.publication_scheduler import Scheduler
 from app.workers.source_ingestion import SourceIngestionWorker
 
 try:
