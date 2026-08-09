@@ -150,6 +150,17 @@ class SourceIngestionWorker:
             retry_after.isoformat(),
         )
 
+    async def _release_lease(self, lease, *, connector_id: int) -> None:
+        try:
+            async with self.session_factory() as lease_session:
+                await SourceIngestionLeaseService(lease_session).release(lease)
+        except Exception as exc:
+            logger.warning(
+                "Sources v2 connector={} lease release failed type={}",
+                int(connector_id),
+                type(exc).__name__,
+            )
+
     async def _ingest_connector(
         self,
         session: AsyncSession,
@@ -256,13 +267,5 @@ class SourceIngestionWorker:
                             type(exc).__name__,
                         )
                 finally:
-                    try:
-                        await lease_service.release(lease)
-                    except Exception as exc:
-                        await session.rollback()
-                        logger.warning(
-                            "Sources v2 connector={} lease release failed type={}",
-                            int(connector.id),
-                            type(exc).__name__,
-                        )
+                    await self._release_lease(lease, connector_id=int(connector.id))
         return processed
