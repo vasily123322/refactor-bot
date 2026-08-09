@@ -19,6 +19,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # Legacy/unmanaged startup still calls Base.metadata.create_all(). Until that
+    # compatibility path is retired, it may have created this table before Alembic
+    # adoption. IF NOT EXISTS lets the explicit revision safely take ownership.
     op.create_table(
         "scheduler_task_leases",
         sa.Column("task_id", sa.Integer(), nullable=False),
@@ -40,12 +43,14 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["task_id"], ["post_tasks.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("task_id"),
         sa.UniqueConstraint("lease_token", name="uq_scheduler_task_lease_token"),
+        if_not_exists=True,
     )
     op.create_index(
         "ix_scheduler_task_leases_expires_at",
         "scheduler_task_leases",
         ["expires_at"],
         unique=False,
+        if_not_exists=True,
     )
 
 
@@ -53,5 +58,6 @@ def downgrade() -> None:
     op.drop_index(
         "ix_scheduler_task_leases_expires_at",
         table_name="scheduler_task_leases",
+        if_exists=True,
     )
-    op.drop_table("scheduler_task_leases")
+    op.drop_table("scheduler_task_leases", if_exists=True)
