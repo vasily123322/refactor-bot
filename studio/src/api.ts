@@ -62,6 +62,35 @@ export type CreateSourceInput = {
     | 'mirror_authorized';
 };
 
+export type MediaAssetKind = 'photo' | 'video' | 'animation' | 'audio' | 'voice_note';
+
+export type MediaAssetView = {
+  id: number;
+  channel_id: number;
+  kind: MediaAssetKind | string;
+  source: string;
+  transport: 'telegram' | 'https';
+  label: string | null;
+  mime_type: string | null;
+  width: number | null;
+  height: number | null;
+  duration_seconds: number | null;
+  size_bytes: number | null;
+  created_at: string | null;
+};
+
+export type CreateMediaAssetInput = {
+  kind: MediaAssetKind;
+  telegram_file_id?: string | null;
+  storage_url?: string | null;
+  label?: string | null;
+  mime_type?: string | null;
+  width?: number | null;
+  height?: number | null;
+  duration_seconds?: number | null;
+  size_bytes?: number | null;
+};
+
 export type CandidateEnrichmentResult = {
   candidate_id: number;
   candidate_status: string;
@@ -231,6 +260,15 @@ export const studioApi = {
       `/api/studio/channels/${channelId}/planner/${scheduleId}/cancel`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
+  mediaAssets: (channelId: number, limit = 100) =>
+    request<MediaAssetView[]>(
+      `/api/studio/channels/${channelId}/media-assets?limit=${encodeURIComponent(String(limit))}`,
+    ),
+  createMediaAsset: (channelId: number, input: CreateMediaAssetInput) =>
+    request<MediaAssetView>(`/api/studio/channels/${channelId}/media-assets`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   sourceWorkerHealth: () =>
     request<SourceWorkerHealthView>('/api/studio/source-worker/health'),
   sources: (channelId: number) =>
