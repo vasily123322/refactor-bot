@@ -6,17 +6,32 @@ from typing import Any, Literal, Mapping
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaAnimation,
+    InputMediaAudio,
+    InputMediaPhoto,
+    InputMediaVideo,
+    InputMediaVoiceNote,
     InputRichBlockAnchor,
+    InputRichBlockAnimation,
+    InputRichBlockAudio,
     InputRichBlockBlockQuotation,
+    InputRichBlockCollage,
     InputRichBlockDetails,
     InputRichBlockDivider,
     InputRichBlockList,
     InputRichBlockListItem,
+    InputRichBlockMap,
     InputRichBlockMathematicalExpression,
     InputRichBlockParagraph,
+    InputRichBlockPhoto,
     InputRichBlockPullQuotation,
     InputRichBlockSectionHeading,
+    InputRichBlockSlideshow,
+    InputRichBlockVideo,
+    InputRichBlockVoiceNote,
     InputRichMessage,
+    Location,
+    RichBlockCaption,
     RichTextBold,
     RichTextCode,
     RichTextItalic,
@@ -65,6 +80,16 @@ _RICH_MEDIA_TYPES = frozenset(
         "collage",
         "slideshow",
         "map",
+    }
+)
+
+_MEDIA_KINDS = frozenset(
+    {
+        "photo",
+        "video",
+        "animation",
+        "audio",
+        "voice_note",
     }
 )
 
@@ -179,6 +204,27 @@ def _positive_size(value: object, *, field: str, default: int) -> int:
     return size
 
 
+def _bounded_int(
+    value: object,
+    *,
+    field: str,
+    minimum: int,
+    maximum: int,
+    default: int | None = None,
+) -> int | None:
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise TelegramRenderError(f"{field} must be an integer") from exc
+    if not minimum <= parsed <= maximum:
+        raise TelegramRenderError(
+            f"{field} must be from {minimum} to {maximum}"
+        )
+    return parsed
+
+
 def _paragraph_for(value: object) -> InputRichBlockParagraph:
     return InputRichBlockParagraph(text=_rich_text(value))
 
@@ -196,13 +242,179 @@ def _list_item(raw: object) -> InputRichBlockListItem:
     )
 
 
+def _rich_caption(block: Mapping[str, Any]) -> RichBlockCaption | None:
+    raw_caption = block.get("caption")
+    if raw_caption is None:
+        return None
+    if isinstance(raw_caption, Mapping):
+        text = raw_caption.get("text", "")
+        credit = raw_caption.get("credit")
+    else:
+        text = raw_caption
+        credit = block.get("credit")
+    return RichBlockCaption(
+        text=_rich_text(text),
+        credit=(_rich_text(credit) if credit is not None else None),
+    )
+
+
+def _media_reference(block: Mapping[str, Any]) -> str:
+    for field in ("media", "telegram_file_id", "storage_url", "url"):
+        raw = block.get(field)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    if block.get("asset_id") is not None or block.get("media_asset_id") is not None:
+        raise TelegramRenderError(
+            "rich media asset id must be resolved to a Telegram file id or URL before rendering"
+        )
+    raise TelegramRenderError("rich media block requires media reference")
+
+
+def _media_kind(block: Mapping[str, Any]) -> str:
+    block_type = str(block.get("type") or "")
+    if block_type == "image":
+        return "photo"
+    raw = str(block.get("kind") or block.get("media_type") or block_type).lower()
+    if raw == "image":
+        raw = "photo"
+    if raw == "voice":
+        raw = "voice_note"
+    if raw not in _MEDIA_KINDS:
+        raise TelegramRenderError(f"unsupported rich media kind: {raw!r}")
+    return raw
+
+
+def _render_single_media_block(block: Mapping[str, Any]) -> object:
+    kind = _media_kind(block)
+    media = _media_reference(block)
+    caption = _rich_caption(block)
+
+    duration = _bounded_int(
+        block.get("duration"), field="media.duration", minimum=0, maximum=86400
+    )
+    width = _bounded_int(
+        block.get("width"), field="media.width", minimum=1, maximum=10000
+    )
+    height = _bounded_int(
+        block.get("height"), field="media.height", minimum=1, maximum=10000
+    )
+    has_spoiler = bool(block.get("has_spoiler")) if "has_spoiler" in block else None
+
+    if kind == "photo":
+        return InputRichBlockPhoto(
+            photo=InputMediaPhoto(media=media, has_spoiler=has_spoiler),
+            caption=caption,
+        )
+    if kind == "video":
+        return InputRichBlockVideo(
+            video=InputMediaVideo(
+                media=media,
+                width=width,
+                height=height,
+                duration=duration,
+                supports_streaming=(
+                    bool(block.get("supports_streaming"))
+                    if "supports_streaming" in block
+                    else None
+                ),
+                has_spoiler=has_spoiler,
+            ),
+            caption=caption,
+        )
+    if kind == "animation":
+        return InputRichBlockAnimation(
+            animation=InputMediaAnimation(
+                media=media,
+                width=width,
+                height=height,
+                duration=duration,
+                has_spoiler=has_spoiler,
+            ),
+            caption=caption,
+        )
+    if kind == "audio":
+        return InputRichBlockAudio(
+            audio=InputMediaAudio(
+                media=media,
+                duration=duration,
+                performer=(str(block.get("performer")) if block.get("performer") else None),
+                title=(str(block.get("title")) if block.get("title") else None),
+            ),
+            caption=caption,
+        )
+    if kind == "voice_note":
+        return InputRichBlockVoiceNote(
+            voice_note=InputMediaVoiceNote(media=media, duration=duration),
+            caption=caption,
+        )
+    raise TelegramRenderError(f"unhandled rich media kind: {kind!r}")
+
+
+def _render_media_collection(block: Mapping[str, Any]) -> object:
+    items = block.get("items", block.get("blocks"))
+    if not isinstance(items, list) or not items:
+        raise TelegramRenderError("rich media collection requires non-empty items")
+    rendered: list[object] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            raise TelegramRenderError("rich media collection items must be objects")
+        rendered.append(_render_single_media_block(item))
+    caption = _rich_caption(block)
+    if str(block.get("type") or "") == "slideshow":
+        return InputRichBlockSlideshow(blocks=rendered, caption=caption)
+    return InputRichBlockCollage(blocks=rendered, caption=caption)
+
+
+def _render_map_block(block: Mapping[str, Any]) -> InputRichBlockMap:
+    try:
+        latitude = float(block.get("latitude", block.get("lat")))
+        longitude = float(block.get("longitude", block.get("lon", block.get("lng"))))
+    except (TypeError, ValueError) as exc:
+        raise TelegramRenderError("rich map requires numeric latitude and longitude") from exc
+    if not -90 <= latitude <= 90:
+        raise TelegramRenderError("map.latitude must be from -90 to 90")
+    if not -180 <= longitude <= 180:
+        raise TelegramRenderError("map.longitude must be from -180 to 180")
+    zoom = _bounded_int(
+        block.get("zoom"), field="map.zoom", minimum=0, maximum=24, default=13
+    )
+    width = _bounded_int(
+        block.get("width"), field="map.width", minimum=1, maximum=10000, default=640
+    )
+    height = _bounded_int(
+        block.get("height"), field="map.height", minimum=1, maximum=10000, default=360
+    )
+    assert zoom is not None and width is not None and height is not None
+    if width + height > 10000:
+        raise TelegramRenderError("map width + height must not exceed 10000")
+    ratio = max(width / height, height / width)
+    if ratio > 20:
+        raise TelegramRenderError("map width/height ratio must not exceed 20")
+    return InputRichBlockMap(
+        location=Location(latitude=latitude, longitude=longitude),
+        zoom=zoom,
+        width=width,
+        height=height,
+        caption=_rich_caption(block),
+    )
+
+
+def _render_rich_media_block(block: Mapping[str, Any]) -> object:
+    block_type = str(block.get("type") or "")
+    if block_type in {"image", "media"}:
+        return _render_single_media_block(block)
+    if block_type in {"gallery", "collage", "slideshow"}:
+        return _render_media_collection(block)
+    if block_type == "map":
+        return _render_map_block(block)
+    raise TelegramRenderError(f"unsupported rich media block type: {block_type!r}")
+
+
 def _render_rich_block(block: Mapping[str, Any]) -> object:
     block_type = str(block.get("type") or "")
+    if block_type in _RICH_MEDIA_TYPES:
+        return _render_rich_media_block(block)
     if block_type not in _RICH_STRUCTURAL_TYPES:
-        if block_type in _RICH_MEDIA_TYPES:
-            raise TelegramRenderError(
-                f"rich media block {block_type!r} requires a file-attachment renderer"
-            )
         raise TelegramRenderError(f"unsupported rich block type: {block_type!r}")
 
     if block_type == "paragraph":
@@ -263,7 +475,12 @@ def _render_rich_block(block: Mapping[str, Any]) -> object:
             is_open=(bool(block.get("is_open")) if "is_open" in block else None),
         )
     if block_type == "math":
-        expression = str(block.get("formula") or block.get("expression") or block.get("content") or "").strip()
+        expression = str(
+            block.get("formula")
+            or block.get("expression")
+            or block.get("content")
+            or ""
+        ).strip()
         if not expression:
             raise TelegramRenderError("rich math block requires expression")
         return InputRichBlockMathematicalExpression(expression=expression)
