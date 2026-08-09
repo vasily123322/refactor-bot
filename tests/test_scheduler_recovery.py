@@ -19,6 +19,12 @@ from app.services.scheduler_recovery import (
 from app.services.scheduler_task_lease import SchedulerTaskLeaseService
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 async def _seed(Session, *, channel_id: int = 97) -> tuple[int, int, int]:
     async with Session() as session:
         item = await ContentRepo(session).create(
@@ -159,7 +165,7 @@ def test_recovery_takeover_loses_to_late_live_heartbeat(tmp_path) -> None:
                 task = await check_session.get(PostTask, task_id)
                 assert lease is not None
                 assert lease.lease_token == handle.lease_token
-                assert lease.expires_at > scan_at
+                assert _as_utc(lease.expires_at) > scan_at
                 assert task is not None and task.status == "processing"
         finally:
             await engine.dispose()
