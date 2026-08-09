@@ -136,6 +136,9 @@ export type SourceConnectorView = {
   backlog_hint: boolean;
   worker_failure_count: number;
   worker_retry_after: string | null;
+  ingestion_busy: boolean;
+  ingestion_holder: string | null;
+  ingestion_lease_expires_at: string | null;
 };
 
 export type SourceIngestionResult = {
