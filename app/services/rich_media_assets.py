@@ -14,6 +14,7 @@ class RichMediaAssetError(RuntimeError):
     pass
 
 
+MAX_RICH_MEDIA_ASSETS_PER_DOCUMENT = 100
 _ASSET_ID_FIELDS = ("media_asset_id", "asset_id")
 _MEDIA_KIND_ALIASES = {
     "image": "photo",
@@ -62,6 +63,10 @@ def _referenced_asset_ids(document: PostDocument) -> set[int]:
             for field in _ASSET_ID_FIELDS:
                 if node.get(field) is not None:
                     ids.add(_asset_id(node[field]))
+                    if len(ids) > MAX_RICH_MEDIA_ASSETS_PER_DOCUMENT:
+                        raise RichMediaAssetError(
+                            f"document references more than {MAX_RICH_MEDIA_ASSETS_PER_DOCUMENT} media assets"
+                        )
                     break
     return ids
 
