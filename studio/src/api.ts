@@ -22,6 +22,20 @@ export class StudioApiError extends Error {
   }
 }
 
+async function parseResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const payload = (await response.json()) as { detail?: string };
+      detail = payload.detail || detail;
+    } catch {
+      // Keep status text when the body is not JSON.
+    }
+    throw new StudioApiError(detail || 'Studio API error', response.status);
+  }
+  return (await response.json()) as T;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const initData = getRawInitData();
   if (!initData) {
@@ -36,17 +50,20 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...init.headers,
     },
   });
-  if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const payload = (await response.json()) as { detail?: string };
-      detail = payload.detail || detail;
-    } catch {
-      // Keep status text when the body is not JSON.
-    }
-    throw new StudioApiError(detail || 'Studio API error', response.status);
+  return parseResponse<T>(response);
+}
+
+async function multipartRequest<T>(path: string, form: FormData): Promise<T> {
+  const initData = getRawInitData();
+  if (!initData) {
+    throw new StudioApiError('Откройте Studio из Telegram, чтобы авторизоваться.', 401);
   }
-  return (await response.json()) as T;
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'X-Telegram-Init-Data': initData },
+    body: form,
+  });
+  return parseResponse<T>(response);
 }
 
 export type CreateSourceInput = {
@@ -269,6 +286,21 @@ export const studioApi = {
       method: 'POST',
       body: JSON.stringify(input),
     }),
+  uploadMediaAsset: (
+    channelId: number,
+    kind: MediaAssetKind,
+    file: File,
+    label: string | null = null,
+  ) => {
+    const form = new FormData();
+    form.append('kind', kind);
+    form.append('file', file, file.name);
+    if (label) form.append('label', label);
+    return multipartRequest<MediaAssetView>(
+      `/api/studio/channels/${channelId}/media-assets/upload`,
+      form,
+    );
+  },
   sourceWorkerHealth: () =>
     request<SourceWorkerHealthView>('/api/studio/source-worker/health'),
   sources: (channelId: number) =>
