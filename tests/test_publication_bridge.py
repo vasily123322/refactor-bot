@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.db import Base
 from app.domain.content import PostDocument
 from app.domain.models import PostTask
-from app.domain.publishing.models import PublicationAttempt, ScheduleEntry
+from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.repositories.content import ContentRepo
 from app.services.publication_bridge import LegacyPublicationBridge
 from app.services.scheduling import as_utc
@@ -123,6 +123,53 @@ def test_publication_bridge_reconciles_success_and_records_attempt() -> None:
                     )
                 ).scalars().all()
                 assert len(attempts) == 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_reconcile_task_uses_db_link_not_stale_payload_marker() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                first_item = await ContentRepo(session).create(
+                    channel_id=1,
+                    document=PostDocument(
+                        blocks=[{"id": "b1", "type": "text", "text": "First"}]
+                    ),
+                )
+                second_item = await ContentRepo(session).create(
+                    channel_id=1,
+                    document=PostDocument(
+                        blocks=[{"id": "b2", "type": "text", "text": "Second"}]
+                    ),
+                )
+                bridge = LegacyPublicationBridge(session)
+                first = await bridge.queue(content_item_id=first_item.id)
+                second = await bridge.queue(content_item_id=second_item.id)
+                second_task = await session.get(PostTask, second.legacy_post_task_id)
+                assert second_task is not None
+
+                second_task.status = "processing"
+                second_task.payload = {
+                    **dict(second_task.payload or {}),
+                    "_publication_id": int(first.id),
+                }
+                await session.commit()
+
+                projected = await bridge.reconcile_task(second_task)
+                assert projected is not None
+                assert projected.id == second.id
+                assert projected.status == "sending"
+
+                first_reloaded = await session.get(Publication, int(first.id))
+                assert first_reloaded is not None
+                assert first_reloaded.status == "queued"
         finally:
             await engine.dispose()
 
