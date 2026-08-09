@@ -4,8 +4,12 @@ import {
   StudioApiError,
   studioApi,
   type SourceWorkerHealthView,
-  type SourceWorkerTickView,
 } from './api';
+import {
+  recentSourceWorkerTicks,
+  sourceWorkerTickErrors,
+  sourceWorkerTotalErrors,
+} from './sourceWorkerHealth';
 
 function errorMessage(error: unknown): string {
   if (error instanceof StudioApiError || error instanceof Error) return error.message;
@@ -21,16 +25,6 @@ function timeLabel(value: string | null | undefined): string {
     minute: '2-digit',
     second: '2-digit',
   }).format(date);
-}
-
-function tickErrors(tick: SourceWorkerTickView): number {
-  return (
-    tick.lease_errors +
-    tick.failures +
-    tick.timeouts +
-    tick.ingestion_errors +
-    tick.unexpected_errors
-  );
 }
 
 export function SourceWorkerHealthCard() {
@@ -55,14 +49,8 @@ export function SourceWorkerHealthCard() {
   }, [load]);
 
   const last = health?.last_tick ?? null;
-  const recent = health?.history.slice(-8).reverse() ?? [];
-  const totalErrors = health
-    ? health.totals.lease_errors +
-      health.totals.failures +
-      health.totals.timeouts +
-      health.totals.ingestion_errors +
-      health.totals.unexpected_errors
-    : 0;
+  const recent = health ? recentSourceWorkerTicks(health) : [];
+  const totalErrors = health ? sourceWorkerTotalErrors(health) : 0;
 
   return (
     <section className="source-worker-health-card" aria-label="Source worker health">
@@ -112,7 +100,7 @@ export function SourceWorkerHealthCard() {
                 <span>docs +{last.new_documents}</span>
                 <span>candidates +{last.candidates_created}</span>
                 <span>backlog {last.backlog_remaining}</span>
-                <span>errors {tickErrors(last)}</span>
+                <span>errors {sourceWorkerTickErrors(last)}</span>
                 <span>{last.duration_ms} ms</span>
                 {last.stopped_early && <span>stopped early</span>}
               </div>
@@ -147,7 +135,7 @@ export function SourceWorkerHealthCard() {
                     <span>{timeLabel(tick.finished_at)}</span>
                     <span>{tick.processed}/{tick.scheduled}</span>
                     <span>+{tick.new_documents}</span>
-                    <span>{tickErrors(tick)}</span>
+                    <span>{sourceWorkerTickErrors(tick)}</span>
                     <span>{tick.backlog_remaining}</span>
                     <span>{tick.duration_ms} ms</span>
                   </div>
