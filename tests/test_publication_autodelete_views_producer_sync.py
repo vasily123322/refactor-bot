@@ -235,6 +235,22 @@ def test_reconciler_stages_view_intent_before_bridge(monkeypatch) -> None:
             order.append("mirror")
             return 0, 0
 
+        class FakeRepeatRuntimeBackfill:
+            def __init__(self, _session) -> None:
+                pass
+
+            async def backfill_active(self, *, after_publication_id: int, limit: int):
+                order.append("repeat_runtime")
+                return SimpleNamespace(
+                    scanned=0,
+                    updated=0,
+                    skipped_existing=0,
+                    skipped_unproven=0,
+                    failures=0,
+                    next_cursor=0,
+                    done=True,
+                )
+
         async def sync_views(_session, *, limit: int):
             order.append("views")
             return SimpleNamespace(scanned=1, synced=1, cleared=0, invalid=0)
@@ -258,6 +274,11 @@ def test_reconciler_stages_view_intent_before_bridge(monkeypatch) -> None:
         monkeypatch.setattr(reconciler_module, "mirror_unlinked_legacy_tasks", mirror)
         monkeypatch.setattr(
             reconciler_module,
+            "RepeatRuntimeIntentBackfillService",
+            FakeRepeatRuntimeBackfill,
+        )
+        monkeypatch.setattr(
+            reconciler_module,
             "sync_active_legacy_view_intents",
             sync_views,
         )
@@ -271,6 +292,6 @@ def test_reconciler_stages_view_intent_before_bridge(monkeypatch) -> None:
         worker = PublicationReconcilerWorker(interval_seconds=1, batch_size=10)
         await worker._tick()  # noqa: SLF001 - worker ordering boundary
 
-        assert order == ["mirror", "views", "bridge", "runtime"]
+        assert order == ["mirror", "repeat_runtime", "views", "bridge", "runtime"]
 
     asyncio.run(run())
