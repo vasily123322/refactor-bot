@@ -18,10 +18,12 @@ class PostTaskRetentionWorker:
         interval_seconds: int = 3600,
         retention_days: int = 90,
         batch_size: int = 100,
+        retire_successful: bool = False,
     ) -> None:
         self.session_factory = session_factory
         self.retention_days = max(7, min(int(retention_days), 3650))
         self.batch_size = max(1, min(int(batch_size), 500))
+        self.retire_successful = bool(retire_successful)
         self._loop = PollingLoop(
             interval_seconds=max(60, int(interval_seconds)),
             on_tick=self._tick,
@@ -40,21 +42,29 @@ class PostTaskRetentionWorker:
                 session,
                 retention_days=self.retention_days,
                 batch_size=self.batch_size,
+                retire_successful=self.retire_successful,
             ).run_once()
         if (
             tick.deleted
             or tick.skipped_repeat
             or tick.skipped_delivery_evidence
+            or tick.skipped_canonical_delivery
+            or tick.skipped_pending_autodelete
+            or tick.skipped_content_linkage
             or tick.failures
         ):
             logger.info(
                 "PostTask retention: selected={} eligible={} deleted={} "
-                "skipped_repeat={} skipped_evidence={} skipped_changed={} failures={}",
+                "skipped_repeat={} skipped_evidence={} skipped_delivery={} "
+                "skipped_autodelete={} skipped_content={} skipped_changed={} failures={}",
                 tick.selected,
                 tick.eligible,
                 tick.deleted,
                 tick.skipped_repeat,
                 tick.skipped_delivery_evidence,
+                tick.skipped_canonical_delivery,
+                tick.skipped_pending_autodelete,
+                tick.skipped_content_linkage,
                 tick.skipped_changed,
                 tick.failures,
             )
