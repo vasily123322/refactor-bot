@@ -5,11 +5,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content import PostDocument
-from app.domain.content.models import ContentRevision
+from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import Channel, Client
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.content import legacy_payload_from_document
@@ -40,6 +40,12 @@ def _editor_payload(document: PostDocument, *, runtime_options: dict[str, Any]) 
         # Transport file IDs remain resolved only at the delivery edge.
         payload = {"type": "rich_document", "post_document": document.to_dict()}
 
+    # Historical ContentRevision metadata can contain transport-generated legacy
+    # fields. The editor should reconstruct content + queue-time runtime intent, not
+    # re-introduce delivery results into a new edit operation.
+    for key in ("result_ids", "result_link", "notify_context"):
+        payload.pop(key, None)
+
     for key, value in runtime_options.items():
         if key not in payload and not str(key).startswith("_"):
             payload[str(key)] = deepcopy(value)
@@ -59,7 +65,15 @@ async def load_owned_publication_context(
             select(Publication, Channel, ScheduleEntry)
             .join(Channel, Channel.id == Publication.channel_id)
             .join(Client, Client.id == Channel.owner_id)
-            .outerjoin(ScheduleEntry, ScheduleEntry.id == Publication.schedule_entry_id)
+            .outerjoin(
+                ScheduleEntry,
+                and_(
+                    ScheduleEntry.id == Publication.schedule_entry_id,
+                    ScheduleEntry.channel_id == Publication.channel_id,
+                    ScheduleEntry.content_item_id == Publication.content_item_id,
+                    ScheduleEntry.content_revision == Publication.content_revision,
+                ),
+            )
             .where(
                 Publication.id == int(publication_id),
                 Client.tg_user_id == int(tg_user_id),
@@ -70,11 +84,19 @@ async def load_owned_publication_context(
         return None
 
     publication, channel, schedule = row
+    # A linked schedule is part of the canonical identity. If the FK points to a
+    # row whose channel/content identity disagrees with Publication, fail closed.
+    if publication.schedule_entry_id is not None and schedule is None:
+        return None
+
     revision = (
         await session.execute(
-            select(ContentRevision).where(
+            select(ContentRevision)
+            .join(ContentItem, ContentItem.id == ContentRevision.content_item_id)
+            .where(
                 ContentRevision.content_item_id == int(publication.content_item_id),
                 ContentRevision.revision == int(publication.content_revision),
+                ContentItem.channel_id == int(publication.channel_id),
             )
         )
     ).scalar_one_or_none()
