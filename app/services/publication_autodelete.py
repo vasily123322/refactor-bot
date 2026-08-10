@@ -89,9 +89,13 @@ def _runtime_due_at(runtime: Mapping[str, Any]) -> tuple[datetime | None, str | 
     return due, due.isoformat()
 
 
-def _repeat_enabled(schedule: ScheduleEntry) -> bool:
-    rule = _safe_mapping(schedule.repeat_rule)
-    return rule.get("enabled") is True and _positive_int(rule.get("seconds")) is not None
+def _safe_nonrepeat(schedule: ScheduleEntry) -> bool:
+    raw_rule = schedule.repeat_rule
+    if raw_rule is not None and not isinstance(raw_rule, Mapping):
+        return False
+    rule = _safe_mapping(raw_rule)
+    enabled = rule.get("enabled")
+    return enabled is None or enabled is False
 
 
 def _is_unavailable_delete_error(exc: Exception) -> bool:
@@ -163,28 +167,57 @@ class PublicationAutodeleteService:
 
         publication, schedule, item, channel = row
         meta = _safe_mapping(publication.meta)
-        runtime = _safe_mapping(meta.get(AUTODELETE_RUNTIME_META_KEY))
-        options = _safe_mapping(meta.get("runtime_options"))
+        raw_runtime = meta.get(AUTODELETE_RUNTIME_META_KEY)
+        raw_options = meta.get("runtime_options")
+        if raw_runtime is not None and not isinstance(raw_runtime, Mapping):
+            await self.session.rollback()
+            return None, PublicationAutodeleteResult(
+                publication_id=int(publication.id), outcome="ineligible"
+            )
+        if raw_options is not None and not isinstance(raw_options, Mapping):
+            await self.session.rollback()
+            return None, PublicationAutodeleteResult(
+                publication_id=int(publication.id), outcome="ineligible"
+            )
+        runtime = _safe_mapping(raw_runtime)
+        options = _safe_mapping(raw_options)
         ids = tuple(normalize_telegram_message_ids(publication.telegram_message_ids))
 
-        if runtime.get("deleted") is True:
+        deleted_flag = runtime.get("deleted")
+        if deleted_flag not in (None, False, True):
+            await self.session.rollback()
+            return None, PublicationAutodeleteResult(
+                publication_id=int(publication.id), outcome="ineligible"
+            )
+        if deleted_flag is True:
             await self.session.rollback()
             return None, PublicationAutodeleteResult(
                 publication_id=int(publication.id),
                 outcome="already_deleted",
                 message_count=len(ids),
             )
-        if _repeat_enabled(schedule):
+        if not _safe_nonrepeat(schedule):
             await self.session.rollback()
             return None, PublicationAutodeleteResult(
                 publication_id=int(publication.id), outcome="ineligible"
             )
-        if options.get("autodelete_report") is True:
+        report_flag = options.get("autodelete_report")
+        if report_flag not in (None, False, True) or report_flag is True:
             await self.session.rollback()
             return None, PublicationAutodeleteResult(
                 publication_id=int(publication.id), outcome="ineligible"
             )
-        if _positive_int(options.get("autodelete_views")) is not None:
+        raw_views = options.get("autodelete_views")
+        parsed_views = _positive_int(raw_views)
+        if (
+            raw_views not in (None, False, 0, "0", "")
+            and parsed_views is None
+        ):
+            await self.session.rollback()
+            return None, PublicationAutodeleteResult(
+                publication_id=int(publication.id), outcome="ineligible"
+            )
+        if parsed_views is not None:
             await self.session.rollback()
             return None, PublicationAutodeleteResult(
                 publication_id=int(publication.id), outcome="ineligible"
@@ -265,7 +298,7 @@ class PublicationAutodeleteService:
             raise PublicationAutodeleteSyncConflict()
 
         publication, schedule, _item = row
-        if _repeat_enabled(schedule):
+        if not _safe_nonrepeat(schedule):
             await self.session.rollback()
             raise PublicationAutodeleteSyncConflict()
         if tuple(normalize_telegram_message_ids(publication.telegram_message_ids)) != (
@@ -275,9 +308,17 @@ class PublicationAutodeleteService:
             raise PublicationAutodeleteSyncConflict()
 
         meta = _safe_mapping(publication.meta)
-        runtime = _safe_mapping(meta.get(AUTODELETE_RUNTIME_META_KEY))
+        raw_runtime = meta.get(AUTODELETE_RUNTIME_META_KEY)
+        if raw_runtime is not None and not isinstance(raw_runtime, Mapping):
+            await self.session.rollback()
+            raise PublicationAutodeleteSyncConflict()
+        runtime = _safe_mapping(raw_runtime)
         due_at, due_token = _runtime_due_at(runtime)
-        if runtime.get("deleted") is True:
+        deleted_flag = runtime.get("deleted")
+        if deleted_flag not in (None, False, True):
+            await self.session.rollback()
+            raise PublicationAutodeleteSyncConflict()
+        if deleted_flag is True:
             await self.session.rollback()
             return PublicationAutodeleteResult(
                 publication_id=candidate.publication_id,
