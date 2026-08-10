@@ -45,6 +45,21 @@ class Settings(BaseSettings):
         default=3600, alias="POST_TASK_RETENTION_INTERVAL_SECONDS"
     )
 
+    # Opt-in canonical-only time-based autodelete runtime. Disabled by default until
+    # operators explicitly choose the new lease-backed destructive worker.
+    publication_autodelete_worker_enabled: bool = Field(
+        default=False, alias="PUBLICATION_AUTODELETE_WORKER_ENABLED"
+    )
+    publication_autodelete_worker_interval_seconds: int = Field(
+        default=60, alias="PUBLICATION_AUTODELETE_WORKER_INTERVAL_SECONDS"
+    )
+    publication_autodelete_worker_batch_size: int = Field(
+        default=25, alias="PUBLICATION_AUTODELETE_WORKER_BATCH_SIZE"
+    )
+    publication_autodelete_worker_lease_ttl_seconds: int = Field(
+        default=180, alias="PUBLICATION_AUTODELETE_WORKER_LEASE_TTL_SECONDS"
+    )
+
     # Optional deterministic Inbox enrichment worker (never uses AI providers)
     local_enrichment_worker_enabled: bool = Field(
         default=False, alias="LOCAL_ENRICHMENT_WORKER_ENABLED"
