@@ -37,6 +37,7 @@ _EDITOR_NON_CONTENT_FIELDS = frozenset(
         "repeat_group_id",
         "autodelete_at",
         "autodelete_effective_seconds",
+        "autodelete_label",
         "autodeleted",
         "autodeleted_at",
         "autosign_applied",
