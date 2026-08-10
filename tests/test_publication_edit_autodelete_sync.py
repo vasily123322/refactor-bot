@@ -330,7 +330,7 @@ def test_stale_local_timer_uses_current_due_ids_and_report_state(tmp_path) -> No
     asyncio.run(run())
 
 
-def test_unlinked_views_edit_persists_canonical_state_and_due_index(tmp_path) -> None:
+def test_unlinked_views_report_edit_persists_canonical_state_and_due_index(tmp_path) -> None:
     class SuccessfulEditProvider:
         def __init__(self) -> None:
             self.calls: list[dict] = []
@@ -340,7 +340,7 @@ def test_unlinked_views_edit_persists_canonical_state_and_due_index(tmp_path) ->
 
     async def run() -> None:
         engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'unlinked-views-edit.db'}"
+            f"sqlite+aiosqlite:///{tmp_path / 'unlinked-views-report-edit.db'}"
         )
         try:
             async with engine.begin() as connection:
@@ -364,10 +364,11 @@ def test_unlinked_views_edit_persists_canonical_state_and_due_index(tmp_path) ->
                 expected_revision=1,
                 payload={
                     "type": "text",
-                    "text": "Canonical-only views",
+                    "text": "Canonical-only views report",
                     "autodelete_views": 100,
+                    "autodelete_report": True,
                 },
-                text="Canonical-only views",
+                text="Canonical-only views report",
             )
 
             assert result.previous_revision == 1
@@ -386,8 +387,12 @@ def test_unlinked_views_edit_persists_canonical_state_and_due_index(tmp_path) ->
                 assert publication.legacy_post_task_id is None
                 assert publication.content_revision == 2
                 assert schedule.content_revision == 2
-                assert publication.meta["runtime_options"] == {"autodelete_views": 100}
-                assert schedule.meta["runtime_options"] == {"autodelete_views": 100}
+                expected_options = {
+                    "autodelete_views": 100,
+                    "autodelete_report": True,
+                }
+                assert publication.meta["runtime_options"] == expected_options
+                assert schedule.meta["runtime_options"] == expected_options
                 assert state.threshold == 100
                 assert state.last_views is None
                 assert state.last_checked_at is None
@@ -398,7 +403,7 @@ def test_unlinked_views_edit_persists_canonical_state_and_due_index(tmp_path) ->
     asyncio.run(run())
 
 
-def test_unlinked_report_is_rejected_before_provider_call(tmp_path) -> None:
+def test_unlinked_invalid_report_is_rejected_before_provider_call(tmp_path) -> None:
     class ProviderMustNotBeCalled:
         def __init__(self) -> None:
             self.called = False
@@ -409,7 +414,7 @@ def test_unlinked_report_is_rejected_before_provider_call(tmp_path) -> None:
 
     async def run() -> None:
         engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'unlinked-report-capability.db'}"
+            f"sqlite+aiosqlite:///{tmp_path / 'unlinked-invalid-report.db'}"
         )
         try:
             async with engine.begin() as connection:
@@ -427,18 +432,21 @@ def test_unlinked_report_is_rejected_before_provider_call(tmp_path) -> None:
                 session_factory=Session,
             )
 
-            with pytest.raises(PublicationEditPersistenceError, match="requires legacy"):
+            with pytest.raises(
+                PublicationEditPersistenceError,
+                match="invalid canonical runtime option: autodelete_report",
+            ):
                 await coordinator.edit_text_and_persist(
                     publication_id=publication_id,
                     tg_user_id=71201,
                     expected_revision=1,
                     payload={
                         "type": "text",
-                        "text": "Unsupported report",
-                        "autodelete_seconds": 3600,
-                        "autodelete_report": True,
+                        "text": "Malformed report",
+                        "autodelete_views": 100,
+                        "autodelete_report": "yes",
                     },
-                    text="Unsupported report",
+                    text="Malformed report",
                 )
             assert provider.called is False
         finally:
