@@ -1,0 +1,48 @@
+name: Patch canonical content-plan producer
+
+on:
+  push:
+    branches:
+      - agent/content-plan-publication-producer
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: agent/content-plan-publication-producer
+      - name: Switch only proven published rows to Publication callback
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("app/bot/routers/content_plan.py")
+          text = path.read_text(encoding="utf-8")
+
+          old_loop = '''            for p in items:\n                when = p.scheduled_at\n'''
+          new_loop = '''            from app.services.content_plan_publication_links import (\n                content_plan_open_callback,\n                published_publication_ids_for_legacy_tasks,\n            )\n\n            published_publication_ids = (\n                await published_publication_ids_for_legacy_tasks(\n                    session,\n                    channel_id=int(channel_id),\n                    post_task_ids=[int(item.id) for item in items],\n                )\n                if items\n                else {}\n            )\n            for p in items:\n                when = p.scheduled_at\n'''
+          if text.count(old_loop) != 1:
+              raise SystemExit(f"expected one content-plan item loop anchor, got {text.count(old_loop)}")
+          text = text.replace(old_loop, new_loop, 1)
+
+          old_callback = '''                        callback_data=f"cp_open_post:{p.id}:{center_date.date().isoformat()}",\n'''
+          new_callback = '''                        callback_data=content_plan_open_callback(\n                            post_task_id=int(p.id),\n                            date_iso=center_date.date().isoformat(),\n                            published_publication_ids=published_publication_ids,\n                        ),\n'''
+          if text.count(old_callback) != 1:
+              raise SystemExit(f"expected one content-plan post callback producer, got {text.count(old_callback)}")
+          text = text.replace(old_callback, new_callback, 1)
+          path.write_text(text, encoding="utf-8")
+
+          Path(".github/workflows/patch-content-plan-publication-producer.yml").unlink()
+          PY
+      - name: Commit canonical producer switch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/bot/routers/content_plan.py .github/workflows/patch-content-plan-publication-producer.yml
+          git commit -m "refactor: emit canonical callbacks for published content-plan rows"
+          git push origin HEAD:agent/content-plan-publication-producer
