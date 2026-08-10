@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import html
 from contextlib import suppress
-from datetime import timezone
+from datetime import date, timezone
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
@@ -31,10 +31,10 @@ def _parse_callback(data: str | None, prefix: str) -> tuple[int, str] | None:
         return None
     try:
         publication_id = int(parts[1])
-    except (TypeError, ValueError):
+        date_iso = date.fromisoformat(str(parts[2])).isoformat()
+    except (TypeError, ValueError, OverflowError):
         return None
-    date_iso = str(parts[2])
-    if publication_id <= 0 or not date_iso:
+    if publication_id <= 0:
         return None
     return publication_id, date_iso
 
