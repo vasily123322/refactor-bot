@@ -34,6 +34,7 @@ class CanonicalPublicationEditResult:
     publication_id: int
     previous_revision: int
     revision: int
+    tg_chat_id: int
     message_id: int
     telegram_message_ids: tuple[int, ...]
     attempted_message_ids: tuple[int, ...]
@@ -116,6 +117,7 @@ class CanonicalPublicationEditCoordinator:
             publication_id=persisted.publication_id,
             previous_revision=persisted.previous_revision,
             revision=persisted.revision,
+            tg_chat_id=int(view.tg_chat_id),
             message_id=int(outcome.message_id),
             telegram_message_ids=persisted.telegram_message_ids,
             attempted_message_ids=outcome.attempted_message_ids,
