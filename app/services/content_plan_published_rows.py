@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -37,6 +38,12 @@ def _positive_int(value: Any) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def _safe_mapping(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key): item for key, item in value.items()}
+
+
 def _title(item: ContentItem, revision: ContentRevision) -> str:
     explicit = " ".join(str(item.title or "").split())
     if explicit:
@@ -52,11 +59,9 @@ def _title(item: ContentItem, revision: ContentRevision) -> str:
 
 
 def _autodelete_state(publication: Publication) -> tuple[bool, int | None, int | None]:
-    meta = dict(publication.meta or {})
-    runtime = meta.get(AUTODELETE_RUNTIME_META_KEY)
-    runtime = dict(runtime) if isinstance(runtime, dict) else {}
-    options = meta.get("runtime_options")
-    options = dict(options) if isinstance(options, dict) else {}
+    meta = _safe_mapping(publication.meta)
+    runtime = _safe_mapping(meta.get(AUTODELETE_RUNTIME_META_KEY))
+    options = _safe_mapping(meta.get("runtime_options"))
     deleted = runtime.get("deleted") is True
     seconds = _positive_int(
         runtime.get("effective_seconds") or options.get("autodelete_seconds")
@@ -66,7 +71,7 @@ def _autodelete_state(publication: Publication) -> tuple[bool, int | None, int |
 
 
 def _repeat_state(schedule: ScheduleEntry) -> tuple[bool, int | None]:
-    rule = dict(schedule.repeat_rule or {})
+    rule = _safe_mapping(schedule.repeat_rule)
     enabled = rule.get("enabled") is True
     seconds = _positive_int(rule.get("seconds")) if enabled else None
     return bool(enabled and seconds), seconds
