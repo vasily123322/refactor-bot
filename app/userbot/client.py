@@ -139,6 +139,8 @@ def _public_target(target: str | int) -> str | int:
 
 
 def _positive_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
     try:
         parsed = int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError, OverflowError):
@@ -270,6 +272,24 @@ class UserbotGateway:
         else:
             status = "member"
         return UserbotMember(status=status)
+
+    async def get_message_views(self, target: str | int, message_id: int) -> int | None:
+        """Return a broadcast message's current view count without leaking MTProto data."""
+        safe_message_id = _positive_int(message_id)
+        if safe_message_id is None:
+            return None
+        entity = await self._client.get_entity(_public_target(target))
+        message = await self._client.get_messages(entity, ids=safe_message_id)
+        if message is None:
+            return None
+        raw_views = getattr(message, "views", None)
+        if raw_views is None or isinstance(raw_views, bool):
+            return None
+        try:
+            views = int(raw_views)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return views if views >= 0 else None
 
     async def get_chat_history(
         self,
