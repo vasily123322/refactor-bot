@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from aiogram.types import InlineKeyboardButton
 
+from app.bot.routers.shared import offset_minutes_from_tz
 from app.services.content_plan_published_rows import PublishedContentPlanRow
 from app.services.publication_editor import publication_open_callback
 
@@ -16,33 +17,11 @@ class TimedContentPlanButtonRow:
     buttons: list[InlineKeyboardButton]
 
 
-def _offset_minutes_from_tz(tz_value: str | None) -> int:
-    if not tz_value:
-        return 0
-    text = str(tz_value).strip().upper()
-    if text == "UTC":
-        return 0
-    if not text.startswith("UTC"):
-        return 0
-    raw = text[3:]
-    if not raw:
-        return 0
-    sign = -1 if raw.startswith("-") else 1
-    raw = raw.lstrip("+-")
-    try:
-        if ":" in raw:
-            hours_text, minutes_text = raw.split(":", 1)
-            return sign * (int(hours_text) * 60 + int(minutes_text))
-        return sign * int(raw) * 60
-    except (TypeError, ValueError, OverflowError):
-        return 0
-
-
 def _local_hm(value: datetime, tz_code: str | None) -> str:
     try:
         local = value.astimezone(ZoneInfo(tz_code)) if tz_code else value
     except Exception:
-        local = value + timedelta(minutes=_offset_minutes_from_tz(tz_code))
+        local = value + timedelta(minutes=offset_minutes_from_tz(tz_code))
     return local.strftime("%H:%M")
 
 
