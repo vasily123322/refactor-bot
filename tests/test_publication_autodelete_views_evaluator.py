@@ -24,6 +24,12 @@ from app.services.publication_bridge import LegacyPublicationBridge
 from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
 
 
+def _utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 class ViewSource:
     def __init__(self, values: dict[int, int | None]) -> None:
         self.values = dict(values)
@@ -160,8 +166,9 @@ def test_album_threshold_uses_minimum_view_count_and_records_observation(tmp_pat
                 state = await session.get(PublicationAutodeleteViewState, publication_id)
                 assert state is not None
                 assert state.last_views == 99
-                assert state.last_checked_at == now
-                assert state.next_check_at > now
+                assert state.last_checked_at is not None
+                assert _utc(state.last_checked_at) == now
+                assert _utc(state.next_check_at) > now
         finally:
             await engine.dispose()
 
@@ -197,7 +204,7 @@ def test_missing_view_count_defers_without_delete_or_false_observation(tmp_path)
                 assert state is not None
                 assert state.last_views is None
                 assert state.last_checked_at is None
-                assert state.next_check_at > now
+                assert _utc(state.next_check_at) > now
         finally:
             await engine.dispose()
 
@@ -362,7 +369,7 @@ def test_partial_retryable_delete_stays_nonterminal_and_is_deferred(tmp_path) ->
                 state = await session.get(PublicationAutodeleteViewState, publication_id)
                 assert publication is not None and state is not None
                 assert AUTODELETE_RUNTIME_META_KEY not in dict(publication.meta or {})
-                assert state.next_check_at > now
+                assert _utc(state.next_check_at) > now
         finally:
             await engine.dispose()
 
@@ -492,7 +499,7 @@ def test_view_source_cancellation_propagates_without_state_mutation(tmp_path) ->
                 state = await session.get(PublicationAutodeleteViewState, publication_id)
                 assert state is not None
                 assert state.last_views is None
-                assert state.next_check_at == now
+                assert _utc(state.next_check_at) == now
         finally:
             await engine.dispose()
 
