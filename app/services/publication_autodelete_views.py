@@ -7,15 +7,19 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Protocol
 
+from loguru import logger
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content.models import ContentItem
-from app.domain.models import Channel, PostTask
+from app.domain.models import Channel, Client, PostTask
 from app.domain.publication_autodelete import PublicationAutodeleteViewState
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
-from app.services.telegram_results import normalize_telegram_message_ids
+from app.services.telegram_results import (
+    normalize_telegram_message_ids,
+    normalize_telegram_result_link,
+)
 
 
 class TelegramMessageViewsSource(Protocol):
@@ -24,6 +28,14 @@ class TelegramMessageViewsSource(Protocol):
 
 class TelegramDeleteProvider(Protocol):
     async def delete_message(self, *, chat_id: int, message_id: int) -> Any: ...
+
+    async def send_message(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        disable_web_page_preview: bool,
+    ) -> Any: ...
 
 
 class PublicationAutodeleteViewsSyncConflict(RuntimeError):
@@ -64,6 +76,8 @@ class _Candidate:
     legacy_post_task_id: int | None
     threshold: int
     telegram_message_ids: tuple[int, ...]
+    report_enabled: bool
+    result_link: str | None
 
 
 def _utc(value: datetime | None = None) -> datetime:
@@ -128,29 +142,34 @@ def _runtime_status(meta: Mapping[str, Any]) -> tuple[bool, bool]:
     return True, False
 
 
-def _view_intent(options: Mapping[str, Any]) -> tuple[bool, int | None]:
+def _view_intent(
+    options: Mapping[str, Any],
+    *,
+    allow_report: bool = False,
+) -> tuple[bool, int | None, bool]:
     threshold = _positive_int(options.get("autodelete_views"))
     raw_threshold = options.get("autodelete_views")
     if raw_threshold not in (None, False, 0, "0", "") and threshold is None:
-        return False, None
+        return False, None, False
 
     seconds = _positive_int(options.get("autodelete_seconds"))
     raw_seconds = options.get("autodelete_seconds")
     if raw_seconds not in (None, False, 0, "0", "") and seconds is None:
-        return False, None
+        return False, None, False
     if seconds is not None:
-        return False, None
+        return False, None, False
 
     report = options.get("autodelete_report")
     if report is not None and not isinstance(report, bool):
-        return False, None
-    # Report parity is intentionally a later stage. Do not silently drop it.
-    if report is True:
-        return False, None
-    return threshold is not None, threshold
+        return False, None, False
+    report_enabled = report is True
+    if report_enabled and not allow_report:
+        return False, None, False
+    return threshold is not None, threshold, report_enabled
 
 
 def _is_unavailable_delete_error(exc: Exception) -> bool:
+    # Provider text is used only for in-memory classification and is never persisted.
     text = str(exc).lower()
     return (
         "message to delete not found" in text
@@ -164,9 +183,10 @@ def _is_unavailable_delete_error(exc: Exception) -> bool:
 class PublicationAutodeleteViewsService:
     """Evaluate and delete one views-based Publication with fail-closed revalidation.
 
-    This service does not own distributed scheduling. A later worker must acquire the
+    This service does not own distributed scheduling. The worker must acquire the
     existing Publication autodelete lease before calling it. Network calls are never
-    made with a DB transaction held open.
+    made with a DB transaction held open. Report delivery is disabled by default and
+    may be enabled only by a caller that has explicitly opted into the proven path.
     """
 
     def __init__(
@@ -176,46 +196,48 @@ class PublicationAutodeleteViewsService:
         view_source: TelegramMessageViewsSource,
         delete_provider: TelegramDeleteProvider,
         next_check_seconds: int = 60,
+        allow_report: bool = False,
     ) -> None:
         self.session = session
         self.view_source = view_source
         self.delete_provider = delete_provider
         self.next_check_seconds = max(15, min(int(next_check_seconds), 3600))
+        self.allow_report = bool(allow_report)
 
-    async def _authoritative_threshold(
+    async def _authoritative_intent(
         self,
         publication: Publication,
         *,
         telegram_message_ids: tuple[int, ...],
-    ) -> tuple[bool, int | None]:
+    ) -> tuple[bool, int | None, bool]:
         raw_legacy_id = publication.legacy_post_task_id
         if raw_legacy_id is not None:
             try:
                 legacy_id = int(raw_legacy_id)
             except (TypeError, ValueError, OverflowError):
-                return False, None
+                return False, None, False
             task = await self.session.get(PostTask, legacy_id)
             if task is None:
-                return False, None
+                return False, None, False
             if int(task.channel_id) != int(publication.channel_id) or str(task.status) != "done":
-                return False, None
+                return False, None, False
             payload = _mapping(task.payload)
             if payload is None:
-                return False, None
+                return False, None, False
             if tuple(normalize_telegram_message_ids(payload.get("result_ids"))) != telegram_message_ids:
-                return False, None
-            return _view_intent(payload)
+                return False, None, False
+            return _view_intent(payload, allow_report=self.allow_report)
 
         meta = _mapping(publication.meta)
         if meta is None:
-            return False, None
+            return False, None, False
         raw_options = meta.get("runtime_options")
         if raw_options is not None and not isinstance(raw_options, Mapping):
-            return False, None
+            return False, None, False
         options = _mapping(raw_options)
         if options is None:
-            return False, None
-        return _view_intent(options)
+            return False, None, False
+        return _view_intent(options, allow_report=self.allow_report)
 
     async def _candidate(
         self,
@@ -274,9 +296,11 @@ class PublicationAutodeleteViewsService:
         runtime_safe, already_deleted = (
             _runtime_status(meta) if meta is not None else (False, False)
         )
-        intent_safe, authoritative_threshold = await self._authoritative_threshold(
-            publication,
-            telegram_message_ids=ids,
+        intent_safe, authoritative_threshold, report_enabled = (
+            await self._authoritative_intent(
+                publication,
+                telegram_message_ids=ids,
+            )
         )
         safe_publication_id = int(publication.id)
 
@@ -329,6 +353,8 @@ class PublicationAutodeleteViewsService:
             ),
             threshold=threshold,
             telegram_message_ids=ids,
+            report_enabled=report_enabled,
+            result_link=normalize_telegram_result_link(publication.result_link),
         )
         await self.session.rollback()
         return candidate, PublicationAutodeleteViewsResult(
@@ -396,11 +422,15 @@ class PublicationAutodeleteViewsService:
         if already_deleted:
             return "already_deleted"
 
-        intent_safe, threshold = await self._authoritative_threshold(
+        intent_safe, threshold, report_enabled = await self._authoritative_intent(
             publication,
             telegram_message_ids=ids,
         )
-        if not intent_safe or threshold != candidate.threshold:
+        if (
+            not intent_safe
+            or threshold != candidate.threshold
+            or report_enabled != candidate.report_enabled
+        ):
             raise PublicationAutodeleteViewsSyncConflict()
 
         state = (
@@ -510,6 +540,44 @@ class PublicationAutodeleteViewsService:
         await self.session.commit()
         return "deleted"
 
+    async def _send_report_best_effort(self, candidate: _Candidate) -> None:
+        if not candidate.report_enabled:
+            return
+
+        try:
+            recipient = (
+                await self.session.execute(
+                    select(Client.tg_user_id)
+                    .join(Channel, Channel.owner_id == Client.id)
+                    .where(Channel.id == candidate.channel_id)
+                )
+            ).scalar_one_or_none()
+            # Release the read transaction before the provider network side effect.
+            await self.session.rollback()
+            if recipient is None:
+                return
+
+            text = "🗑️ Пост удалён по просмотрам"
+            if candidate.result_link:
+                text = f"{text}\n{candidate.result_link}"
+            await self.delete_provider.send_message(
+                chat_id=int(recipient),
+                text=text,
+                disable_web_page_preview=True,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            try:
+                await self.session.rollback()
+            except Exception:
+                pass
+            logger.warning(
+                "Publication views autodelete: report failed publication_id={} type={}",
+                candidate.publication_id,
+                type(exc).__name__,
+            )
+
     async def evaluate_and_delete(
         self,
         publication_id: int,
@@ -618,6 +686,11 @@ class PublicationAutodeleteViewsService:
             observed_views=observed_views,
             deleted_at=current,
         )
+        # Report only after durable terminal truth and only if at least one delete was
+        # actually confirmed. Terminal-unavailable-only resolution must not claim a
+        # destructive action happened now.
+        if outcome == "deleted" and deleted_count > 0:
+            await self._send_report_best_effort(candidate)
         return PublicationAutodeleteViewsResult(
             publication_id=candidate.publication_id,
             outcome=outcome,
