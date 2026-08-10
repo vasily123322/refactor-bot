@@ -10,6 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
+from app.services.publication_autodelete_views_state import (
+    PublicationAutodeleteViewStateError,
+    PublicationAutodeleteViewStateService,
+)
 from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
 from app.services.telegram_results import normalize_telegram_message_ids
 
@@ -221,6 +225,15 @@ class PublicationEditAutodeleteSyncService:
             _set_runtime(publication, None)
         else:
             due = due_token
+
+        try:
+            await PublicationAutodeleteViewStateService(self.session).sync_intent(
+                publication_id=int(publication.id),
+                threshold=current_views,
+                now=current_time,
+            )
+        except PublicationAutodeleteViewStateError as exc:
+            raise PublicationEditAutodeleteSyncError(str(exc)) from None
 
         if task is None or task_payload is None:
             return

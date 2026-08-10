@@ -5,6 +5,9 @@ from loguru import logger
 from app.core.db import AsyncSessionLocal
 from app.core.runner import PollingLoop
 from app.services.legacy_content_mirror import mirror_unlinked_legacy_tasks
+from app.services.publication_autodelete_views_legacy_sync import (
+    sync_active_legacy_view_intents,
+)
 from app.services.publication_bridge import LegacyPublicationBridge
 from app.services.publication_runtime import PublicationRuntimeProjector
 
@@ -31,10 +34,22 @@ class PublicationReconcilerWorker:
     async def _tick(self) -> None:
         runtime_scanned = 0
         runtime_updated = 0
+        view_sync_scanned = 0
+        view_sync_synced = 0
+        view_sync_cleared = 0
+        view_sync_invalid = 0
         async with AsyncSessionLocal() as session:
             mirrored, skipped = await mirror_unlinked_legacy_tasks(
                 session, limit=self.batch_size
             )
+            view_sync = await sync_active_legacy_view_intents(
+                session,
+                limit=self.batch_size,
+            )
+            view_sync_scanned = view_sync.scanned
+            view_sync_synced = view_sync.synced
+            view_sync_cleared = view_sync.cleared
+            view_sync_invalid = view_sync.invalid
             reconciled = await LegacyPublicationBridge(session).reconcile_active(
                 limit=self.batch_size
             )
@@ -48,13 +63,30 @@ class PublicationReconcilerWorker:
                 self._runtime_backfill_cursor = batch.next_cursor
                 self._runtime_backfill_done = batch.done
 
-        if mirrored or skipped or reconciled or runtime_scanned or runtime_updated:
+        if (
+            mirrored
+            or skipped
+            or reconciled
+            or runtime_scanned
+            or runtime_updated
+            or view_sync_scanned
+            or view_sync_synced
+            or view_sync_cleared
+            or view_sync_invalid
+        ):
             logger.debug(
-                "Publication reconciler: mirrored={} skipped={} reconciled={} runtime_scanned={} runtime_updated={} runtime_done={}",
+                "Publication reconciler: mirrored={} skipped={} reconciled={} "
+                "runtime_scanned={} runtime_updated={} runtime_done={} "
+                "view_sync_scanned={} view_sync_synced={} view_sync_cleared={} "
+                "view_sync_invalid={}",
                 mirrored,
                 skipped,
                 reconciled,
                 runtime_scanned,
                 runtime_updated,
                 self._runtime_backfill_done,
+                view_sync_scanned,
+                view_sync_synced,
+                view_sync_cleared,
+                view_sync_invalid,
             )
