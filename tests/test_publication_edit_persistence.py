@@ -61,8 +61,11 @@ async def _seed_published(Session) -> tuple[int, int, int, int, int]:
         )
         task_id = int(publication.legacy_post_task_id or 0)
         schedule_id = int(publication.schedule_entry_id or 0)
+        schedule = await session.get(ScheduleEntry, schedule_id)
+        assert schedule is not None
         publication.status = "published"
         publication.telegram_message_ids = [91001]
+        schedule.status = "completed"
         await session.commit()
         return channel_id, int(item.id), int(publication.id), schedule_id, task_id
 
@@ -132,6 +135,7 @@ def test_persist_success_appends_revision_without_touching_legacy_transport(tmp_
                     "silent": True,
                 }
                 assert schedule is not None and schedule.content_revision == 2
+                assert schedule.status == "completed"
                 assert task is not None and dict(task.payload or {}) == legacy_payload_before
                 assert revision.source == "telegram_edit"
                 assert revision.created_by_tg_user_id == 71001
