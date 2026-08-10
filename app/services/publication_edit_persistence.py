@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import Channel, Client
-from app.domain.publishing.models import Publication, ScheduleEntry
+from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.services.content import LegacyPayloadError, document_from_legacy_payload
 from app.services.publication_edit_autodelete import (
     PublicationEditAutodeleteSyncError,
@@ -315,6 +315,20 @@ class PublicationEditPersistenceService:
                 )
             except PublicationEditAutodeleteSyncError as exc:
                 raise PublicationEditConflictError(str(exc)) from None
+
+            if int(publication.attempt_count or 0) > 0:
+                latest_attempt = (
+                    await self.session.execute(
+                        select(PublicationAttempt)
+                        .where(
+                            PublicationAttempt.publication_id == publication_id_value,
+                            PublicationAttempt.attempt == int(publication.attempt_count),
+                        )
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if latest_attempt is not None and str(latest_attempt.status) == "published":
+                    latest_attempt.telegram_message_ids = list(ids)
 
             next_revision = safe_expected_revision + 1
             revision = ContentRevision(
