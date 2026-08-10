@@ -65,6 +65,15 @@ def _legacy_db_id(value: Any) -> int | None:
     return parsed
 
 
+def _repeat_group_id(payload: dict[str, Any], *, task_id: int) -> int | None:
+    if not bool(payload.get("repeat_on", False)):
+        return None
+    raw_group = payload.get("repeat_group_id")
+    if raw_group is None:
+        return int(task_id)
+    return _legacy_db_id(raw_group)
+
+
 def _content_payload(payload: dict[str, Any]) -> dict[str, Any]:
     cleaned = cleanup_runtime_fields(payload)
     for key in _RUNTIME_ONLY_FIELDS:
@@ -151,7 +160,7 @@ async def _repeat_root_content(
     channel_id: int,
     task_id: int,
 ) -> tuple[ContentItem, ContentRevision] | None:
-    """Resolve immutable repeat provenance from the root task's Publication linkage."""
+    """Resolve repeat provenance from linked or canonical repeat-group state."""
     root_task_id = _legacy_db_id(payload.get("repeat_group_id"))
     if root_task_id is None or root_task_id == int(task_id):
         return None
@@ -164,6 +173,24 @@ async def _repeat_root_content(
             )
         )
     ).scalar_one_or_none()
+    if root_publication is None:
+        root_publication = (
+            await session.execute(
+                select(Publication)
+                .join(
+                    ScheduleEntry,
+                    ScheduleEntry.id == Publication.schedule_entry_id,
+                )
+                .where(
+                    Publication.channel_id == int(channel_id),
+                    ScheduleEntry.channel_id == int(channel_id),
+                    ScheduleEntry.meta["repeat_group_id"].as_integer()
+                    == root_task_id,
+                )
+                .order_by(Publication.id.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
     if root_publication is None:
         return None
 
@@ -258,6 +285,7 @@ async def mirror_legacy_post_task(
         public_scheduler_error(task.error) if task_status == "failed" else None
     )
     autodelete_runtime = normalize_autodelete_runtime(payload)
+    repeat_group_id = _repeat_group_id(payload, task_id=task_id)
     now = datetime.now(timezone.utc)
     when = as_utc(task.scheduled_at)
     reused_content = referenced is not None
@@ -293,6 +321,9 @@ async def mirror_legacy_post_task(
         if autodelete_runtime is not None:
             mirror_meta[AUTODELETE_RUNTIME_META_KEY] = autodelete_runtime
         schedule_meta: dict[str, Any] = {"legacy_post_task_id": task_id}
+        if repeat_group_id is not None:
+            mirror_meta["repeat_group_id"] = repeat_group_id
+            schedule_meta["repeat_group_id"] = repeat_group_id
         if reused_content:
             mirror_meta["reused_content_provenance"] = True
             schedule_meta["reused_content_provenance"] = True
