@@ -139,6 +139,8 @@ def _public_target(target: str | int) -> str | int:
 
 
 def _positive_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
     try:
         parsed = int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError, OverflowError):
