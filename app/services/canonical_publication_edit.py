@@ -27,9 +27,10 @@ from app.services.telegram_edit_outcome import (
 class CanonicalPublicationEditSyncFailed(RuntimeError):
     """Telegram confirmed the edit, but canonical persistence did not commit."""
 
-    def __init__(self, *, conflict: bool) -> None:
+    def __init__(self, *, conflict: bool, error_type: str) -> None:
         super().__init__("canonical edit sync failed")
         self.conflict = bool(conflict)
+        self.error_type = str(error_type or "Exception")[:120]
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +116,10 @@ class CanonicalPublicationEditCoordinator:
         safe_expected_revision = int(expected_revision)
         if view.primary_message_id is None:
             raise PublicationEditConflictError("publication is not editable")
-        if str(publication_status or "") != "published" or str(schedule_status or "") != "completed":
+        if (
+            str(publication_status or "") != "published"
+            or str(schedule_status or "") != "completed"
+        ):
             raise PublicationEditConflictError("publication lifecycle is not editable")
         if str(content_kind or "") != "post":
             raise PublicationEditConflictError("content item is not editable")
@@ -156,10 +160,21 @@ class CanonicalPublicationEditCoordinator:
                     payload=payload,
                     telegram_message_ids=ids,
                 )
-        except PublicationEditConflictError:
-            raise CanonicalPublicationEditSyncFailed(conflict=True) from None
-        except PublicationEditPersistenceError:
-            raise CanonicalPublicationEditSyncFailed(conflict=False) from None
+        except PublicationEditConflictError as exc:
+            raise CanonicalPublicationEditSyncFailed(
+                conflict=True,
+                error_type=type(exc).__name__,
+            ) from None
+        except PublicationEditPersistenceError as exc:
+            raise CanonicalPublicationEditSyncFailed(
+                conflict=False,
+                error_type=type(exc).__name__,
+            ) from None
+        except Exception as exc:
+            raise CanonicalPublicationEditSyncFailed(
+                conflict=False,
+                error_type=type(exc).__name__,
+            ) from None
 
         return CanonicalPublicationEditResult(
             publication_id=persisted.publication_id,
