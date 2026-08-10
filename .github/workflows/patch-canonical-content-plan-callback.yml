@@ -1,0 +1,52 @@
+name: Patch canonical content-plan callback
+
+on:
+  push:
+    branches:
+      - agent/canonical-content-plan-publication-callback
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: agent/canonical-content-plan-publication-callback
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Apply exact legacy-file replacements
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("app/bot/routers/content_plan.py")
+          text = path.read_text(encoding="utf-8")
+
+          old_map = '''            for p in items:\n                when = p.scheduled_at\n'''
+          new_map = '''            publication_by_task: dict[int, tuple[int, str]] = {}\n            if items:\n                from app.domain.publishing.models import Publication\n\n                publication_rows = await session.execute(\n                    select(\n                        Publication.legacy_post_task_id,\n                        Publication.id,\n                        Publication.status,\n                    ).where(\n                        Publication.legacy_post_task_id.in_(\n                            [int(item.id) for item in items]\n                        )\n                    )\n                )\n                publication_by_task = {\n                    int(task_id): (int(publication_id), str(status))\n                    for task_id, publication_id, status in publication_rows.all()\n                    if task_id is not None\n                }\n            for p in items:\n                when = p.scheduled_at\n'''
+          if text.count(old_map) != 1:
+              raise SystemExit(f"expected one content-plan loop anchor, got {text.count(old_map)}")
+          text = text.replace(old_map, new_map, 1)
+
+          old_callback = '''                        callback_data=f"cp_open_post:{p.id}:{center_date.date().isoformat()}",\n'''
+          new_callback = '''                        callback_data=(\n                            f"cp_open_publication:{publication_by_task[int(p.id)][0]}:{center_date.date().isoformat()}"\n                            if (\n                                int(p.id) in publication_by_task\n                                and publication_by_task[int(p.id)][1] == "published"\n                            )\n                            else f"cp_open_post:{p.id}:{center_date.date().isoformat()}"\n                        ),\n'''
+          if text.count(old_callback) != 1:
+              raise SystemExit(f"expected one legacy callback producer, got {text.count(old_callback)}")
+          text = text.replace(old_callback, new_callback, 1)
+          path.write_text(text, encoding="utf-8")
+
+          Path(".github/workflows/patch-canonical-content-plan-callback.yml").unlink()
+          PY
+      - name: Commit exact migration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/bot/routers/content_plan.py .github/workflows/patch-canonical-content-plan-callback.yml
+          git commit -m "refactor: emit publication callbacks for published content-plan rows"
+          git push origin HEAD:agent/canonical-content-plan-publication-callback
