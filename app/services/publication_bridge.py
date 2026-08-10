@@ -219,11 +219,24 @@ class LegacyPublicationBridge:
             )
             self.session.add(task)
             await self.session.flush()
-            publication.legacy_post_task_id = int(task.id)
-            schedule.meta = {
+            task_id = int(task.id)
+            publication.legacy_post_task_id = task_id
+
+            schedule_meta = {
                 **deepcopy(dict(schedule.meta or {})),
-                "legacy_post_task_id": int(task.id),
+                "legacy_post_task_id": task_id,
             }
+            if rule.get("enabled"):
+                # The root repeat identity becomes known only after the transport row
+                # is flushed. Persist it immediately in canonical metadata so later
+                # repeat occurrences can keep provenance even after root retirement.
+                schedule_meta["repeat_group_id"] = task_id
+                publication.meta = {
+                    **deepcopy(dict(publication.meta or {})),
+                    "repeat_group_id": task_id,
+                }
+            schedule.meta = schedule_meta
+
             await self.session.commit()
             await self.session.refresh(publication)
             return publication
