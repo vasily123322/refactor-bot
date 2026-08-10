@@ -192,6 +192,34 @@ class PublicationAutodeleteViewStateService:
         await self.session.flush()
         return _snapshot(state)
 
+    async def defer_if_current(
+        self,
+        *,
+        publication_id: int,
+        expected_threshold: Any,
+        next_check_at: datetime,
+    ) -> PublicationAutodeleteViewStateSnapshot | None:
+        """Move one still-current intent out of the due window without changing views."""
+        safe_publication_id = _positive_int(publication_id, field="publication id")
+        safe_threshold = _positive_int(expected_threshold, field="view threshold")
+        next_check = _utc(next_check_at)
+
+        state = (
+            await self.session.execute(
+                select(PublicationAutodeleteViewState)
+                .where(
+                    PublicationAutodeleteViewState.publication_id
+                    == safe_publication_id
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if state is None or int(state.threshold) != safe_threshold:
+            return None
+        state.next_check_at = next_check
+        await self.session.flush()
+        return _snapshot(state)
+
     async def select_due_publication_ids(
         self,
         *,

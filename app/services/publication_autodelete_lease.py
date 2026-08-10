@@ -31,7 +31,12 @@ class PublicationAutodeleteLeaseHandle:
 
 
 class PublicationAutodeleteLeaseService:
-    """Cross-process ownership lease for canonical-only autodelete attempts.
+    """Cross-process ownership lease for canonical Publication delete attempts.
+
+    Linked Publications remain rejected by default so the time-based worker preserves
+    its historical canonical-only contract. Views workers may explicitly opt into
+    linked rows because their evaluator revalidates the current PostTask intent before
+    every destructive phase.
 
     Expired leases are reclaimable because the protected provider operation is
     delete-only and idempotent at this boundary: a retry sees already-removed Telegram
@@ -48,6 +53,7 @@ class PublicationAutodeleteLeaseService:
         holder: str,
         ttl_seconds: int = DEFAULT_PUBLICATION_AUTODELETE_LEASE_SECONDS,
         now: datetime | None = None,
+        allow_linked: bool = False,
     ) -> PublicationAutodeleteLeaseHandle | None:
         try:
             safe_publication_id = int(publication_id)
@@ -62,15 +68,16 @@ class PublicationAutodeleteLeaseService:
         token = uuid.uuid4().hex
         holder_value = str(holder).strip()[:64] or "autodelete"
 
+        conditions = [
+            Publication.id == safe_publication_id,
+            Publication.status == "published",
+        ]
+        if not allow_linked:
+            conditions.append(Publication.legacy_post_task_id.is_(None))
+
         try:
             eligible_id = (
-                await self.session.execute(
-                    select(Publication.id).where(
-                        Publication.id == safe_publication_id,
-                        Publication.legacy_post_task_id.is_(None),
-                        Publication.status == "published",
-                    )
-                )
+                await self.session.execute(select(Publication.id).where(*conditions))
             ).scalar_one_or_none()
             if eligible_id is None:
                 await self.session.rollback()
