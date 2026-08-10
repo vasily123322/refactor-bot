@@ -13,6 +13,9 @@ from app.services.publication_autodelete_views_legacy_sync import (
 )
 from app.services.publication_bridge import LegacyPublicationBridge
 from app.services.publication_runtime import PublicationRuntimeProjector
+from app.services.repeat_runtime_intent_backfill import (
+    RepeatRuntimeIntentBackfillService,
+)
 
 
 class PublicationReconcilerWorker:
@@ -20,6 +23,8 @@ class PublicationReconcilerWorker:
 
     def __init__(self, *, interval_seconds: int = 5, batch_size: int = 100):
         self.batch_size = max(1, min(int(batch_size), 500))
+        self._repeat_runtime_backfill_cursor = 0
+        self._repeat_runtime_backfill_done = False
         self._runtime_backfill_cursor = 0
         self._runtime_backfill_done = False
         self._views_backfill_cursor = 0
@@ -37,6 +42,11 @@ class PublicationReconcilerWorker:
         await self._loop.stop()
 
     async def _tick(self) -> None:
+        repeat_runtime_scanned = 0
+        repeat_runtime_updated = 0
+        repeat_runtime_existing = 0
+        repeat_runtime_unproven = 0
+        repeat_runtime_failures = 0
         runtime_scanned = 0
         runtime_updated = 0
         view_sync_scanned = 0
@@ -51,6 +61,25 @@ class PublicationReconcilerWorker:
             mirrored, skipped = await mirror_unlinked_legacy_tasks(
                 session, limit=self.batch_size
             )
+
+            # New repeat children receive canonical runtime intent during mirroring.
+            # Walk the pre-existing active tail once, before lifecycle reconciliation
+            # can move those rows to terminal statuses.
+            if not self._repeat_runtime_backfill_done:
+                repeat_batch = await RepeatRuntimeIntentBackfillService(
+                    session
+                ).backfill_active(
+                    after_publication_id=self._repeat_runtime_backfill_cursor,
+                    limit=self.batch_size,
+                )
+                repeat_runtime_scanned = repeat_batch.scanned
+                repeat_runtime_updated = repeat_batch.updated
+                repeat_runtime_existing = repeat_batch.skipped_existing
+                repeat_runtime_unproven = repeat_batch.skipped_unproven
+                repeat_runtime_failures = repeat_batch.failures
+                self._repeat_runtime_backfill_cursor = repeat_batch.next_cursor
+                self._repeat_runtime_backfill_done = repeat_batch.done
+
             view_sync = await sync_active_legacy_view_intents(
                 session,
                 limit=self.batch_size,
@@ -94,6 +123,11 @@ class PublicationReconcilerWorker:
             mirrored
             or skipped
             or reconciled
+            or repeat_runtime_scanned
+            or repeat_runtime_updated
+            or repeat_runtime_existing
+            or repeat_runtime_unproven
+            or repeat_runtime_failures
             or runtime_scanned
             or runtime_updated
             or view_sync_scanned
@@ -107,6 +141,9 @@ class PublicationReconcilerWorker:
         ):
             logger.debug(
                 "Publication reconciler: mirrored={} skipped={} reconciled={} "
+                "repeat_runtime_scanned={} repeat_runtime_updated={} "
+                "repeat_runtime_existing={} repeat_runtime_unproven={} "
+                "repeat_runtime_failures={} repeat_runtime_done={} "
                 "runtime_scanned={} runtime_updated={} runtime_done={} "
                 "view_sync_scanned={} view_sync_synced={} view_sync_cleared={} "
                 "view_sync_invalid={} views_backfill_scanned={} "
@@ -115,6 +152,12 @@ class PublicationReconcilerWorker:
                 mirrored,
                 skipped,
                 reconciled,
+                repeat_runtime_scanned,
+                repeat_runtime_updated,
+                repeat_runtime_existing,
+                repeat_runtime_unproven,
+                repeat_runtime_failures,
+                self._repeat_runtime_backfill_done,
                 runtime_scanned,
                 runtime_updated,
                 self._runtime_backfill_done,
