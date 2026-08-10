@@ -355,3 +355,74 @@ def test_post_provider_state_change_is_safe_sync_conflict(tmp_path) -> None:
             await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_ambiguous_metadata_fails_closed_without_provider_calls(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'canonical-autodelete-metadata.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+            _, publication_id, schedule_id, _ = await _seed(
+                Session,
+                due_at=now - timedelta(minutes=1),
+            )
+            provider = FakeProvider()
+
+            async def outcome_after(mutator) -> str:
+                async with Session() as session:
+                    publication = await session.get(Publication, publication_id)
+                    schedule = await session.get(ScheduleEntry, schedule_id)
+                    assert publication is not None and schedule is not None
+                    mutator(publication, schedule)
+                    await session.commit()
+                async with Session() as session:
+                    return (
+                        await PublicationAutodeleteService(
+                            session, provider=provider
+                        ).delete_if_due(publication_id, now=now)
+                    ).outcome
+
+            def bad_report(publication, schedule) -> None:
+                meta = dict(publication.meta or {})
+                meta["runtime_options"] = {"autodelete_report": "yes"}
+                publication.meta = meta
+
+            assert await outcome_after(bad_report) == "ineligible"
+
+            def bad_views(publication, schedule) -> None:
+                meta = dict(publication.meta or {})
+                meta["runtime_options"] = {"autodelete_views": "many"}
+                publication.meta = meta
+
+            assert await outcome_after(bad_views) == "ineligible"
+
+            def bad_deleted(publication, schedule) -> None:
+                meta = dict(publication.meta or {})
+                meta["runtime_options"] = {"autodelete_seconds": 3600}
+                runtime = dict(meta[AUTODELETE_RUNTIME_META_KEY])
+                runtime["deleted"] = "yes"
+                meta[AUTODELETE_RUNTIME_META_KEY] = runtime
+                publication.meta = meta
+
+            assert await outcome_after(bad_deleted) == "ineligible"
+
+            def bad_repeat(publication, schedule) -> None:
+                meta = dict(publication.meta or {})
+                meta["runtime_options"] = {"autodelete_seconds": 3600}
+                runtime = dict(meta[AUTODELETE_RUNTIME_META_KEY])
+                runtime["deleted"] = False
+                meta[AUTODELETE_RUNTIME_META_KEY] = runtime
+                publication.meta = meta
+                schedule.repeat_rule = "ambiguous"
+
+            assert await outcome_after(bad_repeat) == "ineligible"
+            assert provider.calls == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
