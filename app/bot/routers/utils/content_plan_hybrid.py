@@ -5,9 +5,13 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram.types import InlineKeyboardButton
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.routers.shared import offset_minutes_from_tz
-from app.services.content_plan_published_rows import PublishedContentPlanRow
+from app.services.content_plan_published_rows import (
+    PublishedContentPlanRow,
+    list_published_content_plan_rows,
+)
 from app.services.publication_editor import publication_open_callback
 
 
@@ -74,6 +78,38 @@ def canonical_published_button_row(
             )
         ],
     )
+
+
+async def canonical_only_published_button_rows(
+    session: AsyncSession,
+    *,
+    channel_id: int,
+    start_at: datetime,
+    end_at: datetime,
+    date_iso: str,
+    tz_code: str | None,
+) -> list[TimedContentPlanButtonRow]:
+    """Load the migration-only canonical rows without risking the legacy list."""
+    try:
+        rows = await list_published_content_plan_rows(
+            session,
+            channel_id=channel_id,
+            start_at=start_at,
+            end_at=end_at,
+        )
+    except Exception:
+        return []
+
+    rendered: list[TimedContentPlanButtonRow] = []
+    for row in rows:
+        item = canonical_published_button_row(
+            row,
+            date_iso=date_iso,
+            tz_code=tz_code,
+        )
+        if item is not None:
+            rendered.append(item)
+    return rendered
 
 
 def merge_timed_content_plan_rows(
