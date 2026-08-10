@@ -61,16 +61,24 @@ async def _seed_published(Session) -> tuple[int, int, int, int, int]:
         )
         task_id = int(publication.legacy_post_task_id or 0)
         schedule_id = int(publication.schedule_entry_id or 0)
+        task = await session.get(PostTask, task_id)
+        assert task is not None
+        task.status = "done"
+        task.payload = {
+            **dict(task.payload or {}),
+            "result_ids": [91001],
+            "result_link": "https://t.me/c/71001/91001",
+        }
+        await session.commit()
+        publication = await LegacyPublicationBridge(session).reconcile(int(publication.id))
         schedule = await session.get(ScheduleEntry, schedule_id)
         assert schedule is not None
-        publication.status = "published"
-        publication.telegram_message_ids = [91001]
-        schedule.status = "completed"
-        await session.commit()
+        assert publication.status == "published"
+        assert schedule.status == "completed"
         return channel_id, int(item.id), int(publication.id), schedule_id, task_id
 
 
-def test_persist_success_appends_revision_without_touching_legacy_transport(tmp_path) -> None:
+def test_persist_success_appends_revision_and_keeps_legacy_delivery_in_sync(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'canonical-edit.db'}"
@@ -130,13 +138,20 @@ def test_persist_success_appends_revision_without_touching_legacy_transport(tmp_
                 assert item is not None and item.current_revision == 2
                 assert publication is not None and publication.content_revision == 2
                 assert publication.telegram_message_ids == [91001]
+                assert publication.result_link == "https://t.me/c/71001/91001"
                 assert publication.meta["runtime_options"] == {
                     "autodelete_seconds": 7200,
                     "silent": True,
                 }
                 assert schedule is not None and schedule.content_revision == 2
                 assert schedule.status == "completed"
-                assert task is not None and dict(task.payload or {}) == legacy_payload_before
+                assert task is not None
+                expected_transport = {
+                    **legacy_payload_before,
+                    "result_ids": [91001],
+                    "result_link": "https://t.me/c/71001/91001",
+                }
+                assert dict(task.payload or {}) == expected_transport
                 assert revision.source == "telegram_edit"
                 assert revision.created_by_tg_user_id == 71001
                 assert revision.meta["publication_id"] == publication_id
