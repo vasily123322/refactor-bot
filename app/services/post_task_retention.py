@@ -165,6 +165,12 @@ def _canonical_result_link(value: Any) -> tuple[bool, str | None]:
 
 
 @dataclass(frozen=True, slots=True)
+class _RepeatHandoff:
+    group_id: int
+    successor_task_id: int
+
+
+@dataclass(frozen=True, slots=True)
 class PostTaskRetentionTick:
     selected: int = 0
     eligible: int = 0
@@ -185,6 +191,8 @@ class PostTaskRetentionService:
     rows are a separate opt-in capability and require exact canonical delivery/content
     evidence. Pending canonical autodelete retirement is an additional service-only
     opt-in and remains disabled unless exact canonical executor state is proven.
+    Terminal repeat occurrence retirement is independently opt-in and requires a
+    durable mirrored successor plus fully resolved autodelete semantics.
     """
 
     def __init__(
@@ -195,6 +203,7 @@ class PostTaskRetentionService:
         batch_size: int = 100,
         retire_successful: bool = False,
         retire_successful_pending_autodelete: bool = False,
+        retire_successful_repeat_occurrences: bool = False,
     ) -> None:
         self.session = session
         self.retention_days = max(7, min(int(retention_days), 3650))
@@ -202,6 +211,9 @@ class PostTaskRetentionService:
         self.retire_successful = bool(retire_successful)
         self.retire_successful_pending_autodelete = bool(
             retire_successful_pending_autodelete
+        )
+        self.retire_successful_repeat_occurrences = bool(
+            retire_successful_repeat_occurrences
         )
 
     def _lifecycle_predicate(self):
@@ -346,6 +358,96 @@ class PostTaskRetentionService:
             task_link_valid
             and publication_link_valid
             and task_link == publication_link
+        )
+
+    async def _successful_repeat_handoff(
+        self,
+        *,
+        task: PostTask,
+        publication: Publication,
+        schedule: ScheduleEntry,
+        payload: dict[str, Any],
+    ) -> _RepeatHandoff | None:
+        """Prove a terminal repeat occurrence has handed execution to a later mirror."""
+        if payload.get("repeat_on") is not True:
+            return None
+        seconds_valid, repeat_seconds = _optional_positive_int(
+            payload.get("repeat_seconds")
+        )
+        if not seconds_valid or repeat_seconds is None:
+            return None
+
+        raw_group = payload.get("repeat_group_id")
+        if raw_group is None:
+            group_id = int(task.id)
+        else:
+            group_valid, group_id = _optional_positive_int(raw_group)
+            if not group_valid or group_id is None:
+                return None
+
+        publication_meta = _safe_mapping(publication.meta)
+        schedule_meta = _safe_mapping(schedule.meta)
+        repeat_rule = _safe_mapping(schedule.repeat_rule)
+        if publication_meta is None or schedule_meta is None or repeat_rule is None:
+            return None
+        for value in (
+            publication_meta.get("repeat_group_id"),
+            schedule_meta.get("repeat_group_id"),
+        ):
+            valid, canonical_group = _optional_positive_int(value)
+            if not valid or canonical_group != group_id:
+                return None
+        if repeat_rule.get("enabled") is not True:
+            return None
+        rule_valid, rule_seconds = _optional_positive_int(repeat_rule.get("seconds"))
+        if not rule_valid or rule_seconds != repeat_seconds:
+            return None
+        if task.scheduled_at is None:
+            return None
+
+        successor = (
+            await self.session.execute(
+                select(PostTask, Publication, ScheduleEntry)
+                .join(Publication, Publication.legacy_post_task_id == PostTask.id)
+                .join(ScheduleEntry, ScheduleEntry.id == Publication.schedule_entry_id)
+                .where(
+                    PostTask.id != int(task.id),
+                    PostTask.channel_id == int(task.channel_id),
+                    PostTask.scheduled_at.is_not(None),
+                    PostTask.scheduled_at > task.scheduled_at,
+                    PostTask.payload["repeat_group_id"].as_integer() == group_id,
+                    Publication.channel_id == int(publication.channel_id),
+                    ScheduleEntry.channel_id == int(schedule.channel_id),
+                    ScheduleEntry.meta["repeat_group_id"].as_integer() == group_id,
+                )
+                .order_by(PostTask.scheduled_at.asc(), PostTask.id.asc())
+                .limit(1)
+                .with_for_update()
+            )
+        ).one_or_none()
+        if successor is None:
+            return None
+        successor_task, successor_publication, successor_schedule = successor
+        if not (
+            int(successor_publication.content_item_id) == int(publication.content_item_id)
+            and int(successor_publication.content_revision)
+            == int(publication.content_revision)
+            and int(successor_schedule.content_item_id) == int(publication.content_item_id)
+            and int(successor_schedule.content_revision)
+            == int(publication.content_revision)
+        ):
+            return None
+        successor_rule = _safe_mapping(successor_schedule.repeat_rule)
+        if successor_rule is None or successor_rule.get("enabled") is not True:
+            return None
+        successor_seconds_valid, successor_seconds = _optional_positive_int(
+            successor_rule.get("seconds")
+        )
+        if not successor_seconds_valid or successor_seconds != repeat_seconds:
+            return None
+        return _RepeatHandoff(
+            group_id=group_id,
+            successor_task_id=int(successor_task.id),
         )
 
     async def _pending_autodelete_is_canonical(
@@ -522,10 +624,23 @@ class PostTaskRetentionService:
                     continue
 
                 payload = dict(task.payload or {})
-                if _has_repeat_lineage(payload) or bool(schedule.repeat_rule):
-                    await self.session.rollback()
-                    skipped_repeat += 1
-                    continue
+                repeat_lineage = _has_repeat_lineage(payload) or bool(schedule.repeat_rule)
+                repeat_handoff: _RepeatHandoff | None = None
+                if repeat_lineage:
+                    if not (successful and self.retire_successful_repeat_occurrences):
+                        await self.session.rollback()
+                        skipped_repeat += 1
+                        continue
+                    repeat_handoff = await self._successful_repeat_handoff(
+                        task=task,
+                        publication=publication,
+                        schedule=schedule,
+                        payload=payload,
+                    )
+                    if repeat_handoff is None:
+                        await self.session.rollback()
+                        skipped_repeat += 1
+                        continue
 
                 if successful:
                     if not await self._successful_content_linkage_is_exact(
@@ -544,6 +659,7 @@ class PostTaskRetentionService:
                     pending_safe = False
                     if (
                         not autodelete_resolved
+                        and repeat_handoff is None
                         and self.retire_successful_pending_autodelete
                     ):
                         pending_safe = await self._pending_autodelete_is_canonical(
@@ -579,14 +695,22 @@ class PostTaskRetentionService:
                     await self.session.delete(lease)
 
                 eligible += 1
+                retention_meta: dict[str, Any] = {
+                    "retired": True,
+                    "retired_at": current.isoformat(),
+                    "terminal_status": task_status,
+                }
+                if repeat_handoff is not None:
+                    retention_meta.update(
+                        {
+                            "repeat_group_id": repeat_handoff.group_id,
+                            "repeat_successor_task_id": repeat_handoff.successor_task_id,
+                        }
+                    )
                 publication.legacy_post_task_id = None
                 publication.meta = {
                     **dict(publication.meta or {}),
-                    _RETENTION_META_KEY: {
-                        "retired": True,
-                        "retired_at": current.isoformat(),
-                        "terminal_status": task_status,
-                    },
+                    _RETENTION_META_KEY: retention_meta,
                 }
                 await self.session.delete(task)
                 await self.session.commit()
