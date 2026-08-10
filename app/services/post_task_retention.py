@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import PostTask
+from app.domain.publication_autodelete import PublicationAutodeleteViewState
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.domain.scheduler import SchedulerTaskLease
 from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
@@ -62,6 +63,43 @@ def _positive_int_state(value: Any) -> tuple[bool, bool]:
     if parsed < 0:
         return False, False
     return True, parsed > 0
+
+
+def _optional_positive_int(value: Any) -> tuple[bool, int | None]:
+    if value in (None, False, 0, "0", ""):
+        return True, None
+    if isinstance(value, bool):
+        return False, None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return False, None
+    if parsed <= 0:
+        return False, None
+    return True, parsed
+
+
+def _optional_report(value: Any) -> tuple[bool, bool]:
+    if value is None or value is False:
+        return True, False
+    if value is True:
+        return True, True
+    return False, False
+
+
+def _datetime_token(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > 128:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return _utc(parsed)
 
 
 def _autodelete_is_resolved(payload: dict, publication: Publication) -> bool:
@@ -145,7 +183,8 @@ class PostTaskRetentionService:
 
     Unsuccessful non-repeat rows keep the original conservative policy. Successful
     rows are a separate opt-in capability and require exact canonical delivery/content
-    evidence plus fully-resolved autodelete semantics before transport retirement.
+    evidence. Pending canonical autodelete retirement is an additional service-only
+    opt-in and remains disabled unless exact canonical executor state is proven.
     """
 
     def __init__(
@@ -155,11 +194,15 @@ class PostTaskRetentionService:
         retention_days: int = 90,
         batch_size: int = 100,
         retire_successful: bool = False,
+        retire_successful_pending_autodelete: bool = False,
     ) -> None:
         self.session = session
         self.retention_days = max(7, min(int(retention_days), 3650))
         self.batch_size = max(1, min(int(batch_size), 500))
         self.retire_successful = bool(retire_successful)
+        self.retire_successful_pending_autodelete = bool(
+            retire_successful_pending_autodelete
+        )
 
     def _lifecycle_predicate(self):
         unsuccessful = and_(
@@ -292,9 +335,7 @@ class PostTaskRetentionService:
             publication.telegram_message_ids
         )
         attempt_ids = normalize_telegram_message_ids(attempt.telegram_message_ids)
-        if not task_ids or not (
-            task_ids == publication_ids == attempt_ids
-        ):
+        if not task_ids or not (task_ids == publication_ids == attempt_ids):
             return False
 
         task_link_valid, task_link = _canonical_result_link(payload.get("result_link"))
@@ -306,6 +347,112 @@ class PostTaskRetentionService:
             and publication_link_valid
             and task_link == publication_link
         )
+
+    async def _pending_autodelete_is_canonical(
+        self,
+        *,
+        payload: dict[str, Any],
+        publication: Publication,
+    ) -> bool:
+        """Prove transport removal preserves one pending canonical executor intent."""
+        meta = _safe_mapping(publication.meta)
+        if meta is None:
+            return False
+        options = _safe_mapping(meta.get("runtime_options"))
+        runtime = _safe_mapping(meta.get(AUTODELETE_RUNTIME_META_KEY))
+        if options is None or runtime is None:
+            return False
+
+        payload_seconds_valid, payload_seconds = _optional_positive_int(
+            payload.get("autodelete_seconds")
+        )
+        option_seconds_valid, option_seconds = _optional_positive_int(
+            options.get("autodelete_seconds")
+        )
+        payload_views_valid, payload_views = _optional_positive_int(
+            payload.get("autodelete_views")
+        )
+        option_views_valid, option_views = _optional_positive_int(
+            options.get("autodelete_views")
+        )
+        payload_report_valid, payload_report = _optional_report(
+            payload.get("autodelete_report")
+        )
+        option_report_valid, option_report = _optional_report(
+            options.get("autodelete_report")
+        )
+        if not all(
+            (
+                payload_seconds_valid,
+                option_seconds_valid,
+                payload_views_valid,
+                option_views_valid,
+                payload_report_valid,
+                option_report_valid,
+            )
+        ):
+            return False
+        if (
+            payload_seconds != option_seconds
+            or payload_views != option_views
+            or payload_report != option_report
+        ):
+            return False
+        if payload_seconds is not None and payload_views is not None:
+            return False
+        if payload_seconds is None and payload_views is None:
+            return False
+
+        deleted = runtime.get("deleted")
+        if deleted is not None and not isinstance(deleted, bool):
+            return False
+        if deleted is True:
+            return False
+        if "autodeleted" in payload:
+            legacy_deleted = payload.get("autodeleted")
+            if not isinstance(legacy_deleted, bool) or legacy_deleted:
+                return False
+
+        if payload_seconds is not None:
+            effective_valid, effective = _optional_positive_int(
+                runtime.get("effective_seconds")
+            )
+            legacy_effective_valid, legacy_effective = _optional_positive_int(
+                payload.get("autodelete_effective_seconds")
+            )
+            runtime_due = _datetime_token(runtime.get("scheduled_at"))
+            legacy_due = _datetime_token(payload.get("autodelete_at"))
+            if not effective_valid or not legacy_effective_valid:
+                return False
+            if effective != payload_seconds or legacy_effective != payload_seconds:
+                return False
+            if runtime_due is None or legacy_due is None or runtime_due != legacy_due:
+                return False
+            stale_view_state = await self.session.get(
+                PublicationAutodeleteViewState,
+                int(publication.id),
+            )
+            return stale_view_state is None
+
+        # Views execution must have the durable indexed row that the views worker
+        # selects after PostTask is removed. Any leftover time runtime is ambiguous.
+        if runtime.get("scheduled_at") is not None or runtime.get("effective_seconds") is not None:
+            return False
+        if payload.get("autodelete_at") is not None or payload.get(
+            "autodelete_effective_seconds"
+        ) is not None:
+            return False
+        state = (
+            await self.session.execute(
+                select(PublicationAutodeleteViewState)
+                .where(
+                    PublicationAutodeleteViewState.publication_id
+                    == int(publication.id)
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        return state is not None and int(state.threshold) == int(payload_views or 0)
 
     async def run_once(
         self,
@@ -393,7 +540,17 @@ class PostTaskRetentionService:
                         await self.session.rollback()
                         skipped_canonical_delivery += 1
                         continue
-                    if not _autodelete_is_resolved(payload, publication):
+                    autodelete_resolved = _autodelete_is_resolved(payload, publication)
+                    pending_safe = False
+                    if (
+                        not autodelete_resolved
+                        and self.retire_successful_pending_autodelete
+                    ):
+                        pending_safe = await self._pending_autodelete_is_canonical(
+                            payload=payload,
+                            publication=publication,
+                        )
+                    if not autodelete_resolved and not pending_safe:
                         await self.session.rollback()
                         skipped_pending_autodelete += 1
                         continue
