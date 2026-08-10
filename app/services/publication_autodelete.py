@@ -1,23 +1,36 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
 
+from loguru import logger
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content.models import ContentItem
-from app.domain.models import Channel
+from app.domain.models import Channel, Client
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
-from app.services.telegram_results import normalize_telegram_message_ids
+from app.services.telegram_results import (
+    normalize_telegram_message_ids,
+    normalize_telegram_result_link,
+)
 
 
 class TelegramDeleteProvider(Protocol):
     async def delete_message(self, *, chat_id: int, message_id: int) -> Any: ...
+
+    async def send_message(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        disable_web_page_preview: bool,
+    ) -> Any: ...
 
 
 class PublicationAutodeleteSyncConflict(RuntimeError):
@@ -47,6 +60,8 @@ class _Candidate:
     schedule_entry_id: int
     runtime_scheduled_at: str
     telegram_message_ids: tuple[int, ...]
+    report_enabled: bool
+    result_link: str | None
 
 
 def _safe_mapping(value: Any) -> dict[str, Any]:
@@ -98,23 +113,30 @@ def _safe_nonrepeat(schedule: ScheduleEntry) -> bool:
     return enabled is None or enabled is False
 
 
-def _safe_time_only_options(meta: Mapping[str, Any]) -> bool:
+def _safe_time_only_options(
+    meta: Mapping[str, Any],
+    *,
+    allow_report: bool = False,
+) -> tuple[bool, bool]:
     raw_options = meta.get("runtime_options")
     if raw_options is not None and not isinstance(raw_options, Mapping):
-        return False
+        return False, False
     options = _safe_mapping(raw_options)
 
     report_flag = options.get("autodelete_report")
     if report_flag is not None and not isinstance(report_flag, bool):
-        return False
-    if report_flag is True:
-        return False
+        return False, False
+    report_enabled = report_flag is True
+    if report_enabled and not allow_report:
+        return False, False
 
     raw_views = options.get("autodelete_views")
     parsed_views = _positive_int(raw_views)
     if raw_views not in (None, False, 0, "0", "") and parsed_views is None:
-        return False
-    return parsed_views is None
+        return False, False
+    if parsed_views is not None:
+        return False, False
+    return True, report_enabled
 
 
 def _is_unavailable_delete_error(exc: Exception) -> bool:
@@ -133,15 +155,20 @@ def _is_unavailable_delete_error(exc: Exception) -> bool:
 class PublicationAutodeleteService:
     """Delete one due canonical-only publication without reading PostTask.
 
-    This service is deliberately not a scanner/worker yet. It only operates on rows
-    already unlinked from legacy transport, which prevents races with the existing
-    PostTask deleter. A future worker must add its own candidate ownership/lease before
-    calling this operation concurrently across processes.
+    Runtime workers may opt into best-effort deletion reports after the destructive
+    operation has been durably resolved. Views-based deletion remains fail-closed.
     """
 
-    def __init__(self, session: AsyncSession, *, provider: TelegramDeleteProvider) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        provider: TelegramDeleteProvider,
+        allow_report: bool = False,
+    ) -> None:
         self.session = session
         self.provider = provider
+        self.allow_report = bool(allow_report)
 
     async def _candidate(
         self,
@@ -199,7 +226,11 @@ class PublicationAutodeleteService:
             return None, PublicationAutodeleteResult(
                 publication_id=safe_publication_id, outcome="ineligible"
             )
-        if not _safe_time_only_options(meta):
+        options_safe, report_enabled = _safe_time_only_options(
+            meta,
+            allow_report=self.allow_report,
+        )
+        if not options_safe:
             await self.session.rollback()
             return None, PublicationAutodeleteResult(
                 publication_id=safe_publication_id, outcome="ineligible"
@@ -250,6 +281,8 @@ class PublicationAutodeleteService:
             schedule_entry_id=safe_schedule_entry_id,
             runtime_scheduled_at=due_token,
             telegram_message_ids=ids,
+            report_enabled=report_enabled,
+            result_link=normalize_telegram_result_link(publication.result_link),
         )
         # Never hold a DB transaction open while performing provider network calls.
         await self.session.rollback()
@@ -313,7 +346,11 @@ class PublicationAutodeleteService:
             raise PublicationAutodeleteSyncConflict()
 
         meta = _safe_mapping(publication.meta)
-        if not _safe_time_only_options(meta):
+        options_safe, report_enabled = _safe_time_only_options(
+            meta,
+            allow_report=self.allow_report,
+        )
+        if not options_safe or report_enabled != candidate.report_enabled:
             await self.session.rollback()
             raise PublicationAutodeleteSyncConflict()
         raw_runtime = meta.get(AUTODELETE_RUNTIME_META_KEY)
@@ -349,6 +386,44 @@ class PublicationAutodeleteService:
             message_count=len(candidate.telegram_message_ids),
             deleted_count=len(candidate.telegram_message_ids),
         )
+
+    async def _send_report_best_effort(self, candidate: _Candidate) -> None:
+        if not candidate.report_enabled:
+            return
+
+        try:
+            recipient = (
+                await self.session.execute(
+                    select(Client.tg_user_id)
+                    .join(Channel, Channel.owner_id == Client.id)
+                    .where(Channel.id == candidate.channel_id)
+                )
+            ).scalar_one_or_none()
+            # Release the read transaction before the provider network side effect.
+            await self.session.rollback()
+            if recipient is None:
+                return
+
+            text = "🗑️ Пост удалён по таймеру"
+            if candidate.result_link:
+                text = f"{text}\n{candidate.result_link}"
+            await self.provider.send_message(
+                chat_id=int(recipient),
+                text=text,
+                disable_web_page_preview=True,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            try:
+                await self.session.rollback()
+            except Exception:
+                pass
+            logger.warning(
+                "Publication autodelete: report failed publication_id={} type={}",
+                candidate.publication_id,
+                type(exc).__name__,
+            )
 
     async def delete_if_due(
         self,
@@ -397,6 +472,8 @@ class PublicationAutodeleteService:
             )
 
         result = await self._mark_deleted(candidate, deleted_at=current)
+        if result.outcome == "deleted" and deleted_count > 0:
+            await self._send_report_best_effort(candidate)
         return PublicationAutodeleteResult(
             publication_id=result.publication_id,
             outcome=result.outcome,
