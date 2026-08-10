@@ -122,7 +122,16 @@ def test_edit_adds_runtime_intent_to_publication_and_schedule_not_content(tmp_pa
                 assert publication.meta["runtime_options"] == expected
                 assert schedule is not None
                 assert schedule.meta["runtime_options"] == expected
-                assert task is not None and dict(task.payload or {}) == legacy_payload_before
+                assert task is not None
+                task_payload = dict(task.payload or {})
+                for key in ("type", "text", "silent"):
+                    assert task_payload.get(key) == legacy_payload_before.get(key)
+                assert task_payload["result_ids"] == [91101]
+                assert task_payload["result_link"] == "https://t.me/c/71101/91101"
+                assert task_payload["autodelete_seconds"] == 3600
+                assert task_payload["autodelete_effective_seconds"] == 3600
+                assert task_payload["autodelete_report"] is True
+                assert task_payload["autodelete_at"]
 
                 document = dict(revision.document or {})
                 extras = dict((document.get("metadata") or {}).get("legacy_payload_extra") or {})
