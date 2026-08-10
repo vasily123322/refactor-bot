@@ -9,8 +9,12 @@ from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.publication_editor import publication_open_callback
 
 
-def legacy_published_notice_callback(post_task_id: int, date_iso: str) -> str:
-    return f"cp_open_post:{int(post_task_id)}:{date_iso}"
+def legacy_published_notice_callback(post_task_id: object, date_iso: str) -> str:
+    try:
+        safe_task_id = int(post_task_id)
+    except (TypeError, ValueError, OverflowError):
+        safe_task_id = 0
+    return f"cp_open_post:{safe_task_id}:{date_iso}"
 
 
 async def published_notice_open_callback(
@@ -28,11 +32,12 @@ async def published_notice_open_callback(
     Publication/Schedule statuses yet. Any missing/corrupt/read-failure state keeps the
     legacy callback so notification delivery itself is never blocked by migration code.
     """
+    raw_task_id = getattr(post, "id", 0)
     try:
-        task_id = int(post.id)
+        task_id = int(raw_task_id)
         channel_id = int(post.channel_id)
     except (TypeError, ValueError, OverflowError):
-        return legacy_published_notice_callback(getattr(post, "id", 0) or 0, date_iso)
+        return legacy_published_notice_callback(raw_task_id, date_iso)
     if task_id <= 0 or channel_id <= 0:
         return legacy_published_notice_callback(task_id, date_iso)
 
