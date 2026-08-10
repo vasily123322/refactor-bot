@@ -143,9 +143,22 @@ async def _render_content_plan(
 ) -> None:
     # Заголовок и количество постов на выбранную дату
     # Подсчёт запланированных постов
-    from app.domain.models import Channel, PostTask
+    from app.domain.models import Channel, Client, PostTask
 
     async with AsyncSessionLocal() as session:
+        owner_match = (
+            await session.execute(
+                select(Channel.id)
+                .join(Client, Client.id == Channel.owner_id)
+                .where(
+                    Channel.id == int(channel_id),
+                    Client.tg_user_id == int(callback.from_user.id),
+                )
+            )
+        ).scalar_one_or_none()
+        if owner_match is None:
+            await callback.answer("Нет доступа к этому каналу", show_alert=True)
+            return
         # Определим часовой пояс канала и границы суток в этом поясе
         from app.repositories.settings import ChannelSettingsRepo as _CPSettingsRepo
 
@@ -886,8 +899,8 @@ async def cb_cp_delete_post(callback: CallbackQuery, state: FSMContext):
         try:
             await session.delete(post)
             await session.commit()
-        except Exception as e:
-            return await callback.answer(f"Не удалось удалить: {e}", show_alert=True)
+        except Exception:
+            return await callback.answer("Не удалось удалить", show_alert=True)
     # После удаления вернёмся к списку постов на ту же дату
     try:
         cid = int((await state.get_data()).get("cp_channel_id") or 0)
