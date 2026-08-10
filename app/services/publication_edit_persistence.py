@@ -14,6 +14,13 @@ from app.services.content import LegacyPayloadError, document_from_legacy_payloa
 from app.services.telegram_results import normalize_telegram_message_ids
 
 
+_EDITOR_RUNTIME_OPTION_FIELDS = frozenset(
+    {
+        "autodelete_seconds",
+        "autodelete_views",
+        "autodelete_report",
+    }
+)
 _EDITOR_NON_CONTENT_FIELDS = frozenset(
     {
         "_publication_id",
@@ -30,9 +37,11 @@ _EDITOR_NON_CONTENT_FIELDS = frozenset(
         "repeat_group_id",
         "autodelete_at",
         "autodelete_effective_seconds",
+        "autodelete_label",
         "autodeleted",
         "autodeleted_at",
         "autosign_applied",
+        *_EDITOR_RUNTIME_OPTION_FIELDS,
     }
 )
 
@@ -68,6 +77,87 @@ def _content_payload(
         if str(key).startswith("_"):
             clean.pop(key, None)
     return clean
+
+
+def _positive_editor_int(value: Any, *, field: str) -> int | None:
+    if value in (None, "", 0, "0", False):
+        return None
+    if isinstance(value, bool):
+        raise PublicationEditPersistenceError(f"invalid canonical runtime option: {field}")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise PublicationEditPersistenceError(
+            f"invalid canonical runtime option: {field}"
+        ) from exc
+    if parsed <= 0:
+        raise PublicationEditPersistenceError(f"invalid canonical runtime option: {field}")
+    return parsed
+
+
+def _edited_runtime_options(
+    existing: Any,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Merge mutable editor intent without treating it as immutable post content."""
+    if existing is None:
+        current: dict[str, Any] = {}
+    elif isinstance(existing, Mapping):
+        current = deepcopy(dict(existing))
+    else:
+        raise PublicationEditPersistenceError("canonical runtime options are malformed")
+
+    for key in _EDITOR_RUNTIME_OPTION_FIELDS:
+        current.pop(key, None)
+
+    seconds = _positive_editor_int(
+        payload.get("autodelete_seconds"), field="autodelete_seconds"
+    )
+    views = _positive_editor_int(
+        payload.get("autodelete_views"), field="autodelete_views"
+    )
+    if seconds is not None and views is not None:
+        raise PublicationEditPersistenceError(
+            "canonical autodelete timer and views are mutually exclusive"
+        )
+    if seconds is not None:
+        current["autodelete_seconds"] = seconds
+    if views is not None:
+        current["autodelete_views"] = views
+
+    report = payload.get("autodelete_report")
+    if report is not None and not isinstance(report, bool):
+        raise PublicationEditPersistenceError(
+            "invalid canonical runtime option: autodelete_report"
+        )
+    if report is True:
+        current["autodelete_report"] = True
+
+    return current
+
+
+def validate_publication_edit_runtime_options(
+    existing: Any,
+    payload: Mapping[str, Any],
+) -> None:
+    """Fail before provider side effects when editor runtime intent is invalid."""
+    if not isinstance(payload, Mapping):
+        raise PublicationEditPersistenceError("editor payload must be an object")
+    _edited_runtime_options(existing, payload)
+
+
+def _with_runtime_options(meta: Any, runtime_options: Mapping[str, Any]) -> dict[str, Any]:
+    if meta is None:
+        result: dict[str, Any] = {}
+    elif isinstance(meta, Mapping):
+        result = deepcopy(dict(meta))
+    else:
+        raise PublicationEditPersistenceError("canonical publication metadata is malformed")
+    if runtime_options:
+        result["runtime_options"] = deepcopy(dict(runtime_options))
+    else:
+        result.pop("runtime_options", None)
+    return result
 
 
 class PublicationEditPersistenceService:
@@ -155,15 +245,23 @@ class PublicationEditPersistenceService:
             if previous is None:
                 raise PublicationEditConflictError("expected content revision is missing")
 
-            runtime_options = dict(publication.meta or {}).get("runtime_options") or {}
-            runtime_option_keys = (
-                {str(key) for key in runtime_options}
-                if isinstance(runtime_options, Mapping)
+            publication_meta = dict(publication.meta or {})
+            existing_runtime_options = publication_meta.get("runtime_options")
+            runtime_options = _edited_runtime_options(existing_runtime_options, payload)
+            existing_runtime_option_keys = (
+                {str(key) for key in existing_runtime_options}
+                if isinstance(existing_runtime_options, Mapping)
                 else set()
             )
             try:
                 document = document_from_legacy_payload(
-                    _content_payload(payload, runtime_option_keys=runtime_option_keys)
+                    _content_payload(
+                        payload,
+                        runtime_option_keys=(
+                            existing_runtime_option_keys
+                            | set(_EDITOR_RUNTIME_OPTION_FIELDS)
+                        ),
+                    )
                 )
             except LegacyPayloadError as exc:
                 raise PublicationEditPersistenceError(str(exc)) from exc
@@ -194,6 +292,8 @@ class PublicationEditPersistenceService:
             publication.content_revision = next_revision
             schedule.content_revision = next_revision
             publication.telegram_message_ids = ids
+            publication.meta = _with_runtime_options(publication.meta, runtime_options)
+            schedule.meta = _with_runtime_options(schedule.meta, runtime_options)
 
             await self.session.commit()
             return PublicationEditPersistenceResult(
