@@ -65,6 +65,28 @@ class Settings(BaseSettings):
         default=180, alias="PUBLICATION_AUTODELETE_WORKER_LEASE_TTL_SECONDS"
     )
 
+    # Opt-in views-based canonical autodelete runtime. This worker additionally
+    # requires a successfully started userbot because view counts are read via MTProto.
+    publication_autodelete_views_worker_enabled: bool = Field(
+        default=False, alias="PUBLICATION_AUTODELETE_VIEWS_WORKER_ENABLED"
+    )
+    publication_autodelete_views_worker_interval_seconds: int = Field(
+        default=60, alias="PUBLICATION_AUTODELETE_VIEWS_WORKER_INTERVAL_SECONDS"
+    )
+    publication_autodelete_views_worker_batch_size: int = Field(
+        default=25, alias="PUBLICATION_AUTODELETE_VIEWS_WORKER_BATCH_SIZE"
+    )
+    publication_autodelete_views_worker_lease_ttl_seconds: int = Field(
+        default=180, alias="PUBLICATION_AUTODELETE_VIEWS_WORKER_LEASE_TTL_SECONDS"
+    )
+    publication_autodelete_views_worker_next_check_seconds: int = Field(
+        default=60, alias="PUBLICATION_AUTODELETE_VIEWS_WORKER_NEXT_CHECK_SECONDS"
+    )
+    publication_autodelete_views_worker_ineligible_backoff_seconds: int = Field(
+        default=300,
+        alias="PUBLICATION_AUTODELETE_VIEWS_WORKER_INELIGIBLE_BACKOFF_SECONDS",
+    )
+
     # Optional deterministic Inbox enrichment worker (never uses AI providers)
     local_enrichment_worker_enabled: bool = Field(
         default=False, alias="LOCAL_ENRICHMENT_WORKER_ENABLED"

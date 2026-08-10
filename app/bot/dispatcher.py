@@ -34,6 +34,7 @@ from app.workers.canonical_scheduler import Scheduler
 from app.workers.grab_poll import GrabPoller
 from app.workers.post_task_retention import PostTaskRetentionWorker
 from app.workers.publication_autodelete import PublicationAutodeleteWorker
+from app.workers.publication_autodelete_views import PublicationAutodeleteViewsWorker
 from app.workers.publication_reconciler import PublicationReconcilerWorker
 from app.workers.scheduler_recovery import SchedulerRecoveryWorker
 from app.workers.source_ingestion import SourceIngestionWorker
@@ -92,6 +93,37 @@ async def _start_publication_autodelete_worker_if_enabled():
     return worker
 
 
+async def _start_publication_autodelete_views_worker_if_enabled(
+    *,
+    userbot_available: bool,
+):
+    if not settings.publication_autodelete_views_worker_enabled:
+        logger.info("Boot: canonical views autodelete worker disabled")
+        return None
+    if not userbot_available:
+        logger.warning(
+            "Boot: canonical views autodelete worker requested but userbot is unavailable"
+        )
+        return None
+
+    worker = PublicationAutodeleteViewsWorker(
+        view_source=userbot,
+        delete_provider=bot,
+        session_factory=AsyncSessionLocal,
+        interval_seconds=settings.publication_autodelete_views_worker_interval_seconds,
+        batch_size=settings.publication_autodelete_views_worker_batch_size,
+        lease_ttl_seconds=(
+            settings.publication_autodelete_views_worker_lease_ttl_seconds
+        ),
+        next_check_seconds=settings.publication_autodelete_views_worker_next_check_seconds,
+        ineligible_backoff_seconds=(
+            settings.publication_autodelete_views_worker_ineligible_backoff_seconds
+        ),
+    )
+    await worker.start()
+    return worker
+
+
 async def run_bot() -> None:
     setup_logging(settings.log_level)
     validate_runtime_configuration(settings)
@@ -131,6 +163,7 @@ async def run_bot() -> None:
     scheduler_recovery = None
     publication_reconciler = None
     publication_autodelete = None
+    publication_autodelete_views = None
     post_task_retention = None
     source_ingestion = None
     poller = None
@@ -177,6 +210,11 @@ async def run_bot() -> None:
         await publication_reconciler.start()
 
         publication_autodelete = await _start_publication_autodelete_worker_if_enabled()
+        publication_autodelete_views = (
+            await _start_publication_autodelete_views_worker_if_enabled(
+                userbot_available=userbot_started,
+            )
+        )
 
         if settings.post_task_retention_enabled:
             post_task_retention = PostTaskRetentionWorker(
@@ -238,6 +276,11 @@ async def run_bot() -> None:
             await _safe_stop("source ingestion", source_ingestion.stop)
         if post_task_retention is not None:
             await _safe_stop("PostTask retention", post_task_retention.stop)
+        if publication_autodelete_views is not None:
+            await _safe_stop(
+                "canonical views publication autodelete",
+                publication_autodelete_views.stop,
+            )
         if publication_autodelete is not None:
             await _safe_stop("canonical publication autodelete", publication_autodelete.stop)
         if publication_reconciler is not None:
