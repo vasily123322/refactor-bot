@@ -63,7 +63,7 @@ class PostTaskRetentionService:
         self.retention_days = max(7, min(int(retention_days), 3650))
         self.batch_size = max(1, min(int(batch_size), 500))
 
-    def _candidate_query(self, *, cutoff: datetime, limit: int):
+    def _candidate_query(self, *, cutoff: datetime, current: datetime, limit: int):
         return (
             select(PostTask.id)
             .join(Publication, Publication.legacy_post_task_id == PostTask.id)
@@ -75,7 +75,13 @@ class PostTaskRetentionService:
                     PublicationAttempt.attempt == Publication.attempt_count,
                 ),
             )
-            .outerjoin(SchedulerTaskLease, SchedulerTaskLease.task_id == PostTask.id)
+            .outerjoin(
+                SchedulerTaskLease,
+                and_(
+                    SchedulerTaskLease.task_id == PostTask.id,
+                    SchedulerTaskLease.expires_at > current,
+                ),
+            )
             .where(
                 PostTask.status.in_(tuple(_RETIRABLE_STATUSES)),
                 Publication.status.in_(tuple(_RETIRABLE_STATUSES)),
@@ -94,6 +100,7 @@ class PostTaskRetentionService:
         task_id: int,
         *,
         cutoff: datetime,
+        current: datetime,
     ) -> tuple[PostTask, Publication, PublicationAttempt, ScheduleEntry] | None:
         row = (
             await self.session.execute(
@@ -109,7 +116,10 @@ class PostTaskRetentionService:
                 )
                 .outerjoin(
                     SchedulerTaskLease,
-                    SchedulerTaskLease.task_id == PostTask.id,
+                    and_(
+                        SchedulerTaskLease.task_id == PostTask.id,
+                        SchedulerTaskLease.expires_at > current,
+                    ),
                 )
                 .where(
                     PostTask.id == int(task_id),
@@ -143,7 +153,11 @@ class PostTaskRetentionService:
             int(value)
             for value in (
                 await self.session.execute(
-                    self._candidate_query(cutoff=cutoff, limit=self.batch_size * 5)
+                    self._candidate_query(
+                        cutoff=cutoff,
+                        current=current,
+                        limit=self.batch_size * 5,
+                    )
                 )
             ).scalars().all()
         ]
@@ -159,7 +173,11 @@ class PostTaskRetentionService:
             if deleted >= self.batch_size:
                 break
             try:
-                locked = await self._locked_candidate(task_id, cutoff=cutoff)
+                locked = await self._locked_candidate(
+                    task_id,
+                    cutoff=cutoff,
+                    current=current,
+                )
                 if locked is None:
                     await self.session.rollback()
                     skipped_changed += 1
