@@ -18,6 +18,7 @@ from app.services.content_plan_publications import (
     OwnedPublicationContext,
     load_owned_publication_context,
 )
+from app.services.scheduling import as_utc
 
 
 router = Router()
@@ -87,7 +88,7 @@ def _autodelete_line(ctx: OwnedPublicationContext) -> str:
 def _local_time(ctx: OwnedPublicationContext) -> str:
     if ctx.scheduled_at is None:
         return ""
-    value = ctx.scheduled_at
+    value = as_utc(ctx.scheduled_at)
     try:
         if ctx.timezone_name:
             value = value.astimezone(ZoneInfo(ctx.timezone_name))

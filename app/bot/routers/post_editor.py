@@ -1962,6 +1962,28 @@ async def _cb_back_from_preview_state(
                 chat_id=callback.message.chat.id, message_id=int(prev_id)
             )
     prev_restore = data_all_top.get("prev_editor_restore")
+    if (
+        isinstance(prev_restore, dict)
+        and prev_restore.get("type") == "cp_publication_card"
+    ):
+        try:
+            from app.bot.routers.content_plan_publications import (
+                cb_cp_open_publication,
+            )
+
+            publication_id = int(prev_restore.get("publication_id"))
+            d = str(prev_restore.get("date"))
+            cb2 = callback.model_copy(
+                update={"data": f"cp_open_publication:{publication_id}:{d}"}
+            )  # type: ignore
+            await cb_cp_open_publication(cb2, state)
+            with suppress(TelegramBadRequest):
+                await callback.answer()
+            with suppress(Exception):
+                await state.update_data(prev_editor_restore=None)
+            return True
+        except Exception:
+            pass
     if isinstance(prev_restore, dict) and prev_restore.get("type") == "cp_card":
         try:
             pid = int(prev_restore.get("post_id"))
@@ -2079,6 +2101,28 @@ async def _cb_back_to_cp_if_needed(callback: CallbackQuery, state: FSMContext) -
 
     data_all_top = await state.get_data()
     prev_restore = data_all_top.get("prev_editor_restore")
+    if (
+        isinstance(prev_restore, dict)
+        and prev_restore.get("type") == "cp_publication_card"
+    ):
+        try:
+            from app.bot.routers.content_plan_publications import (
+                cb_cp_open_publication,
+            )
+
+            publication_id = int(prev_restore.get("publication_id"))
+            d = str(prev_restore.get("date"))
+            cb2 = callback.model_copy(
+                update={"data": f"cp_open_publication:{publication_id}:{d}"}
+            )  # type: ignore
+            await cb_cp_open_publication(cb2, state)
+            with suppress(TelegramBadRequest):
+                await callback.answer()
+            with suppress(Exception):
+                await state.update_data(prev_editor_restore=None)
+            return True
+        except Exception:
+            pass
     if isinstance(prev_restore, dict) and prev_restore.get("type") == "cp_card":
         try:
             pid = int(prev_restore.get("post_id"))
