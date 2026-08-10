@@ -22,6 +22,7 @@ from app.core.db import (
 from app.core.errors import ErrorsMiddleware
 from app.core.fsm_storage import build_fsm_storage
 from app.core.logging import setup_logging
+from app.core.runtime_configuration import validate_runtime_configuration
 from app.core.schema import bootstrap_database_schema
 from app.services.document_posting import DocumentPostingService as PostingService
 from app.services.external_bots import ExternalBotsManager
@@ -93,6 +94,7 @@ async def _start_publication_autodelete_worker_if_enabled():
 
 async def run_bot() -> None:
     setup_logging(settings.log_level)
+    validate_runtime_configuration(settings)
 
     pool_name = getattr(getattr(engine, "sync_engine", None), "pool", None)
     logger.info(
