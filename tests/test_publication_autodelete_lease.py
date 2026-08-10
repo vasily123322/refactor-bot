@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.db import Base
 from app.domain.content import PostDocument
 from app.domain.models import Channel, Client, PostTask
-from app.domain.publishing.models import Publication, ScheduleEntry
+from app.domain.publishing.models import ScheduleEntry
 from app.repositories.content import ContentRepo
 from app.services.publication_autodelete_lease import PublicationAutodeleteLeaseService
 from app.services.publication_bridge import LegacyPublicationBridge
