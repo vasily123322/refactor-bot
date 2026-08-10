@@ -185,8 +185,9 @@ async def handle_canonical_publication_edit(
         return
     except CanonicalPublicationEditSyncFailed as exc:
         logger.warning(
-            "Canonical publication edit sync failed conflict={}",
+            "Canonical publication edit sync failed conflict={} error_type={}",
             exc.conflict,
+            exc.error_type,
         )
         await callback.answer(
             "Сообщение могло измениться, но данные не синхронизированы. Откройте публикацию заново.",
