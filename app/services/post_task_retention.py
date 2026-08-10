@@ -206,6 +206,25 @@ class PostTaskRetentionService:
                     skipped_delivery_evidence += 1
                     continue
 
+                # Re-check the lease row while the candidate is locked. Terminal tasks
+                # should not normally acquire a fresh lease, but a late active lease
+                # must still block deletion. Expired leases are compatibility debris and
+                # are deleted explicitly so unmanaged SQLite (FK enforcement may be off)
+                # cannot retain an orphan after the PostTask row is retired.
+                lease = (
+                    await self.session.execute(
+                        select(SchedulerTaskLease)
+                        .where(SchedulerTaskLease.task_id == int(task_id))
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if lease is not None:
+                    if _utc(lease.expires_at) > current:
+                        await self.session.rollback()
+                        skipped_changed += 1
+                        continue
+                    await self.session.delete(lease)
+
                 eligible += 1
                 publication.legacy_post_task_id = None
                 publication.meta = {
