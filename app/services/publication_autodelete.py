@@ -98,6 +98,25 @@ def _safe_nonrepeat(schedule: ScheduleEntry) -> bool:
     return enabled is None or enabled is False
 
 
+def _safe_time_only_options(meta: Mapping[str, Any]) -> bool:
+    raw_options = meta.get("runtime_options")
+    if raw_options is not None and not isinstance(raw_options, Mapping):
+        return False
+    options = _safe_mapping(raw_options)
+
+    report_flag = options.get("autodelete_report")
+    if report_flag is not None and not isinstance(report_flag, bool):
+        return False
+    if report_flag is True:
+        return False
+
+    raw_views = options.get("autodelete_views")
+    parsed_views = _positive_int(raw_views)
+    if raw_views not in (None, False, 0, "0", "") and parsed_views is None:
+        return False
+    return parsed_views is None
+
+
 def _is_unavailable_delete_error(exc: Exception) -> bool:
     # Provider text is used only for in-memory classification. It is never returned,
     # logged, or persisted at this boundary.
@@ -166,83 +185,69 @@ class PublicationAutodeleteService:
             )
 
         publication, schedule, item, channel = row
+        safe_publication_id = int(publication.id)
+        safe_channel_id = int(publication.channel_id)
+        safe_tg_chat_id = int(channel.tg_chat_id)
+        safe_content_item_id = int(item.id)
+        safe_content_revision = int(publication.content_revision)
+        safe_schedule_entry_id = int(schedule.id)
+
         meta = _safe_mapping(publication.meta)
         raw_runtime = meta.get(AUTODELETE_RUNTIME_META_KEY)
-        raw_options = meta.get("runtime_options")
         if raw_runtime is not None and not isinstance(raw_runtime, Mapping):
             await self.session.rollback()
             return None, PublicationAutodeleteResult(
-                publication_id=int(publication.id), outcome="ineligible"
+                publication_id=safe_publication_id, outcome="ineligible"
             )
-        if raw_options is not None and not isinstance(raw_options, Mapping):
+        if not _safe_time_only_options(meta):
             await self.session.rollback()
             return None, PublicationAutodeleteResult(
-                publication_id=int(publication.id), outcome="ineligible"
+                publication_id=safe_publication_id, outcome="ineligible"
             )
+
         runtime = _safe_mapping(raw_runtime)
-        options = _safe_mapping(raw_options)
         ids = tuple(normalize_telegram_message_ids(publication.telegram_message_ids))
 
         deleted_flag = runtime.get("deleted")
-        if deleted_flag not in (None, False, True):
+        if deleted_flag is not None and not isinstance(deleted_flag, bool):
             await self.session.rollback()
             return None, PublicationAutodeleteResult(
-                publication_id=int(publication.id), outcome="ineligible"
+                publication_id=safe_publication_id, outcome="ineligible"
             )
         if deleted_flag is True:
             await self.session.rollback()
             return None, PublicationAutodeleteResult(
-                publication_id=int(publication.id),
+                publication_id=safe_publication_id,
                 outcome="already_deleted",
                 message_count=len(ids),
             )
         if not _safe_nonrepeat(schedule):
             await self.session.rollback()
             return None, PublicationAutodeleteResult(
-                publication_id=int(publication.id), outcome="ineligible"
+                publication_id=safe_publication_id, outcome="ineligible"
             )
-        report_flag = options.get("autodelete_report")
-        if report_flag not in (None, False, True) or report_flag is True:
-            await self.session.rollback()
-            return None, PublicationAutodeleteResult(
-                publication_id=int(publication.id), outcome="ineligible"
-            )
-        raw_views = options.get("autodelete_views")
-        parsed_views = _positive_int(raw_views)
-        if (
-            raw_views not in (None, False, 0, "0", "")
-            and parsed_views is None
-        ):
-            await self.session.rollback()
-            return None, PublicationAutodeleteResult(
-                publication_id=int(publication.id), outcome="ineligible"
-            )
-        if parsed_views is not None:
-            await self.session.rollback()
-            return None, PublicationAutodeleteResult(
-                publication_id=int(publication.id), outcome="ineligible"
-            )
+
         due_at, due_token = _runtime_due_at(runtime)
         if due_at is None or due_token is None or not ids:
             await self.session.rollback()
             return None, PublicationAutodeleteResult(
-                publication_id=int(publication.id), outcome="ineligible"
+                publication_id=safe_publication_id, outcome="ineligible"
             )
         if due_at > now:
             await self.session.rollback()
             return None, PublicationAutodeleteResult(
-                publication_id=int(publication.id),
+                publication_id=safe_publication_id,
                 outcome="not_due",
                 message_count=len(ids),
             )
 
         candidate = _Candidate(
-            publication_id=int(publication.id),
-            channel_id=int(publication.channel_id),
-            tg_chat_id=int(channel.tg_chat_id),
-            content_item_id=int(item.id),
-            content_revision=int(publication.content_revision),
-            schedule_entry_id=int(schedule.id),
+            publication_id=safe_publication_id,
+            channel_id=safe_channel_id,
+            tg_chat_id=safe_tg_chat_id,
+            content_item_id=safe_content_item_id,
+            content_revision=safe_content_revision,
+            schedule_entry_id=safe_schedule_entry_id,
             runtime_scheduled_at=due_token,
             telegram_message_ids=ids,
         )
@@ -308,6 +313,9 @@ class PublicationAutodeleteService:
             raise PublicationAutodeleteSyncConflict()
 
         meta = _safe_mapping(publication.meta)
+        if not _safe_time_only_options(meta):
+            await self.session.rollback()
+            raise PublicationAutodeleteSyncConflict()
         raw_runtime = meta.get(AUTODELETE_RUNTIME_META_KEY)
         if raw_runtime is not None and not isinstance(raw_runtime, Mapping):
             await self.session.rollback()
@@ -315,7 +323,7 @@ class PublicationAutodeleteService:
         runtime = _safe_mapping(raw_runtime)
         due_at, due_token = _runtime_due_at(runtime)
         deleted_flag = runtime.get("deleted")
-        if deleted_flag not in (None, False, True):
+        if deleted_flag is not None and not isinstance(deleted_flag, bool):
             await self.session.rollback()
             raise PublicationAutodeleteSyncConflict()
         if deleted_flag is True:
