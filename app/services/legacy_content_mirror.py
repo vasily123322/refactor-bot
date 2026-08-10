@@ -16,6 +16,7 @@ from app.services.publication_runtime import (
     AUTODELETE_RUNTIME_META_KEY,
     normalize_autodelete_runtime,
 )
+from app.services.repeat_runtime_intent import canonical_repeat_runtime_intent
 from app.services.scheduler_errors import public_scheduler_error
 from app.services.scheduling import as_utc, cleanup_runtime_fields
 from app.services.telegram_results import (
@@ -309,6 +310,18 @@ async def mirror_legacy_post_task(
         )
         reused_repeat_root = referenced is not None
 
+    repeat_runtime_intent: dict[str, Any] | None = None
+    if reused_repeat_root and referenced is not None:
+        referenced_item, referenced_revision = referenced
+        repeat_runtime_intent = await canonical_repeat_runtime_intent(
+            session,
+            payload=payload,
+            channel_id=channel_id,
+            task_id=task_id,
+            content_item_id=int(referenced_item.id),
+            content_revision=int(referenced_revision.revision),
+        )
+
     document = None
     if referenced is None:
         try:
@@ -383,6 +396,11 @@ async def mirror_legacy_post_task(
         if repeat_group_id is not None:
             mirror_meta["repeat_group_id"] = repeat_group_id
             schedule_meta["repeat_group_id"] = repeat_group_id
+        if repeat_runtime_intent:
+            mirror_meta["runtime_options"] = deepcopy(repeat_runtime_intent)
+            schedule_meta["runtime_options"] = deepcopy(repeat_runtime_intent)
+            mirror_meta["repeat_runtime_intent_provenance"] = True
+            schedule_meta["repeat_runtime_intent_provenance"] = True
         if reused_content:
             mirror_meta["reused_content_provenance"] = True
             schedule_meta["reused_content_provenance"] = True
