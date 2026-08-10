@@ -139,6 +139,7 @@ class PublicationAutodeleteWorker:
                     result = await PublicationAutodeleteService(
                         operation_session,
                         provider=self.provider,
+                        allow_report=True,
                     ).delete_if_due(int(publication_id))
                 if result.outcome == "deleted":
                     deleted += 1
