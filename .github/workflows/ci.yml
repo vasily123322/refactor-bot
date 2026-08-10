@@ -49,28 +49,8 @@ jobs:
         run: ruff check app tests scripts
       - name: Compile Python sources
         run: python -m compileall -q app tests scripts
-      - name: Run full test suite with diagnostics
-        id: pytest
-        shell: bash
-        run: |
-          set +e
-          pytest -q --tb=short --junitxml="pytest-${{ matrix.python-version }}.xml" > "pytest-${{ matrix.python-version }}.txt" 2>&1
-          code=$?
-          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-          exit 0
-      - name: Upload pytest diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pytest-${{ matrix.python-version }}-diagnostics
-          path: |
-            pytest-${{ matrix.python-version }}.xml
-            pytest-${{ matrix.python-version }}.txt
-          if-no-files-found: error
-          retention-days: 1
-      - name: Preserve pytest failure
-        if: steps.pytest.outputs.exit_code != '0'
-        run: exit 1
+      - name: Run full test suite
+        run: pytest -q
 
   studio:
     name: Telegram Studio frontend
