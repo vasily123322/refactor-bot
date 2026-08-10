@@ -118,6 +118,18 @@ async def cb_post_send(callback: CallbackQuery, state: FSMContext):
     if edit_chat_id and edit_msg_id and not bool(data.get("is_draft", False)):
         payload: dict = dict(data.get("payload") or {})
         prev_id = data.get("preview_msg_id")
+        if isinstance(data.get("canonical_edit_context"), dict):
+            from app.bot.routers.utils.canonical_publication_edit import (
+                handle_canonical_publication_edit,
+            )
+
+            await handle_canonical_publication_edit(
+                callback,
+                state,
+                data=data,
+                payload=payload,
+            )
+            return
         try:
             if payload.get("type") == "text":
                 text0 = await _maybe_append_autosign(payload.get("text", ""), data)
