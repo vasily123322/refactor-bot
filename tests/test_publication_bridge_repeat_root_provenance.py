@@ -9,7 +9,7 @@ import app.domain  # noqa: F401 register complete ORM metadata
 from app.core.db import Base
 from app.domain.content import PostDocument
 from app.domain.models import Channel, Client, PostTask
-from app.domain.publishing.models import Publication, ScheduleEntry
+from app.domain.publishing.models import ScheduleEntry
 from app.repositories.content import ContentRepo
 from app.services.publication_bridge import LegacyPublicationBridge
 
