@@ -627,6 +627,16 @@ class Scheduler:
         except Exception:
             pass
 
+    async def _published_notice_open_callback(
+        self,
+        session: AsyncSession,
+        post: PostTask,
+        date_iso: str,
+    ) -> str:
+        # Compatibility default. PublicationAwareScheduler overrides this only after
+        # canonical linkage is proven; historical/base scheduler behavior stays intact.
+        return f"cp_open_post:{post.id}:{date_iso}"
+
     async def _notify_owner_published(
         self,
         session: AsyncSession,
@@ -712,7 +722,11 @@ class Scheduler:
                 await session.commit()
                 btn = InlineKeyboardButton(
                     text="Редактировать",
-                    callback_data=f"cp_open_post:{post.id}:{local_dt.date().isoformat()}",
+                    callback_data=await self._published_notice_open_callback(
+                        session,
+                        post,
+                        local_dt.date().isoformat(),
+                    ),
                 )
                 kb = InlineKeyboardMarkup(inline_keyboard=[[btn]])
                 await self.posting.bot.send_message(

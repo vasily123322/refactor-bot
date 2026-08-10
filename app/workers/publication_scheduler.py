@@ -159,6 +159,20 @@ class Scheduler(ReliableScheduler):
         )
         self._active_leases: dict[int, SchedulerTaskLeaseHandle] = {}
 
+    async def _published_notice_open_callback(
+        self,
+        session: AsyncSession,
+        post: PostTask,
+        date_iso: str,
+    ) -> str:
+        from app.services.published_notice_links import published_notice_open_callback
+
+        return await published_notice_open_callback(
+            session,
+            post=post,
+            date_iso=date_iso,
+        )
+
     async def _project_runtime(
         self,
         session: AsyncSession,
