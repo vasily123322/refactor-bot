@@ -136,6 +136,16 @@ def _edited_runtime_options(
     return current
 
 
+def validate_publication_edit_runtime_options(
+    existing: Any,
+    payload: Mapping[str, Any],
+) -> None:
+    """Fail before provider side effects when editor runtime intent is invalid."""
+    if not isinstance(payload, Mapping):
+        raise PublicationEditPersistenceError("editor payload must be an object")
+    _edited_runtime_options(existing, payload)
+
+
 def _with_runtime_options(meta: Any, runtime_options: Mapping[str, Any]) -> dict[str, Any]:
     if meta is None:
         result: dict[str, Any] = {}
