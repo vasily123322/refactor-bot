@@ -11,7 +11,7 @@ from app.core.db import Base
 from app.domain.content import PostDocument
 from app.domain.models import Channel, Client, PostTask
 from app.domain.publication_autodelete import PublicationAutodeleteViewState
-from app.domain.publishing.models import Publication, ScheduleEntry
+from app.domain.publishing.models import ScheduleEntry
 from app.repositories.content import ContentRepo
 from app.services.publication_autodelete_views_state import (
     PublicationAutodeleteViewStateConflict,
