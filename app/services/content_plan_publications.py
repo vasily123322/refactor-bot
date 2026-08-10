@@ -8,11 +8,11 @@ from typing import Any
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.content import PostDocument
+from app.domain.content import PostDocument, PostDocumentError
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import Channel, Client
 from app.domain.publishing.models import Publication, ScheduleEntry
-from app.services.content import legacy_payload_from_document
+from app.services.content import LegacyPayloadError, legacy_payload_from_document
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +103,6 @@ async def load_owned_publication_context(
     if revision is None:
         return None
 
-    document = PostDocument.from_dict(revision.document)
     publication_meta = deepcopy(dict(publication.meta or {}))
     schedule_meta = deepcopy(dict(schedule.meta or {})) if schedule is not None else {}
     runtime_options = publication_meta.get("runtime_options") or schedule_meta.get(
@@ -111,6 +110,14 @@ async def load_owned_publication_context(
     ) or {}
     if not isinstance(runtime_options, dict):
         runtime_options = {}
+
+    try:
+        document = PostDocument.from_dict(revision.document)
+        editor_payload = _editor_payload(document, runtime_options=runtime_options)
+    except (PostDocumentError, LegacyPayloadError, TypeError, ValueError):
+        # Durable content is untrusted historical data at this boundary. Corruption
+        # must not fall through into an editor operating on partially parsed content.
+        return None
 
     message_ids: list[int] = []
     for raw in publication.telegram_message_ids or []:
@@ -138,5 +145,5 @@ async def load_owned_publication_context(
         ),
         publication_meta=publication_meta,
         schedule_meta=schedule_meta,
-        editor_payload=_editor_payload(document, runtime_options=runtime_options),
+        editor_payload=editor_payload,
     )
