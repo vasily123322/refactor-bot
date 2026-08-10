@@ -47,6 +47,12 @@ class Settings(BaseSettings):
         default=False,
         alias="POST_TASK_RETENTION_SUCCESSFUL_PENDING_AUTODELETE_ENABLED",
     )
+    # Independently opt into retirement of terminal repeat occurrences only after the
+    # service proves a later mirrored successor owns repeat execution.
+    post_task_retention_successful_repeat_occurrences_enabled: bool = Field(
+        default=False,
+        alias="POST_TASK_RETENTION_SUCCESSFUL_REPEAT_OCCURRENCES_ENABLED",
+    )
     post_task_retention_days: int = Field(
         default=90, alias="POST_TASK_RETENTION_DAYS"
     )
