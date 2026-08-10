@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
 from app.domain.content import PostDocument
+from app.domain.content.models import ContentRevision
 from app.domain.models import Channel, Client, PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.repositories.content import ContentRepo
@@ -111,6 +113,34 @@ def test_owned_publication_context_survives_post_task_retirement(tmp_path) -> No
                 )
                 assert denied is None
 
+                # Historical malformed content must fail closed rather than opening an
+                # editor on a partially parsed document.
+                revision = (
+                    await session.execute(
+                        select(ContentRevision).where(
+                            ContentRevision.content_item_id == item_id,
+                            ContentRevision.revision == item_revision,
+                        )
+                    )
+                ).scalar_one()
+                valid_document = dict(revision.document)
+                revision.document = {
+                    "schema_version": 999,
+                    "mode": "classic",
+                    "blocks": [],
+                }
+                await session.commit()
+                assert (
+                    await load_owned_publication_context(
+                        session,
+                        publication_id=publication_id,
+                        tg_user_id=7001,
+                    )
+                    is None
+                )
+                revision.document = valid_document
+                await session.commit()
+
                 # Corrupted schedule linkage must not be accepted merely because the
                 # Publication itself belongs to the caller.
                 schedule = await session.get(ScheduleEntry, schedule_id)
@@ -145,10 +175,6 @@ def test_owned_publication_context_survives_post_task_retirement(tmp_path) -> No
                     )
                     is None
                 )
-
-                # Keep the original identity variables exercised so accidental test
-                # simplification cannot hide what the valid canonical linkage was.
-                assert item_id > 0 and item_revision > 0
         finally:
             await engine.dispose()
 
