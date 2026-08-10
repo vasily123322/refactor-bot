@@ -293,6 +293,14 @@ async def _render_content_plan(
     # Кнопки постов за выбранную дату (и pending, и done)
     post_rows = []
     try:
+        from app.bot.routers.utils.content_plan_hybrid import (
+            TimedContentPlanButtonRow,
+            canonical_only_published_button_rows,
+            merge_timed_content_plan_rows,
+        )
+        from app.services.scheduling import as_utc
+
+        timed_post_rows: list[TimedContentPlanButtonRow] = []
         from app.domain.models import PostTask
 
         async with AsyncSessionLocal() as session:
@@ -429,7 +437,26 @@ async def _render_content_plan(
                         )
                 except Exception:
                     pass
-                post_rows.append(row_btns)
+                timed_post_rows.append(
+                    TimedContentPlanButtonRow(
+                        scheduled_at=as_utc(p.scheduled_at),
+                        buttons=row_btns,
+                    )
+                )
+
+            canonical_timed_rows = await canonical_only_published_button_rows(
+                session,
+                channel_id=int(channel_id),
+                start_at=start,
+                end_at=end,
+                date_iso=center_date.date().isoformat(),
+                tz_code=tz_code,
+            )
+
+            post_rows = merge_timed_content_plan_rows(
+                timed_post_rows,
+                canonical_timed_rows,
+            )
     except Exception:
         pass
     # Compact mobile browser: keep a bounded keyboard and page through the day.
