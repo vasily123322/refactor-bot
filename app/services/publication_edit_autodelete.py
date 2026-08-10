@@ -71,12 +71,10 @@ def validate_publication_edit_autodelete_execution(
     runtime_options: Mapping[str, Any],
 ) -> None:
     """Reject canonical editor intent that has no proven executor after retirement."""
-    views = _option_int(runtime_options, "autodelete_views")
+    # Views execution is now proven for canonical-only Publications. Keep validating
+    # its shape here, but no longer require the legacy PostTask transport.
+    _option_int(runtime_options, "autodelete_views")
     report = _option_report(runtime_options)
-    if legacy_post_task_id is None and views is not None:
-        raise PublicationEditAutodeleteSyncError(
-            "views-based autodelete requires legacy transport"
-        )
     if legacy_post_task_id is None and report:
         raise PublicationEditAutodeleteSyncError(
             "autodelete report requires legacy transport"
