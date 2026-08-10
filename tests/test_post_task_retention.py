@@ -218,3 +218,54 @@ def test_retention_skips_active_lease_and_recent_or_published_rows(tmp_path) -> 
             await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_retention_ignores_expired_scheduler_lease(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'retention-expired-lease.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            now = datetime(2026, 12, 1, 12, 0, tzinfo=timezone.utc)
+            task_id, publication_id, attempt_id, _ = await _seed_terminal(
+                Session,
+                channel_id=926,
+                status="failed",
+            )
+
+            async with Session() as session:
+                attempt = await session.get(PublicationAttempt, attempt_id)
+                assert attempt is not None
+                attempt.finished_at = now - timedelta(days=120)
+                session.add(
+                    SchedulerTaskLease(
+                        task_id=task_id,
+                        lease_token="retention-expired-lease",
+                        holder="dead-worker",
+                        expires_at=now - timedelta(hours=1),
+                    )
+                )
+                await session.commit()
+
+                tick = await PostTaskRetentionService(
+                    session,
+                    retention_days=90,
+                    batch_size=10,
+                ).run_once(now=now)
+                assert tick.selected == 1
+                assert tick.eligible == 1
+                assert tick.deleted == 1
+                assert tick.failures == 0
+
+            async with Session() as session:
+                assert await session.get(PostTask, task_id) is None
+                publication = await session.get(Publication, publication_id)
+                assert publication is not None
+                assert publication.legacy_post_task_id is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
