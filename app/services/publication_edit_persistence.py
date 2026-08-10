@@ -54,9 +54,15 @@ class PublicationEditPersistenceResult:
     telegram_message_ids: tuple[int, ...]
 
 
-def _content_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+def _content_payload(
+    payload: Mapping[str, Any],
+    *,
+    runtime_option_keys: set[str] | frozenset[str] = frozenset(),
+) -> dict[str, Any]:
     clean = deepcopy(dict(payload or {}))
-    for key in _EDITOR_NON_CONTENT_FIELDS:
+    blocked = set(_EDITOR_NON_CONTENT_FIELDS)
+    blocked.update(str(key) for key in runtime_option_keys if str(key))
+    for key in blocked:
         clean.pop(key, None)
     for key in tuple(clean):
         if str(key).startswith("_"):
@@ -143,8 +149,16 @@ class PublicationEditPersistenceService:
             if previous is None:
                 raise PublicationEditConflictError("expected content revision is missing")
 
+            runtime_options = dict(publication.meta or {}).get("runtime_options") or {}
+            runtime_option_keys = (
+                {str(key) for key in runtime_options}
+                if isinstance(runtime_options, Mapping)
+                else set()
+            )
             try:
-                document = document_from_legacy_payload(_content_payload(payload))
+                document = document_from_legacy_payload(
+                    _content_payload(payload, runtime_option_keys=runtime_option_keys)
+                )
             except LegacyPayloadError as exc:
                 raise PublicationEditPersistenceError(str(exc)) from exc
 
