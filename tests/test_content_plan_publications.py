@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.db import Base
 from app.domain.content import PostDocument
 from app.domain.models import Channel, Client, PostTask
+from app.domain.publishing.models import Publication, ScheduleEntry
 from app.repositories.content import ContentRepo
 from app.services.content_plan_publications import load_owned_publication_context
 from app.services.publication_bridge import LegacyPublicationBridge
@@ -32,9 +33,15 @@ def test_owned_publication_context_survives_post_task_retirement(tmp_path) -> No
                     tg_chat_id=-1007001001,
                     title="Owned channel",
                 )
-                session.add(channel)
+                foreign_channel = Channel(
+                    owner_id=int(stranger.id),
+                    tg_chat_id=-1007002001,
+                    title="Foreign channel",
+                )
+                session.add_all([channel, foreign_channel])
                 await session.commit()
                 await session.refresh(channel)
+                await session.refresh(foreign_channel)
 
                 item = await ContentRepo(session).create(
                     channel_id=int(channel.id),
@@ -42,11 +49,25 @@ def test_owned_publication_context_survives_post_task_retirement(tmp_path) -> No
                         blocks=[{"id": "b1", "type": "text", "text": "Canonical edit"}]
                     ),
                 )
+                foreign_item = await ContentRepo(session).create(
+                    channel_id=int(foreign_channel.id),
+                    document=PostDocument(
+                        blocks=[{"id": "b1", "type": "text", "text": "Foreign content"}]
+                    ),
+                )
+                item_id = int(item.id)
+                item_revision = int(item.current_revision)
+                foreign_item_id = int(foreign_item.id)
+                foreign_item_revision = int(foreign_item.current_revision)
+                channel_id = int(channel.id)
+                foreign_channel_id = int(foreign_channel.id)
+
                 publication = await LegacyPublicationBridge(session).queue(
-                    content_item_id=int(item.id),
+                    content_item_id=item_id,
                     runtime_options={"autodelete_seconds": 3600},
                 )
                 publication_id = int(publication.id)
+                schedule_id = int(publication.schedule_entry_id or 0)
                 task_id = int(publication.legacy_post_task_id or 0)
                 task = await session.get(PostTask, task_id)
                 assert task is not None
@@ -75,7 +96,7 @@ def test_owned_publication_context_survives_post_task_retirement(tmp_path) -> No
                 )
                 assert context is not None
                 assert context.status == "published"
-                assert context.channel_id == int(channel.id)
+                assert context.channel_id == channel_id
                 assert context.telegram_message_ids == (88001,)
                 assert context.result_link == "https://t.me/example/88001"
                 assert context.legacy_post_task_id is None
@@ -89,6 +110,45 @@ def test_owned_publication_context_survives_post_task_retirement(tmp_path) -> No
                     tg_user_id=7002,
                 )
                 assert denied is None
+
+                # Corrupted schedule linkage must not be accepted merely because the
+                # Publication itself belongs to the caller.
+                schedule = await session.get(ScheduleEntry, schedule_id)
+                assert schedule is not None
+                schedule.channel_id = foreign_channel_id
+                await session.commit()
+                assert (
+                    await load_owned_publication_context(
+                        session,
+                        publication_id=publication_id,
+                        tg_user_id=7001,
+                    )
+                    is None
+                )
+
+                # Restore schedule ownership, then corrupt content identity so both
+                # Publication and Schedule point at a ContentItem from another tenant.
+                publication = await session.get(Publication, publication_id)
+                schedule = await session.get(ScheduleEntry, schedule_id)
+                assert publication is not None and schedule is not None
+                schedule.channel_id = channel_id
+                publication.content_item_id = foreign_item_id
+                publication.content_revision = foreign_item_revision
+                schedule.content_item_id = foreign_item_id
+                schedule.content_revision = foreign_item_revision
+                await session.commit()
+                assert (
+                    await load_owned_publication_context(
+                        session,
+                        publication_id=publication_id,
+                        tg_user_id=7001,
+                    )
+                    is None
+                )
+
+                # Keep the original identity variables exercised so accidental test
+                # simplification cannot hide what the valid canonical linkage was.
+                assert item_id > 0 and item_revision > 0
         finally:
             await engine.dispose()
 
