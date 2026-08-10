@@ -22,7 +22,10 @@ from app.core.db import (
 from app.core.errors import ErrorsMiddleware
 from app.core.fsm_storage import build_fsm_storage
 from app.core.logging import setup_logging
-from app.core.runtime_configuration import validate_runtime_configuration
+from app.core.runtime_configuration import (
+    validate_retention_executor_availability,
+    validate_runtime_configuration,
+)
 from app.core.schema import bootstrap_database_schema
 from app.services.document_posting import DocumentPostingService as PostingService
 from app.services.external_bots import ExternalBotsManager
@@ -215,6 +218,13 @@ async def run_bot() -> None:
                 userbot_available=userbot_started,
             )
         )
+        validate_retention_executor_availability(
+            settings,
+            publication_autodelete_worker_started=publication_autodelete is not None,
+            publication_autodelete_views_worker_started=(
+                publication_autodelete_views is not None
+            ),
+        )
 
         if settings.post_task_retention_enabled:
             post_task_retention = PostTaskRetentionWorker(
@@ -223,6 +233,9 @@ async def run_bot() -> None:
                 retention_days=settings.post_task_retention_days,
                 batch_size=settings.post_task_retention_batch_size,
                 retire_successful=settings.post_task_retention_successful_enabled,
+                retire_successful_pending_autodelete=(
+                    settings.post_task_retention_successful_pending_autodelete_enabled
+                ),
             )
             await post_task_retention.start()
         else:
