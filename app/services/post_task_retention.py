@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.domain.scheduler import SchedulerTaskLease
+from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
+from app.services.telegram_results import (
+    normalize_telegram_message_ids,
+    normalize_telegram_result_link,
+)
 
 
 _RETIRABLE_STATUSES = frozenset({"failed", "skipped", "cancelled"})
@@ -29,8 +37,93 @@ def _has_repeat_lineage(payload: dict) -> bool:
 def _has_delivery_evidence(payload: dict) -> bool:
     # Be deliberately conservative. Even malformed/non-canonical legacy result data
     # means the row may refer to a real Telegram side effect and should not be retired
-    # automatically by this first cleanup slice.
+    # automatically by the unsuccessful cleanup slice.
     return bool(payload.get("result_ids")) or bool(payload.get("result_link"))
+
+
+def _safe_mapping(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        return None
+    return {str(key): item for key, item in value.items()}
+
+
+def _positive_int_state(value: Any) -> tuple[bool, bool]:
+    """Return (valid, positive) for legacy/canonical integer option values."""
+    if value in (None, False, 0, "0", ""):
+        return True, False
+    if isinstance(value, bool):
+        return False, False
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return False, False
+    if parsed < 0:
+        return False, False
+    return True, parsed > 0
+
+
+def _autodelete_is_resolved(payload: dict, publication: Publication) -> bool:
+    """Allow successful transport retirement only after all delete semantics are done.
+
+    No delete intent is safe without the canonical deleter. If either legacy payload or
+    canonical runtime/options contains timer/views/runtime evidence, the durable
+    canonical runtime must explicitly say `deleted=True` before PostTask can disappear.
+    Ambiguous metadata fails closed.
+    """
+    meta = _safe_mapping(publication.meta)
+    if meta is None:
+        return False
+    options = _safe_mapping(meta.get("runtime_options"))
+    runtime = _safe_mapping(meta.get(AUTODELETE_RUNTIME_META_KEY))
+    if options is None or runtime is None:
+        return False
+
+    has_delete_intent = False
+    for source in (payload, options, runtime):
+        for key in (
+            "autodelete_seconds",
+            "autodelete_effective_seconds",
+            "autodelete_views",
+            "effective_seconds",
+        ):
+            if key not in source:
+                continue
+            valid, positive = _positive_int_state(source.get(key))
+            if not valid:
+                return False
+            has_delete_intent = has_delete_intent or positive
+
+    for source, key in (
+        (payload, "autodelete_at"),
+        (runtime, "scheduled_at"),
+    ):
+        raw = source.get(key)
+        if raw is not None:
+            if not isinstance(raw, str) or not raw.strip() or len(raw) > 128:
+                return False
+            has_delete_intent = True
+
+    if "autodeleted" in payload:
+        legacy_deleted = payload.get("autodeleted")
+        if not isinstance(legacy_deleted, bool):
+            return False
+        has_delete_intent = True
+
+    deleted = runtime.get("deleted")
+    if deleted is not None and not isinstance(deleted, bool):
+        return False
+    if deleted is True:
+        return True
+    return not has_delete_intent
+
+
+def _canonical_result_link(value: Any) -> tuple[bool, str | None]:
+    if value is None or value == "":
+        return True, None
+    normalized = normalize_telegram_result_link(value)
+    return normalized is not None, normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,16 +133,19 @@ class PostTaskRetentionTick:
     deleted: int = 0
     skipped_repeat: int = 0
     skipped_delivery_evidence: int = 0
+    skipped_canonical_delivery: int = 0
+    skipped_pending_autodelete: int = 0
+    skipped_content_linkage: int = 0
     skipped_changed: int = 0
     failures: int = 0
 
 
 class PostTaskRetentionService:
-    """Retire only canonicalized, unsuccessful non-repeat compatibility tasks.
+    """Retire proven compatibility tasks while preserving canonical behavior.
 
-    The first retention slice intentionally excludes successful publications because
-    legacy edit callbacks and autodelete workflows may still refer to their PostTask.
-    Repeat lineage is also excluded because repeat_group_id still names the root task.
+    Unsuccessful non-repeat rows keep the original conservative policy. Successful
+    rows are a separate opt-in capability and require exact canonical delivery/content
+    evidence plus fully-resolved autodelete semantics before transport retirement.
     """
 
     def __init__(
@@ -58,10 +154,29 @@ class PostTaskRetentionService:
         *,
         retention_days: int = 90,
         batch_size: int = 100,
+        retire_successful: bool = False,
     ) -> None:
         self.session = session
         self.retention_days = max(7, min(int(retention_days), 3650))
         self.batch_size = max(1, min(int(batch_size), 500))
+        self.retire_successful = bool(retire_successful)
+
+    def _lifecycle_predicate(self):
+        unsuccessful = and_(
+            PostTask.status.in_(tuple(_RETIRABLE_STATUSES)),
+            Publication.status.in_(tuple(_RETIRABLE_STATUSES)),
+            ScheduleEntry.status.in_(tuple(_RETIRABLE_STATUSES)),
+            PublicationAttempt.status.in_(tuple(_RETIRABLE_STATUSES)),
+        )
+        if not self.retire_successful:
+            return unsuccessful
+        successful = and_(
+            PostTask.status == "done",
+            Publication.status == "published",
+            ScheduleEntry.status == "completed",
+            PublicationAttempt.status == "published",
+        )
+        return or_(unsuccessful, successful)
 
     def _candidate_query(self, *, cutoff: datetime, current: datetime, limit: int):
         return (
@@ -83,10 +198,7 @@ class PostTaskRetentionService:
                 ),
             )
             .where(
-                PostTask.status.in_(tuple(_RETIRABLE_STATUSES)),
-                Publication.status.in_(tuple(_RETIRABLE_STATUSES)),
-                ScheduleEntry.status.in_(tuple(_RETIRABLE_STATUSES)),
-                PublicationAttempt.status.in_(tuple(_RETIRABLE_STATUSES)),
+                self._lifecycle_predicate(),
                 PublicationAttempt.finished_at.is_not(None),
                 PublicationAttempt.finished_at <= cutoff,
                 SchedulerTaskLease.task_id.is_(None),
@@ -123,10 +235,7 @@ class PostTaskRetentionService:
                 )
                 .where(
                     PostTask.id == int(task_id),
-                    PostTask.status.in_(tuple(_RETIRABLE_STATUSES)),
-                    Publication.status.in_(tuple(_RETIRABLE_STATUSES)),
-                    ScheduleEntry.status.in_(tuple(_RETIRABLE_STATUSES)),
-                    PublicationAttempt.status.in_(tuple(_RETIRABLE_STATUSES)),
+                    self._lifecycle_predicate(),
                     PublicationAttempt.finished_at.is_not(None),
                     PublicationAttempt.finished_at <= cutoff,
                     SchedulerTaskLease.task_id.is_(None),
@@ -138,6 +247,65 @@ class PostTaskRetentionService:
             return None
         task, publication, attempt, schedule = row
         return task, publication, attempt, schedule
+
+    async def _successful_content_linkage_is_exact(
+        self,
+        publication: Publication,
+        schedule: ScheduleEntry,
+    ) -> bool:
+        if not (
+            int(schedule.channel_id) == int(publication.channel_id)
+            and int(schedule.content_item_id) == int(publication.content_item_id)
+            and int(schedule.content_revision) == int(publication.content_revision)
+        ):
+            return False
+        row = (
+            await self.session.execute(
+                select(ContentItem.id)
+                .join(
+                    ContentRevision,
+                    and_(
+                        ContentRevision.content_item_id == ContentItem.id,
+                        ContentRevision.revision == publication.content_revision,
+                    ),
+                )
+                .where(
+                    ContentItem.id == int(publication.content_item_id),
+                    ContentItem.channel_id == int(publication.channel_id),
+                    ContentItem.kind == "post",
+                    ContentItem.current_revision == int(publication.content_revision),
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        return row is not None
+
+    @staticmethod
+    def _successful_delivery_is_exact(
+        task: PostTask,
+        publication: Publication,
+        attempt: PublicationAttempt,
+    ) -> bool:
+        payload = dict(task.payload or {})
+        task_ids = normalize_telegram_message_ids(payload.get("result_ids"))
+        publication_ids = normalize_telegram_message_ids(
+            publication.telegram_message_ids
+        )
+        attempt_ids = normalize_telegram_message_ids(attempt.telegram_message_ids)
+        if not task_ids or not (
+            task_ids == publication_ids == attempt_ids
+        ):
+            return False
+
+        task_link_valid, task_link = _canonical_result_link(payload.get("result_link"))
+        publication_link_valid, publication_link = _canonical_result_link(
+            publication.result_link
+        )
+        return (
+            task_link_valid
+            and publication_link_valid
+            and task_link == publication_link
+        )
 
     async def run_once(
         self,
@@ -166,6 +334,9 @@ class PostTaskRetentionService:
         deleted = 0
         skipped_repeat = 0
         skipped_delivery_evidence = 0
+        skipped_canonical_delivery = 0
+        skipped_pending_autodelete = 0
+        skipped_content_linkage = 0
         skipped_changed = 0
         failures = 0
 
@@ -184,24 +355,49 @@ class PostTaskRetentionService:
                     continue
                 task, publication, attempt, schedule = locked
 
-                # Require exact state agreement across compatibility/canonical rows.
-                status = str(task.status)
-                if not (
-                    status in _RETIRABLE_STATUSES
-                    and str(publication.status) == status
-                    and str(attempt.status) == status
-                    and str(schedule.status) == status
-                ):
+                task_status = str(task.status)
+                unsuccessful = (
+                    task_status in _RETIRABLE_STATUSES
+                    and str(publication.status) == task_status
+                    and str(attempt.status) == task_status
+                    and str(schedule.status) == task_status
+                )
+                successful = (
+                    self.retire_successful
+                    and task_status == "done"
+                    and str(publication.status) == "published"
+                    and str(attempt.status) == "published"
+                    and str(schedule.status) == "completed"
+                )
+                if not (unsuccessful or successful):
                     await self.session.rollback()
                     skipped_changed += 1
                     continue
 
                 payload = dict(task.payload or {})
-                if _has_repeat_lineage(payload):
+                if _has_repeat_lineage(payload) or bool(schedule.repeat_rule):
                     await self.session.rollback()
                     skipped_repeat += 1
                     continue
-                if _has_delivery_evidence(payload):
+
+                if successful:
+                    if not await self._successful_content_linkage_is_exact(
+                        publication, schedule
+                    ):
+                        await self.session.rollback()
+                        skipped_content_linkage += 1
+                        continue
+                    if not self._successful_delivery_is_exact(
+                        task, publication, attempt
+                    ):
+                        await self.session.rollback()
+                        skipped_canonical_delivery += 1
+                        continue
+                    if not _autodelete_is_resolved(payload, publication):
+                        await self.session.rollback()
+                        skipped_pending_autodelete += 1
+                        continue
+                elif _has_delivery_evidence(payload):
                     await self.session.rollback()
                     skipped_delivery_evidence += 1
                     continue
@@ -232,7 +428,7 @@ class PostTaskRetentionService:
                     _RETENTION_META_KEY: {
                         "retired": True,
                         "retired_at": current.isoformat(),
-                        "terminal_status": status,
+                        "terminal_status": task_status,
                     },
                 }
                 await self.session.delete(task)
@@ -248,6 +444,9 @@ class PostTaskRetentionService:
             deleted=deleted,
             skipped_repeat=skipped_repeat,
             skipped_delivery_evidence=skipped_delivery_evidence,
+            skipped_canonical_delivery=skipped_canonical_delivery,
+            skipped_pending_autodelete=skipped_pending_autodelete,
+            skipped_content_linkage=skipped_content_linkage,
             skipped_changed=skipped_changed,
             failures=failures,
         )
