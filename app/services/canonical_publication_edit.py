@@ -21,6 +21,14 @@ from app.services.telegram_edit_outcome import (
 )
 
 
+class CanonicalPublicationEditSyncFailed(RuntimeError):
+    """Telegram confirmed the edit, but canonical persistence did not commit."""
+
+    def __init__(self, *, conflict: bool) -> None:
+        super().__init__("canonical edit sync failed")
+        self.conflict = bool(conflict)
+
+
 @dataclass(frozen=True, slots=True)
 class CanonicalPublicationEditResult:
     publication_id: int
@@ -37,8 +45,8 @@ class CanonicalPublicationEditCoordinator:
     The provider call is deliberately outside a database transaction. A canonical
     preflight catches already-stale editor state before the Telegram side effect, and
     the persistence service repeats ownership/lifecycle/revision checks afterwards.
-    A race can still occur between those boundaries, so persistence conflicts remain
-    fail-closed rather than pretending the canonical state was updated.
+    A race can still occur between those boundaries, so a post-provider persistence
+    failure is reported explicitly instead of pretending the canonical state updated.
     """
 
     def __init__(
@@ -90,14 +98,20 @@ class CanonicalPublicationEditCoordinator:
         outcome: TelegramEditOutcome,
     ) -> CanonicalPublicationEditResult:
         ids = self._confirmed_message_ids(view, outcome)
-        async with self.session_factory() as session:
-            persisted = await PublicationEditPersistenceService(session).persist_success(
-                publication_id=view.publication_id,
-                tg_user_id=tg_user_id,
-                expected_revision=expected_revision,
-                payload=payload,
-                telegram_message_ids=ids,
-            )
+        try:
+            async with self.session_factory() as session:
+                persisted = await PublicationEditPersistenceService(session).persist_success(
+                    publication_id=view.publication_id,
+                    tg_user_id=tg_user_id,
+                    expected_revision=expected_revision,
+                    payload=payload,
+                    telegram_message_ids=ids,
+                )
+        except PublicationEditConflictError:
+            raise CanonicalPublicationEditSyncFailed(conflict=True) from None
+        except PublicationEditPersistenceError:
+            raise CanonicalPublicationEditSyncFailed(conflict=False) from None
+
         return CanonicalPublicationEditResult(
             publication_id=persisted.publication_id,
             previous_revision=persisted.previous_revision,
