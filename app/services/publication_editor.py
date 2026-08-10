@@ -18,6 +18,29 @@ from app.services.telegram_results import (
 )
 
 
+_EDITOR_RUNTIME_BLOCKED = frozenset(
+    {
+        "_publication_id",
+        "_content_item_id",
+        "_content_revision",
+        "_content_channel_id",
+        "_post_task_id",
+        "result_ids",
+        "result_link",
+        "primary_message_id",
+        "notify_context",
+        "repeat_on",
+        "repeat_seconds",
+        "repeat_group_id",
+        "autodelete_at",
+        "autodelete_effective_seconds",
+        "autodeleted",
+        "autodeleted_at",
+        "autosign_applied",
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class PublicationEditorView:
     publication_id: int
@@ -42,16 +65,27 @@ class PublicationEditorView:
     def editor_payload(self) -> dict[str, Any]:
         """Rebuild the legacy Telegram editor shape from canonical content state.
 
-        This is an editor compatibility adapter only. Domain identity and delivery
-        evidence remain on Publication/ContentRevision rather than being copied back
-        into a PostTask payload.
+        This is an editor compatibility adapter only. Domain identity, delivery
+        evidence and transport-generated runtime state remain canonical and are never
+        copied back into the mutable editor payload, including from historical
+        mirrored revisions that may still contain legacy extras.
         """
         payload = legacy_payload_from_document(self.document)
+        for key in _EDITOR_RUNTIME_BLOCKED:
+            payload.pop(key, None)
+        for key in tuple(payload):
+            if str(key).startswith("_"):
+                payload.pop(key, None)
+
         runtime_options = self.publication_meta.get("runtime_options") or {}
         if isinstance(runtime_options, dict):
             for key, value in runtime_options.items():
                 key_text = str(key)
-                if key_text and not key_text.startswith("_"):
+                if (
+                    key_text
+                    and not key_text.startswith("_")
+                    and key_text not in _EDITOR_RUNTIME_BLOCKED
+                ):
                     payload.setdefault(key_text, deepcopy(value))
 
         if self.repeat_rule.get("enabled"):
