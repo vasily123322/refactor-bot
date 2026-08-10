@@ -1,0 +1,56 @@
+name: Patch canonical published notice callback
+
+on:
+  push:
+    branches:
+      - agent/canonical-published-notice-callback
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: agent/canonical-published-notice-callback
+      - name: Add legacy hook and publication-aware override
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          base = Path("app/workers/scheduler.py")
+          text = base.read_text(encoding="utf-8")
+
+          notify_anchor = '''    async def _notify_owner_published(\n        self,\n        session: AsyncSession,\n        ch: Channel,\n'''
+          hook = '''    async def _published_notice_open_callback(\n        self,\n        session: AsyncSession,\n        post: PostTask,\n        date_iso: str,\n    ) -> str:\n        # Compatibility default. PublicationAwareScheduler overrides this only after\n        # canonical linkage is proven; historical/base scheduler behavior stays intact.\n        return f"cp_open_post:{post.id}:{date_iso}"\n\n    async def _notify_owner_published(\n        self,\n        session: AsyncSession,\n        ch: Channel,\n'''
+          if text.count(notify_anchor) != 1:
+              raise SystemExit(f"expected one published notice anchor, got {text.count(notify_anchor)}")
+          text = text.replace(notify_anchor, hook, 1)
+
+          callback_old = '''                    callback_data=f"cp_open_post:{post.id}:{local_dt.date().isoformat()}",\n'''
+          callback_new = '''                    callback_data=await self._published_notice_open_callback(\n                        session,\n                        post,\n                        local_dt.date().isoformat(),\n                    ),\n'''
+          if text.count(callback_old) != 1:
+              raise SystemExit(f"expected one legacy notice callback producer, got {text.count(callback_old)}")
+          text = text.replace(callback_old, callback_new, 1)
+          base.write_text(text, encoding="utf-8")
+
+          aware = Path("app/workers/publication_scheduler.py")
+          aware_text = aware.read_text(encoding="utf-8")
+          init_tail = '''        self._active_leases: dict[int, SchedulerTaskLeaseHandle] = {}\n\n    async def _project_runtime(\n'''
+          override = '''        self._active_leases: dict[int, SchedulerTaskLeaseHandle] = {}\n\n    async def _published_notice_open_callback(\n        self,\n        session: AsyncSession,\n        post: PostTask,\n        date_iso: str,\n    ) -> str:\n        from app.services.published_notice_links import published_notice_open_callback\n\n        return await published_notice_open_callback(\n            session,\n            post=post,\n            date_iso=date_iso,\n        )\n\n    async def _project_runtime(\n'''
+          if aware_text.count(init_tail) != 1:
+              raise SystemExit(f"expected one publication scheduler init tail, got {aware_text.count(init_tail)}")
+          aware.write_text(aware_text.replace(init_tail, override, 1), encoding="utf-8")
+
+          Path(".github/workflows/patch-canonical-published-notice.yml").unlink()
+          PY
+      - name: Commit canonical notice hook
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/workers/scheduler.py app/workers/publication_scheduler.py .github/workflows/patch-canonical-published-notice.yml
+          git commit -m "refactor: emit canonical callback in published notices"
+          git push origin HEAD:agent/canonical-published-notice-callback
