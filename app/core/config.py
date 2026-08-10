@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     post_task_retention_enabled: bool = Field(
         default=False, alias="POST_TASK_RETENTION_ENABLED"
     )
+    # Separate destructive scope: successful published transport is never retired
+    # merely because the existing retention worker is enabled.
+    post_task_retention_successful_enabled: bool = Field(
+        default=False, alias="POST_TASK_RETENTION_SUCCESSFUL_ENABLED"
+    )
     post_task_retention_days: int = Field(
         default=90, alias="POST_TASK_RETENTION_DAYS"
     )
