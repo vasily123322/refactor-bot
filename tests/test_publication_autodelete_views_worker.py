@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -44,12 +44,29 @@ class FakeDeleteProvider:
     def __init__(self, errors: dict[int, BaseException] | None = None) -> None:
         self.errors = dict(errors or {})
         self.calls: list[tuple[int, int]] = []
+        self.report_calls: list[dict] = []
 
     async def delete_message(self, *, chat_id: int, message_id: int):
         self.calls.append((int(chat_id), int(message_id)))
         error = self.errors.get(int(message_id))
         if error is not None:
             raise error
+        return True
+
+    async def send_message(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        disable_web_page_preview: bool,
+    ):
+        self.report_calls.append(
+            {
+                "chat_id": int(chat_id),
+                "text": str(text),
+                "disable_web_page_preview": bool(disable_web_page_preview),
+            }
+        )
         return True
 
 
@@ -220,6 +237,7 @@ def test_worker_deletes_linked_due_publication_and_releases_lease(tmp_path) -> N
             assert tick.release_failures == 0
             assert views.calls == [(chat_id, 99101), (chat_id, 99102)]
             assert deletes.calls == [(chat_id, 99101), (chat_id, 99102)]
+            assert deletes.report_calls == []
 
             async with Session() as session:
                 publication = await session.get(Publication, publication_id)
@@ -271,6 +289,7 @@ def test_worker_respects_active_shared_lease_without_transport_calls(tmp_path) -
             assert tick.busy == 1
             assert views.calls == []
             assert deletes.calls == []
+            assert deletes.report_calls == []
 
             async with Session() as session:
                 current = await PublicationAutodeleteLeaseService(session).current(
@@ -321,17 +340,17 @@ def test_worker_below_threshold_defers_state_and_releases_lease(tmp_path) -> Non
     asyncio.run(run())
 
 
-def test_worker_backs_off_ineligible_due_row_to_prevent_batch_starvation(tmp_path) -> None:
+def test_worker_executes_report_enabled_views_and_releases_lease(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'views-worker-ineligible.db'}"
+            f"sqlite+aiosqlite:///{tmp_path / 'views-worker-report.db'}"
         )
         try:
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
-            publication_id, _, _ = await _seed(
+            publication_id, _, chat_id = await _seed(
                 Session,
                 seed_id=1,
                 report=True,
@@ -348,14 +367,23 @@ def test_worker_backs_off_ineligible_due_row_to_prevent_batch_starvation(tmp_pat
 
             tick = await worker.run_once(now=now)
 
-            assert tick.ineligible == 1
+            assert tick.deleted == 1
+            assert tick.ineligible == 0
             assert tick.backoff_failures == 0
-            assert views.calls == []
-            assert deletes.calls == []
+            assert views.calls == [(chat_id, 99101)]
+            assert deletes.calls == [(chat_id, 99101)]
+            assert deletes.report_calls == [
+                {
+                    "chat_id": 93001,
+                    "text": "🗑️ Пост удалён по просмотрам",
+                    "disable_web_page_preview": True,
+                }
+            ]
             async with Session() as session:
-                state = await session.get(PublicationAutodeleteViewState, publication_id)
-                assert state is not None
-                assert _utc(state.next_check_at) == now + timedelta(seconds=300)
+                publication = await session.get(Publication, publication_id)
+                assert publication is not None
+                assert publication.meta[AUTODELETE_RUNTIME_META_KEY]["deleted"] is True
+                assert await session.get(PublicationAutodeleteViewState, publication_id) is None
                 assert (
                     await PublicationAutodeleteLeaseService(session).current(publication_id)
                     is None
