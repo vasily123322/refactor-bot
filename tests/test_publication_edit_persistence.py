@@ -54,6 +54,10 @@ async def _seed_published(Session) -> tuple[int, int, int, int, int]:
             content_item_id=int(item.id),
             scheduled_at=datetime(2026, 8, 10, 10, 0, tzinfo=timezone.utc),
             repeat_rule={"enabled": True, "seconds": 3600},
+            runtime_options={
+                "autodelete_seconds": 7200,
+                "silent": True,
+            },
         )
         task_id = int(publication.legacy_post_task_id or 0)
         schedule_id = int(publication.schedule_entry_id or 0)
@@ -86,6 +90,8 @@ def test_persist_success_appends_revision_without_touching_legacy_transport(tmp_
                     payload={
                         "type": "text",
                         "text": "After edit",
+                        "autodelete_seconds": 7200,
+                        "silent": True,
                         "_publication_id": 999,
                         "_content_item_id": item_id,
                         "_post_task_id": task_id,
@@ -121,6 +127,10 @@ def test_persist_success_appends_revision_without_touching_legacy_transport(tmp_
                 assert item is not None and item.current_revision == 2
                 assert publication is not None and publication.content_revision == 2
                 assert publication.telegram_message_ids == [91001]
+                assert publication.meta["runtime_options"] == {
+                    "autodelete_seconds": 7200,
+                    "silent": True,
+                }
                 assert schedule is not None and schedule.content_revision == 2
                 assert task is not None and dict(task.payload or {}) == legacy_payload_before
                 assert revision.source == "telegram_edit"
@@ -133,6 +143,8 @@ def test_persist_success_appends_revision_without_touching_legacy_transport(tmp_
                 assert blocks and blocks[0]["text"] == "After edit"
                 extras = dict((document.get("metadata") or {}).get("legacy_payload_extra") or {})
                 blocked = {
+                    "autodelete_seconds",
+                    "silent",
                     "_publication_id",
                     "_content_item_id",
                     "_post_task_id",
