@@ -12,6 +12,7 @@ from app.services.publication_edit_persistence import (
     PublicationEditConflictError,
     PublicationEditPersistenceError,
     PublicationEditPersistenceService,
+    validate_publication_edit_runtime_options,
 )
 from app.services.publication_editor import (
     PublicationEditorView,
@@ -48,10 +49,11 @@ class CanonicalPublicationEditCoordinator:
     """Join truthful Telegram edit success to canonical revision persistence.
 
     The provider call is deliberately outside a database transaction. A canonical
-    preflight catches already-stale editor state before the Telegram side effect, and
-    the persistence service repeats ownership/lifecycle/revision checks afterwards.
-    A race can still occur between those boundaries, so a post-provider persistence
-    failure is reported explicitly instead of pretending the canonical state updated.
+    preflight catches already-stale editor state and invalid runtime intent before the
+    Telegram side effect, and the persistence service repeats ownership/lifecycle/
+    revision/runtime checks afterwards. A race can still occur between those
+    boundaries, so a post-provider persistence failure is reported explicitly instead
+    of pretending the canonical state updated.
     """
 
     def __init__(
@@ -69,6 +71,7 @@ class CanonicalPublicationEditCoordinator:
         publication_id: int,
         tg_user_id: int,
         expected_revision: int,
+        payload: Mapping[str, Any],
     ) -> PublicationEditorView:
         async with self.session_factory() as session:
             view = await load_owned_publication_editor_view(
@@ -130,6 +133,11 @@ class CanonicalPublicationEditCoordinator:
             and int(current_revision or 0) == safe_expected_revision
         ):
             raise PublicationEditConflictError("canonical content revision changed")
+
+        validate_publication_edit_runtime_options(
+            view.publication_meta.get("runtime_options"),
+            payload,
+        )
         return view
 
     @staticmethod
@@ -201,6 +209,7 @@ class CanonicalPublicationEditCoordinator:
             publication_id=publication_id,
             tg_user_id=tg_user_id,
             expected_revision=expected_revision,
+            payload=payload,
         )
         outcome = await TelegramEditOutcomeService(self.provider).edit_text(
             chat_id=view.tg_chat_id,
@@ -231,6 +240,7 @@ class CanonicalPublicationEditCoordinator:
             publication_id=publication_id,
             tg_user_id=tg_user_id,
             expected_revision=expected_revision,
+            payload=payload,
         )
         outcome = await TelegramEditOutcomeService(self.provider).edit_media(
             chat_id=view.tg_chat_id,
