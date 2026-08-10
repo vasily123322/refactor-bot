@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
+from app.services.telegram_results import normalize_telegram_message_ids
 
 
 class PublicationEditAutodeleteSyncError(RuntimeError):
@@ -115,12 +116,13 @@ def _set_runtime(publication: Publication, runtime: dict[str, Any] | None) -> No
 
 
 class PublicationEditAutodeleteSyncService:
-    """Synchronize post-publication autodelete intent after a confirmed edit.
+    """Synchronize post-publication runtime and compatibility delivery state.
 
     Canonical metadata is authoritative. A still-linked `PostTask` is updated as a
     compatibility executor. Generated timer state is reset only when timer/views intent
     changes or when linked transport is missing equivalent timer state; ordinary text
-    edits preserve the original due time.
+    edits preserve the original due time. Confirmed Telegram delivery IDs/link are also
+    mirrored so legacy autodelete targets the message that actually survived the edit.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -133,10 +135,18 @@ class PublicationEditAutodeleteSyncService:
         schedule: ScheduleEntry,
         previous_runtime_options: Mapping[str, Any],
         runtime_options: Mapping[str, Any],
+        telegram_message_ids: list[int] | tuple[int, ...],
+        result_link: str | None,
         now: datetime | None = None,
     ) -> None:
         previous = _mapping(previous_runtime_options, label="previous runtime options")
         current = _mapping(runtime_options, label="runtime options")
+        ids = normalize_telegram_message_ids(list(telegram_message_ids))
+        if not ids:
+            raise PublicationEditAutodeleteSyncError(
+                "confirmed canonical edit has invalid delivery ids"
+            )
+
         previous_seconds = _option_int(previous, "autodelete_seconds")
         current_seconds = _option_int(current, "autodelete_seconds")
         previous_views = _option_int(previous, "autodelete_views")
@@ -214,6 +224,12 @@ class PublicationEditAutodeleteSyncService:
 
         if task is None or task_payload is None:
             return
+
+        task_payload["result_ids"] = list(ids)
+        if result_link is None:
+            task_payload.pop("result_link", None)
+        else:
+            task_payload["result_link"] = str(result_link)
 
         for key in ("autodelete_seconds", "autodelete_views", "autodelete_report"):
             task_payload.pop(key, None)
