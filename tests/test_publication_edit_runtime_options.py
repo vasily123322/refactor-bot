@@ -13,6 +13,7 @@ from app.domain.content.models import ContentRevision
 from app.domain.models import Channel, Client, PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.repositories.content import ContentRepo
+from app.services.canonical_publication_edit import CanonicalPublicationEditCoordinator
 from app.services.publication_bridge import LegacyPublicationBridge
 from app.services.publication_edit_persistence import (
     PublicationEditPersistenceError,
@@ -204,6 +205,55 @@ def test_edit_runtime_intent_is_fail_closed_and_has_no_partial_revision(tmp_path
                         },
                         telegram_message_ids=[91101],
                     )
+
+            async with Session() as session:
+                publication = await session.get(Publication, publication_id)
+                count = (
+                    await session.execute(
+                        select(func.count(ContentRevision.id)).where(
+                            ContentRevision.content_item_id == item_id
+                        )
+                    )
+                ).scalar_one()
+                assert publication is not None and publication.content_revision == 1
+                assert count == 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_invalid_runtime_intent_is_rejected_before_provider_call(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'edit-runtime-preflight.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            item_id, publication_id, _, _ = await _seed(Session, runtime_options={})
+
+            coordinator = CanonicalPublicationEditCoordinator(
+                provider=object(),  # type: ignore[arg-type] - provider must stay unused
+                session_factory=Session,
+            )
+            with pytest.raises(
+                PublicationEditPersistenceError,
+                match="mutually exclusive",
+            ):
+                await coordinator.edit_text_and_persist(
+                    publication_id=publication_id,
+                    tg_user_id=71101,
+                    expected_revision=1,
+                    payload={
+                        "type": "text",
+                        "text": "Invalid before provider",
+                        "autodelete_seconds": 3600,
+                        "autodelete_views": 100,
+                    },
+                    text="Invalid before provider",
+                )
 
             async with Session() as session:
                 publication = await session.get(Publication, publication_id)
