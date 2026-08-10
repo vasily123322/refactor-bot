@@ -63,3 +63,39 @@ def normalize_telegram_result_link(value: Any) -> str | None:
     ):
         return None
     return f"https://t.me{parsed.path}"
+
+
+def rewrite_telegram_result_link_message_id(
+    value: Any,
+    *,
+    chat_id: int,
+    message_id: int,
+) -> str | None:
+    """Keep a proven Telegram post-link identity while replacing its message ID.
+
+    Public channel usernames cannot be recovered from a numeric chat id, so an absent
+    public link stays absent. Private/supergroup links can be reconstructed from a
+    `-100...` chat id even when the historical link is absent.
+    """
+    try:
+        safe_message_id = int(message_id)
+        safe_chat_id = int(chat_id)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if safe_message_id <= 0:
+        return None
+
+    normalized = normalize_telegram_result_link(value)
+    if normalized is not None:
+        parsed = urlsplit(normalized)
+        parts = parsed.path.rstrip("/").split("/")
+        if parts and parts[-1].isdigit():
+            parts[-1] = str(safe_message_id)
+            return f"https://t.me{'/'.join(parts)}"
+
+    chat_text = str(safe_chat_id)
+    if chat_text.startswith("-100") and len(chat_text) > 4:
+        internal = chat_text[4:]
+        if internal.isdigit() and int(internal) > 0:
+            return f"https://t.me/c/{internal}/{safe_message_id}"
+    return None
