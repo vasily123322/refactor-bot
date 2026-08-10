@@ -8,11 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.content.models import ContentItem
 from app.domain.publishing.models import Publication, ScheduleEntry
+from app.services.publication_edit_autodelete import (
+    PublicationEditAutodeleteSyncError,
+    validate_publication_edit_autodelete_execution,
+)
 from app.services.publication_edit_persistence import (
     PublicationEditConflictError,
     PublicationEditPersistenceError,
     PublicationEditPersistenceService,
-    validate_publication_edit_runtime_options,
+    edited_publication_runtime_options,
 )
 from app.services.publication_editor import (
     PublicationEditorView,
@@ -49,8 +53,8 @@ class CanonicalPublicationEditCoordinator:
     """Join truthful Telegram edit success to canonical revision persistence.
 
     The provider call is deliberately outside a database transaction. A canonical
-    preflight catches already-stale editor state and invalid runtime intent before the
-    Telegram side effect, and the persistence service repeats ownership/lifecycle/
+    preflight catches already-stale editor state and unsupported runtime intent before
+    the Telegram side effect, and the persistence service repeats ownership/lifecycle/
     revision/runtime checks afterwards. A race can still occur between those
     boundaries, so a post-provider persistence failure is reported explicitly instead
     of pretending the canonical state updated.
@@ -87,6 +91,7 @@ class CanonicalPublicationEditCoordinator:
                     select(
                         Publication.status,
                         Publication.content_revision,
+                        Publication.legacy_post_task_id,
                         ScheduleEntry.status,
                         ScheduleEntry.content_revision,
                         ContentItem.current_revision,
@@ -111,6 +116,7 @@ class CanonicalPublicationEditCoordinator:
         (
             publication_status,
             publication_revision,
+            legacy_post_task_id,
             schedule_status,
             schedule_revision,
             current_revision,
@@ -134,10 +140,21 @@ class CanonicalPublicationEditCoordinator:
         ):
             raise PublicationEditConflictError("canonical content revision changed")
 
-        validate_publication_edit_runtime_options(
+        runtime_options = edited_publication_runtime_options(
             view.publication_meta.get("runtime_options"),
             payload,
         )
+        try:
+            validate_publication_edit_autodelete_execution(
+                legacy_post_task_id=(
+                    int(legacy_post_task_id)
+                    if legacy_post_task_id is not None
+                    else None
+                ),
+                runtime_options=runtime_options,
+            )
+        except PublicationEditAutodeleteSyncError as exc:
+            raise PublicationEditPersistenceError(str(exc)) from None
         return view
 
     @staticmethod
