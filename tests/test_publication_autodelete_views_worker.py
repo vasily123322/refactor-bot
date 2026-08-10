@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -355,7 +355,7 @@ def test_worker_backs_off_ineligible_due_row_to_prevent_batch_starvation(tmp_pat
             async with Session() as session:
                 state = await session.get(PublicationAutodeleteViewState, publication_id)
                 assert state is not None
-                assert _utc(state.next_check_at) == now.replace(tzinfo=timezone.utc) + __import__("datetime").timedelta(seconds=300)
+                assert _utc(state.next_check_at) == now + timedelta(seconds=300)
                 assert (
                     await PublicationAutodeleteLeaseService(session).current(publication_id)
                     is None
