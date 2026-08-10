@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
 from app.domain.content import PostDocument
+from app.domain.content.models import ContentRevision
 from app.domain.models import Channel, Client, PostTask
 from app.domain.publishing.models import Publication
 from app.repositories.content import ContentRepo
@@ -76,10 +78,64 @@ def test_canonical_editor_view_survives_post_task_retirement(tmp_path) -> None:
             async with Session() as session:
                 publication = await session.get(Publication, publication_id)
                 task = await session.get(PostTask, task_id)
+                revision = (
+                    await session.execute(
+                        select(ContentRevision).where(
+                            ContentRevision.content_item_id == item_id,
+                            ContentRevision.revision == 1,
+                        )
+                    )
+                ).scalar_one()
                 assert publication is not None and task is not None
+
+                # Simulate a historical mirrored revision and legacy metadata that
+                # still contain transport/domain fields. The canonical editor must
+                # treat these as untrusted compatibility residue rather than restore
+                # them into mutable editor state.
+                document = dict(revision.document or {})
+                metadata = dict(document.get("metadata") or {})
+                extras = dict(metadata.get("legacy_payload_extra") or {})
+                extras.update(
+                    {
+                        "_publication_id": 999,
+                        "_content_item_id": 888,
+                        "_content_revision": 777,
+                        "_content_channel_id": 666,
+                        "_post_task_id": task_id,
+                        "result_ids": [1, 2],
+                        "result_link": "https://example.invalid/legacy",
+                        "primary_message_id": 123,
+                        "notify_context": {"unsafe": True},
+                        "repeat_on": False,
+                        "repeat_seconds": 5,
+                        "repeat_group_id": task_id,
+                        "autodelete_at": "2099-01-01T00:00:00+00:00",
+                        "autodelete_effective_seconds": 1,
+                        "autodeleted": True,
+                        "autodeleted_at": "2099-01-01T00:00:01+00:00",
+                        "autosign_applied": True,
+                    }
+                )
+                metadata["legacy_payload_extra"] = extras
+                document["metadata"] = metadata
+                revision.document = document
+
                 publication.status = "published"
                 publication.telegram_message_ids = [81001, 81002]
                 publication.result_link = "https://t.me/example/81002"
+                publication_meta = dict(publication.meta or {})
+                runtime_options = dict(publication_meta.get("runtime_options") or {})
+                runtime_options.update(
+                    {
+                        "_publication_id": 1234,
+                        "result_ids": [1234],
+                        "result_link": "https://example.invalid/runtime",
+                        "primary_message_id": 1234,
+                    }
+                )
+                publication_meta["runtime_options"] = runtime_options
+                publication.meta = publication_meta
+
                 # Emulate completed safe transport retirement. This standalone SQLite
                 # engine deliberately does not depend on FK cascades.
                 publication.legacy_post_task_id = None
@@ -105,14 +161,30 @@ def test_canonical_editor_view_survives_post_task_retirement(tmp_path) -> None:
                 assert payload["type"] == "text"
                 assert payload["text"] == "Canonical edit"
                 assert payload["autodelete_seconds"] == 7200
+                # ScheduleEntry is authoritative for repeat state. Historical document
+                # residue says repeat=false/5s, but canonical state says true/3600s.
                 assert payload["repeat_on"] is True
                 assert payload["repeat_seconds"] == 3600
-                # Canonical identity and delivery evidence are not smuggled back into
-                # editor payload as compatibility markers.
-                assert "_publication_id" not in payload
-                assert "_content_item_id" not in payload
-                assert "result_ids" not in payload
-                assert "result_link" not in payload
+
+                blocked = {
+                    "_publication_id",
+                    "_content_item_id",
+                    "_content_revision",
+                    "_content_channel_id",
+                    "_post_task_id",
+                    "result_ids",
+                    "result_link",
+                    "primary_message_id",
+                    "notify_context",
+                    "repeat_group_id",
+                    "autodelete_at",
+                    "autodelete_effective_seconds",
+                    "autodeleted",
+                    "autodeleted_at",
+                    "autosign_applied",
+                }
+                assert blocked.isdisjoint(payload)
+                assert all(not str(key).startswith("_") for key in payload)
         finally:
             await engine.dispose()
 
