@@ -129,8 +129,14 @@ class PublicationEditPersistenceService:
             publication_revision = int(publication.content_revision or 0)
             schedule_revision = int(schedule.content_revision or 0)
             current_revision = int(item.current_revision or 0)
-            if str(publication.status or "") != "published":
-                raise PublicationEditConflictError("publication is not published")
+            if str(publication.status or "") != "published" or str(
+                schedule.status or ""
+            ) != "completed":
+                raise PublicationEditConflictError(
+                    "publication lifecycle is not consistently published"
+                )
+            if str(item.kind or "") != "post":
+                raise PublicationEditConflictError("content item is not an editable post")
             if not (
                 publication_revision == safe_expected_revision
                 and schedule_revision == safe_expected_revision
