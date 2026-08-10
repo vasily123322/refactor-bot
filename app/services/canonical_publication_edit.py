@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.content.models import ContentItem
+from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.publication_edit_autodelete import (
     PublicationEditAutodeleteSyncError,
@@ -53,11 +54,11 @@ class CanonicalPublicationEditCoordinator:
     """Join truthful Telegram edit success to canonical revision persistence.
 
     The provider call is deliberately outside a database transaction. A canonical
-    preflight catches already-stale editor state and unsupported runtime intent before
-    the Telegram side effect, and the persistence service repeats ownership/lifecycle/
-    revision/runtime checks afterwards. A race can still occur between those
-    boundaries, so a post-provider persistence failure is reported explicitly instead
-    of pretending the canonical state updated.
+    preflight catches already-stale editor/transport state and unsupported runtime
+    intent before the Telegram side effect, and persistence repeats those checks after
+    provider success. A race can still occur between the boundaries, so a post-provider
+    persistence failure is reported explicitly instead of pretending canonical state
+    updated.
     """
 
     def __init__(
@@ -92,6 +93,7 @@ class CanonicalPublicationEditCoordinator:
                         Publication.status,
                         Publication.content_revision,
                         Publication.legacy_post_task_id,
+                        Publication.channel_id,
                         ScheduleEntry.status,
                         ScheduleEntry.content_revision,
                         ContentItem.current_revision,
@@ -110,18 +112,42 @@ class CanonicalPublicationEditCoordinator:
                     )
                 )
             ).one_or_none()
+            if lifecycle is None:
+                raise PublicationEditConflictError(
+                    "canonical publication linkage changed"
+                )
+            (
+                publication_status,
+                publication_revision,
+                legacy_post_task_id,
+                publication_channel_id,
+                schedule_status,
+                schedule_revision,
+                current_revision,
+                content_kind,
+            ) = lifecycle
 
-        if lifecycle is None:
-            raise PublicationEditConflictError("canonical publication linkage changed")
-        (
-            publication_status,
-            publication_revision,
-            legacy_post_task_id,
-            schedule_status,
-            schedule_revision,
-            current_revision,
-            content_kind,
-        ) = lifecycle
+            if legacy_post_task_id is not None:
+                transport = (
+                    await session.execute(
+                        select(PostTask.status, PostTask.channel_id).where(
+                            PostTask.id == int(legacy_post_task_id)
+                        )
+                    )
+                ).one_or_none()
+                if transport is None:
+                    raise PublicationEditConflictError(
+                        "linked legacy transport is missing"
+                    )
+                transport_status, transport_channel_id = transport
+                if (
+                    str(transport_status or "") != "done"
+                    or int(transport_channel_id) != int(publication_channel_id)
+                ):
+                    raise PublicationEditConflictError(
+                        "linked legacy transport is not consistently published"
+                    )
+
         safe_expected_revision = int(expected_revision)
         if view.primary_message_id is None:
             raise PublicationEditConflictError("publication is not editable")
