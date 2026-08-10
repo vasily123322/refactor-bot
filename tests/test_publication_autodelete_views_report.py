@@ -274,7 +274,7 @@ def test_report_failure_keeps_terminal_delete_and_never_retries_transport(tmp_pa
                     delete_provider=provider,
                     allow_report=True,
                 ).evaluate_and_delete(publication_id, now=now)
-            assert second.outcome == "already_deleted"
+            assert second.outcome == "ineligible"
             assert len(provider.delete_calls) == 2
             assert len(provider.report_calls) == 1
         finally:
