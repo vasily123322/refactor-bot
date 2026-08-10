@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
@@ -253,11 +253,15 @@ async def cb_cp_edit_publication(callback: CallbackQuery, state: FSMContext) -> 
         comments_on=True,
         is_draft=False,
         prev_editor_restore=restore,
-        return_to_notice={
-            "publication_id": ctx.publication_id,
-            "post_id": ctx.legacy_post_task_id,
-            "date": date_iso,
-        },
+        return_to_notice=(
+            {
+                "publication_id": ctx.publication_id,
+                "post_id": ctx.legacy_post_task_id,
+                "date": date_iso,
+            }
+            if ctx.legacy_post_task_id is not None
+            else {"publication_id": ctx.publication_id, "date": date_iso}
+        ),
     )
 
     try:
