@@ -74,6 +74,51 @@ def _repeat_group_id(payload: dict[str, Any], *, task_id: int) -> int | None:
     return _legacy_db_id(raw_group)
 
 
+async def _backfill_repeat_group_metadata(
+    session: AsyncSession,
+    *,
+    task_id: int,
+    channel_id: int,
+    payload: dict[str, Any],
+    publication: Publication,
+) -> None:
+    """Idempotently add a canonical repeat anchor to an already mirrored occurrence."""
+    group_id = _repeat_group_id(payload, task_id=task_id)
+    if group_id is None or int(publication.channel_id) != int(channel_id):
+        return
+    if publication.schedule_entry_id is None:
+        return
+    schedule = await session.get(ScheduleEntry, int(publication.schedule_entry_id))
+    if schedule is None or int(schedule.channel_id) != int(channel_id):
+        return
+    if not isinstance(publication.meta, dict) or not isinstance(schedule.meta, dict):
+        return
+
+    publication_meta = dict(publication.meta)
+    schedule_meta = dict(schedule.meta)
+    publication_group = publication_meta.get("repeat_group_id")
+    schedule_group = schedule_meta.get("repeat_group_id")
+    for existing in (publication_group, schedule_group):
+        if existing is None:
+            continue
+        if _legacy_db_id(existing) != group_id:
+            # Never overwrite contradictory canonical provenance.
+            return
+
+    changed = False
+    if publication_group is None:
+        publication_meta["repeat_group_id"] = group_id
+        publication.meta = publication_meta
+        changed = True
+    if schedule_group is None:
+        schedule_meta["repeat_group_id"] = group_id
+        schedule.meta = schedule_meta
+        changed = True
+    if changed:
+        await session.commit()
+        await session.refresh(publication)
+
+
 def _content_payload(payload: dict[str, Any]) -> dict[str, Any]:
     cleaned = cleanup_runtime_fields(payload)
     for key in _RUNTIME_ONLY_FIELDS:
@@ -215,19 +260,33 @@ async def mirror_legacy_post_task(
     """
     task_id = int(task.id)
     channel_id = int(task.channel_id)
+    payload = deepcopy(dict(task.payload or {}))
     existing = (
         await session.execute(
             select(Publication).where(Publication.legacy_post_task_id == task_id)
         )
     ).scalar_one_or_none()
     if existing is not None:
+        await _backfill_repeat_group_metadata(
+            session,
+            task_id=task_id,
+            channel_id=channel_id,
+            payload=payload,
+            publication=existing,
+        )
         return existing
 
-    payload = deepcopy(dict(task.payload or {}))
     publication_marker = _legacy_db_id(payload.get("_publication_id"))
     if publication_marker is not None:
         marked = await session.get(Publication, publication_marker)
         if marked is not None and int(marked.legacy_post_task_id or 0) == task_id:
+            await _backfill_repeat_group_metadata(
+                session,
+                task_id=task_id,
+                channel_id=channel_id,
+                payload=payload,
+                publication=marked,
+            )
             return marked
     if "_publication_id" in payload:
         # Old repeat payloads could inherit the parent's publication marker. Treat
