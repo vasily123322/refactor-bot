@@ -16,7 +16,10 @@ from app.services.publication_edit_autodelete import (
     PublicationEditAutodeleteSyncError,
     PublicationEditAutodeleteSyncService,
 )
-from app.services.telegram_results import normalize_telegram_message_ids
+from app.services.telegram_results import (
+    normalize_telegram_message_ids,
+    rewrite_telegram_result_link_message_id,
+)
 
 
 _EDITOR_RUNTIME_OPTION_FIELDS = frozenset(
@@ -211,7 +214,7 @@ class PublicationEditPersistenceService:
         try:
             row = (
                 await self.session.execute(
-                    select(Publication, ScheduleEntry, ContentItem)
+                    select(Publication, ScheduleEntry, ContentItem, Channel)
                     .join(Channel, Channel.id == Publication.channel_id)
                     .join(Client, Client.id == Channel.owner_id)
                     .join(ScheduleEntry, ScheduleEntry.id == Publication.schedule_entry_id)
@@ -229,7 +232,7 @@ class PublicationEditPersistenceService:
             if row is None:
                 raise PublicationEditPersistenceError("publication not found or not owned")
 
-            publication, schedule, item = row
+            publication, schedule, item, channel = row
             publication_id_value = int(publication.id)
             content_item_id = int(item.id)
             publication_revision = int(publication.content_revision or 0)
@@ -290,6 +293,11 @@ class PublicationEditPersistenceService:
                 raise PublicationEditPersistenceError(
                     "confirmed provider edit requires valid Telegram message ids"
                 )
+            result_link = rewrite_telegram_result_link_message_id(
+                publication.result_link,
+                chat_id=int(channel.tg_chat_id),
+                message_id=int(ids[-1]),
+            )
 
             try:
                 await PublicationEditAutodeleteSyncService(self.session).apply(
@@ -301,6 +309,8 @@ class PublicationEditPersistenceService:
                         else {}
                     ),
                     runtime_options=runtime_options,
+                    telegram_message_ids=ids,
+                    result_link=result_link,
                     now=now,
                 )
             except PublicationEditAutodeleteSyncError as exc:
@@ -323,6 +333,7 @@ class PublicationEditPersistenceService:
             publication.content_revision = next_revision
             schedule.content_revision = next_revision
             publication.telegram_message_ids = ids
+            publication.result_link = result_link
             publication.meta = _with_runtime_options(publication.meta, runtime_options)
             schedule.meta = _with_runtime_options(schedule.meta, runtime_options)
 
