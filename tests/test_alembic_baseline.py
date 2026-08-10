@@ -62,39 +62,48 @@ def _version(database_path: Path) -> tuple[str] | None:
         ).fetchone()
 
 
-def test_alembic_baseline_is_frozen_and_followup_revision_is_idempotent(tmp_path) -> None:
+def test_alembic_baseline_is_frozen_and_followup_revisions_are_idempotent(
+    tmp_path,
+) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     database_path = tmp_path / "baseline.db"
     current_orm_tables = set(Base.metadata.tables)
-    assert "scheduler_task_leases" in current_orm_tables
+    followup_tables = {
+        "scheduler_task_leases",
+        "publication_autodelete_leases",
+    }
+    assert followup_tables <= current_orm_tables
 
     baseline = _run_alembic(repo_root, database_path, "20260809_0001")
     assert baseline.returncode == 0, baseline.stdout + baseline.stderr
 
     baseline_tables = _table_names(database_path)
     assert baseline_tables == (
-        current_orm_tables - {"scheduler_task_leases"} | {"alembic_version"}
+        current_orm_tables - followup_tables | {"alembic_version"}
     )
     assert _version(database_path) == ("20260809_0001",)
 
     head = _run_alembic(repo_root, database_path, "head")
     assert head.returncode == 0, head.stdout + head.stderr
     assert _table_names(database_path) == current_orm_tables | {"alembic_version"}
-    assert _version(database_path) == ("20260809_0002",)
+    assert _version(database_path) == ("20260809_0003",)
 
     repeated = _run_alembic(repo_root, database_path, "head")
     assert repeated.returncode == 0, repeated.stdout + repeated.stderr
     assert _table_names(database_path) == current_orm_tables | {"alembic_version"}
-    assert _version(database_path) == ("20260809_0002",)
+    assert _version(database_path) == ("20260809_0003",)
 
 
-def test_scheduler_lease_revision_adopts_table_precreated_by_legacy_create_all(tmp_path) -> None:
+def test_followup_lease_revisions_adopt_tables_precreated_by_legacy_create_all(
+    tmp_path,
+) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     database_path = tmp_path / "legacy-precreated.db"
 
     baseline = _run_alembic(repo_root, database_path, "20260809_0001")
     assert baseline.returncode == 0, baseline.stdout + baseline.stderr
     assert "scheduler_task_leases" not in _table_names(database_path)
+    assert "publication_autodelete_leases" not in _table_names(database_path)
 
     sync_engine = create_engine(f"sqlite:///{database_path}")
     try:
@@ -102,12 +111,17 @@ def test_scheduler_lease_revision_adopts_table_precreated_by_legacy_create_all(t
             bind=sync_engine,
             checkfirst=True,
         )
+        Base.metadata.tables["publication_autodelete_leases"].create(
+            bind=sync_engine,
+            checkfirst=True,
+        )
     finally:
         sync_engine.dispose()
     assert "scheduler_task_leases" in _table_names(database_path)
+    assert "publication_autodelete_leases" in _table_names(database_path)
     assert _version(database_path) == ("20260809_0001",)
 
     adopted = _run_alembic(repo_root, database_path, "head")
     assert adopted.returncode == 0, adopted.stdout + adopted.stderr
-    assert _version(database_path) == ("20260809_0002",)
+    assert _version(database_path) == ("20260809_0003",)
     assert _table_names(database_path) == set(Base.metadata.tables) | {"alembic_version"}
