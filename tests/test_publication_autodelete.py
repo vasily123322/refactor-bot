@@ -40,23 +40,26 @@ async def _seed(
     Session,
     *,
     due_at: datetime,
+    seed_id: int = 1,
     message_ids: list[int] | None = None,
     unlink: bool = True,
     repeat: bool = False,
     runtime_options: dict | None = None,
 ) -> tuple[int, int, int, int]:
+    user_id = 78000 + int(seed_id)
+    chat_id = -(10078000 + int(seed_id))
     async with Session() as session:
         owner = Client(
-            tg_user_id=78001,
-            username="owner",
-            full_name="Owner",
+            tg_user_id=user_id,
+            username=f"owner-{seed_id}",
+            full_name=f"Owner {seed_id}",
             ui_settings={},
         )
         session.add(owner)
         await session.flush()
         channel = Channel(
-            tg_chat_id=-10078001,
-            title="Canonical autodelete",
+            tg_chat_id=chat_id,
+            title=f"Canonical autodelete {seed_id}",
             owner_id=int(owner.id),
             is_active=True,
         )
@@ -68,7 +71,7 @@ async def _seed(
             document=PostDocument(
                 blocks=[{"id": "b1", "type": "text", "text": "Delete me"}]
             ),
-            created_by_tg_user_id=78001,
+            created_by_tg_user_id=user_id,
         )
         publication = await LegacyPublicationBridge(session).queue(
             content_item_id=int(item.id),
@@ -152,11 +155,13 @@ def test_linked_or_future_publication_never_calls_provider(tmp_path) -> None:
             _, linked_id, _, _ = await _seed(
                 Session,
                 due_at=now - timedelta(minutes=1),
+                seed_id=1,
                 unlink=False,
             )
             _, future_id, _, _ = await _seed(
                 Session,
                 due_at=now + timedelta(minutes=30),
+                seed_id=2,
             )
             provider = FakeProvider()
 
@@ -190,16 +195,19 @@ def test_repeat_views_or_report_remain_ineligible(tmp_path) -> None:
             _, repeat_id, _, _ = await _seed(
                 Session,
                 due_at=now - timedelta(minutes=1),
+                seed_id=1,
                 repeat=True,
             )
             _, views_id, _, _ = await _seed(
                 Session,
                 due_at=now - timedelta(minutes=1),
+                seed_id=2,
                 runtime_options={"autodelete_seconds": 3600, "autodelete_views": 10},
             )
             _, report_id, _, _ = await _seed(
                 Session,
                 due_at=now - timedelta(minutes=1),
+                seed_id=3,
                 runtime_options={"autodelete_seconds": 3600, "autodelete_report": True},
             )
             provider = FakeProvider()
