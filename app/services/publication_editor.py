@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.content.models import ContentRevision
+from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import Channel, Client
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.content import legacy_payload_from_document
@@ -147,9 +147,12 @@ async def load_owned_publication_editor_view(
     publication, schedule, channel = row
     revision = (
         await session.execute(
-            select(ContentRevision).where(
+            select(ContentRevision)
+            .join(ContentItem, ContentItem.id == ContentRevision.content_item_id)
+            .where(
                 ContentRevision.content_item_id == int(publication.content_item_id),
                 ContentRevision.revision == int(publication.content_revision),
+                ContentItem.channel_id == int(publication.channel_id),
             )
         )
     ).scalar_one_or_none()
