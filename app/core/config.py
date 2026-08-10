@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     post_task_retention_successful_enabled: bool = Field(
         default=False, alias="POST_TASK_RETENTION_SUCCESSFUL_ENABLED"
     )
+    # Additional destructive scope for successful rows whose canonical autodelete is
+    # still pending. This remains off unless operators intentionally enable the proven
+    # canonical time + views executor handoff.
+    post_task_retention_successful_pending_autodelete_enabled: bool = Field(
+        default=False,
+        alias="POST_TASK_RETENTION_SUCCESSFUL_PENDING_AUTODELETE_ENABLED",
+    )
     post_task_retention_days: int = Field(
         default=90, alias="POST_TASK_RETENTION_DAYS"
     )

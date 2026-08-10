@@ -9,6 +9,7 @@ from app.bot import dispatcher
 from app.core.config import Settings
 from app.core.runtime_configuration import (
     RuntimeConfigurationError,
+    validate_retention_executor_availability,
     validate_runtime_configuration,
 )
 
@@ -59,6 +60,83 @@ def test_successful_retention_is_safe_with_canonical_executor() -> None:
     )
 
     validate_runtime_configuration(config)
+
+
+def test_pending_retention_requires_views_worker_configuration() -> None:
+    config = _settings(
+        POST_TASK_RETENTION_ENABLED=True,
+        POST_TASK_RETENTION_SUCCESSFUL_ENABLED=True,
+        POST_TASK_RETENTION_SUCCESSFUL_PENDING_AUTODELETE_ENABLED=True,
+        PUBLICATION_AUTODELETE_WORKER_ENABLED=True,
+        PUBLICATION_AUTODELETE_VIEWS_WORKER_ENABLED=False,
+    )
+
+    with pytest.raises(
+        RuntimeConfigurationError,
+        match="PUBLICATION_AUTODELETE_VIEWS_WORKER_ENABLED",
+    ):
+        validate_runtime_configuration(config)
+
+
+def test_pending_retention_static_configuration_is_safe_with_both_workers() -> None:
+    config = _settings(
+        POST_TASK_RETENTION_ENABLED=True,
+        POST_TASK_RETENTION_SUCCESSFUL_ENABLED=True,
+        POST_TASK_RETENTION_SUCCESSFUL_PENDING_AUTODELETE_ENABLED=True,
+        PUBLICATION_AUTODELETE_WORKER_ENABLED=True,
+        PUBLICATION_AUTODELETE_VIEWS_WORKER_ENABLED=True,
+    )
+
+    validate_runtime_configuration(config)
+
+
+def test_pending_retention_requires_actually_started_views_worker() -> None:
+    config = _settings(
+        POST_TASK_RETENTION_ENABLED=True,
+        POST_TASK_RETENTION_SUCCESSFUL_ENABLED=True,
+        POST_TASK_RETENTION_SUCCESSFUL_PENDING_AUTODELETE_ENABLED=True,
+        PUBLICATION_AUTODELETE_WORKER_ENABLED=True,
+        PUBLICATION_AUTODELETE_VIEWS_WORKER_ENABLED=True,
+    )
+
+    with pytest.raises(RuntimeConfigurationError, match="started canonical views"):
+        validate_retention_executor_availability(
+            config,
+            publication_autodelete_worker_started=True,
+            publication_autodelete_views_worker_started=False,
+        )
+
+
+def test_pending_retention_runtime_is_safe_when_both_workers_started() -> None:
+    config = _settings(
+        POST_TASK_RETENTION_ENABLED=True,
+        POST_TASK_RETENTION_SUCCESSFUL_ENABLED=True,
+        POST_TASK_RETENTION_SUCCESSFUL_PENDING_AUTODELETE_ENABLED=True,
+        PUBLICATION_AUTODELETE_WORKER_ENABLED=True,
+        PUBLICATION_AUTODELETE_VIEWS_WORKER_ENABLED=True,
+    )
+
+    validate_retention_executor_availability(
+        config,
+        publication_autodelete_worker_started=True,
+        publication_autodelete_views_worker_started=True,
+    )
+
+
+def test_inactive_pending_scope_does_not_require_started_views_worker() -> None:
+    config = _settings(
+        POST_TASK_RETENTION_ENABLED=True,
+        POST_TASK_RETENTION_SUCCESSFUL_ENABLED=True,
+        POST_TASK_RETENTION_SUCCESSFUL_PENDING_AUTODELETE_ENABLED=False,
+        PUBLICATION_AUTODELETE_WORKER_ENABLED=True,
+        PUBLICATION_AUTODELETE_VIEWS_WORKER_ENABLED=False,
+    )
+
+    validate_retention_executor_availability(
+        config,
+        publication_autodelete_worker_started=True,
+        publication_autodelete_views_worker_started=False,
+    )
 
 
 def test_dispatcher_rejects_unsafe_runtime_before_database_bootstrap(monkeypatch) -> None:

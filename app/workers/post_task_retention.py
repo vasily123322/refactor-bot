@@ -19,11 +19,15 @@ class PostTaskRetentionWorker:
         retention_days: int = 90,
         batch_size: int = 100,
         retire_successful: bool = False,
+        retire_successful_pending_autodelete: bool = False,
     ) -> None:
         self.session_factory = session_factory
         self.retention_days = max(7, min(int(retention_days), 3650))
         self.batch_size = max(1, min(int(batch_size), 500))
         self.retire_successful = bool(retire_successful)
+        self.retire_successful_pending_autodelete = bool(
+            retire_successful_pending_autodelete
+        )
         self._loop = PollingLoop(
             interval_seconds=max(60, int(interval_seconds)),
             on_tick=self._tick,
@@ -43,6 +47,9 @@ class PostTaskRetentionWorker:
                 retention_days=self.retention_days,
                 batch_size=self.batch_size,
                 retire_successful=self.retire_successful,
+                retire_successful_pending_autodelete=(
+                    self.retire_successful_pending_autodelete
+                ),
             ).run_once()
         if (
             tick.deleted
