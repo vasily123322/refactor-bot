@@ -899,8 +899,8 @@ async def cb_cp_delete_post(callback: CallbackQuery, state: FSMContext):
         try:
             await session.delete(post)
             await session.commit()
-        except Exception as e:
-            return await callback.answer(f"Не удалось удалить: {e}", show_alert=True)
+        except Exception:
+            return await callback.answer("Не удалось удалить", show_alert=True)
     # После удаления вернёмся к списку постов на ту же дату
     try:
         cid = int((await state.get_data()).get("cp_channel_id") or 0)
