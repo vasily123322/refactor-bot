@@ -295,11 +295,8 @@ async def _render_content_plan(
     try:
         from app.bot.routers.utils.content_plan_hybrid import (
             TimedContentPlanButtonRow,
-            canonical_published_button_row,
+            canonical_only_published_button_rows,
             merge_timed_content_plan_rows,
-        )
-        from app.services.content_plan_published_rows import (
-            list_published_content_plan_rows,
         )
         from app.services.scheduling import as_utc
 
@@ -447,27 +444,14 @@ async def _render_content_plan(
                     )
                 )
 
-            canonical_timed_rows: list[TimedContentPlanButtonRow] = []
-            try:
-                canonical_rows = await list_published_content_plan_rows(
-                    session,
-                    channel_id=int(channel_id),
-                    start_at=start,
-                    end_at=end,
-                )
-                date_iso = center_date.date().isoformat()
-                for canonical_row in canonical_rows:
-                    rendered = canonical_published_button_row(
-                        canonical_row,
-                        date_iso=date_iso,
-                        tz_code=tz_code,
-                    )
-                    if rendered is not None:
-                        canonical_timed_rows.append(rendered)
-            except Exception:
-                # Canonical listing is a migration enhancement. Read failures must
-                # preserve the proven legacy PostTask list rather than blank the day.
-                canonical_timed_rows = []
+            canonical_timed_rows = await canonical_only_published_button_rows(
+                session,
+                channel_id=int(channel_id),
+                start_at=start,
+                end_at=end,
+                date_iso=center_date.date().isoformat(),
+                tz_code=tz_code,
+            )
 
             post_rows = merge_timed_content_plan_rows(
                 timed_post_rows,
