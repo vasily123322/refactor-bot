@@ -236,6 +236,9 @@ async def run_bot() -> None:
                 retire_successful_pending_autodelete=(
                     settings.post_task_retention_successful_pending_autodelete_enabled
                 ),
+                retire_successful_repeat_occurrences=(
+                    settings.post_task_retention_successful_repeat_occurrences_enabled
+                ),
             )
             await post_task_retention.start()
         else:
