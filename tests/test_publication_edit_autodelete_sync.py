@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.db import Base
 from app.domain.content import PostDocument
 from app.domain.models import Channel, Client, PostTask
+from app.domain.publication_autodelete import PublicationAutodeleteViewState
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.repositories.content import ContentRepo
 from app.services.canonical_publication_edit import CanonicalPublicationEditCoordinator
@@ -329,10 +330,86 @@ def test_stale_local_timer_uses_current_due_ids_and_report_state(tmp_path) -> No
     asyncio.run(run())
 
 
-def test_unlinked_views_or_report_are_rejected_before_provider_call(tmp_path) -> None:
+def test_unlinked_views_edit_persists_canonical_state_and_due_index(tmp_path) -> None:
+    class SuccessfulEditProvider:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def edit_message_text(self, **kwargs) -> None:
+            self.calls.append(dict(kwargs))
+
     async def run() -> None:
         engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'unlinked-autodelete-capability.db'}"
+            f"sqlite+aiosqlite:///{tmp_path / 'unlinked-views-edit.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            _, publication_id, schedule_id, task_id = await _seed(
+                Session,
+                runtime_options={},
+                runtime=None,
+                unlink=True,
+            )
+            provider = SuccessfulEditProvider()
+            coordinator = CanonicalPublicationEditCoordinator(
+                provider=provider,
+                session_factory=Session,
+            )
+
+            result = await coordinator.edit_text_and_persist(
+                publication_id=publication_id,
+                tg_user_id=71201,
+                expected_revision=1,
+                payload={
+                    "type": "text",
+                    "text": "Canonical-only views",
+                    "autodelete_views": 100,
+                },
+                text="Canonical-only views",
+            )
+
+            assert result.previous_revision == 1
+            assert result.revision == 2
+            assert len(provider.calls) == 1
+            assert provider.calls[0]["chat_id"] == -10071201
+            assert provider.calls[0]["message_id"] == 81101
+
+            async with Session() as session:
+                publication = await session.get(Publication, publication_id)
+                schedule = await session.get(ScheduleEntry, schedule_id)
+                state = await session.get(PublicationAutodeleteViewState, publication_id)
+                task = await session.get(PostTask, task_id)
+                assert publication is not None and schedule is not None and state is not None
+                assert task is None
+                assert publication.legacy_post_task_id is None
+                assert publication.content_revision == 2
+                assert schedule.content_revision == 2
+                assert publication.meta["runtime_options"] == {"autodelete_views": 100}
+                assert schedule.meta["runtime_options"] == {"autodelete_views": 100}
+                assert state.threshold == 100
+                assert state.last_views is None
+                assert state.last_checked_at is None
+                assert state.next_check_at is not None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_unlinked_report_is_rejected_before_provider_call(tmp_path) -> None:
+    class ProviderMustNotBeCalled:
+        def __init__(self) -> None:
+            self.called = False
+
+        async def edit_message_text(self, **kwargs) -> None:
+            self.called = True
+            raise AssertionError("provider must not be called")
+
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'unlinked-report-capability.db'}"
         )
         try:
             async with engine.begin() as connection:
@@ -344,23 +421,12 @@ def test_unlinked_views_or_report_are_rejected_before_provider_call(tmp_path) ->
                 runtime=None,
                 unlink=True,
             )
+            provider = ProviderMustNotBeCalled()
             coordinator = CanonicalPublicationEditCoordinator(
-                provider=object(),  # type: ignore[arg-type] - provider must stay unused
+                provider=provider,
                 session_factory=Session,
             )
 
-            with pytest.raises(PublicationEditPersistenceError, match="requires legacy"):
-                await coordinator.edit_text_and_persist(
-                    publication_id=publication_id,
-                    tg_user_id=71201,
-                    expected_revision=1,
-                    payload={
-                        "type": "text",
-                        "text": "Unsupported views",
-                        "autodelete_views": 100,
-                    },
-                    text="Unsupported views",
-                )
             with pytest.raises(PublicationEditPersistenceError, match="requires legacy"):
                 await coordinator.edit_text_and_persist(
                     publication_id=publication_id,
@@ -374,6 +440,7 @@ def test_unlinked_views_or_report_are_rejected_before_provider_call(tmp_path) ->
                     },
                     text="Unsupported report",
                 )
+            assert provider.called is False
         finally:
             await engine.dispose()
 
