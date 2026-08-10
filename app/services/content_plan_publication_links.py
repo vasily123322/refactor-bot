@@ -6,6 +6,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content.models import ContentItem, ContentRevision
+from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.publication_editor import publication_open_callback
 
@@ -43,6 +44,14 @@ async def published_publication_ids_for_legacy_tasks(
     rows = (
         await session.execute(
             select(Publication.legacy_post_task_id, Publication.id)
+            .join(
+                PostTask,
+                and_(
+                    PostTask.id == Publication.legacy_post_task_id,
+                    PostTask.channel_id == Publication.channel_id,
+                    PostTask.status == "done",
+                ),
+            )
             .join(
                 ScheduleEntry,
                 and_(
