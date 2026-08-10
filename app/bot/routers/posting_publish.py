@@ -115,6 +115,18 @@ async def cb_post_send(callback: CallbackQuery, state: FSMContext):
     # Если редактируем существующий пост
     edit_chat_id = data.get("edit_chat_id")
     edit_msg_id = data.get("edit_msg_id")
+    if isinstance(data.get("canonical_edit_context"), dict):
+        from app.bot.routers.utils.canonical_publication_edit import (
+            handle_canonical_publication_edit,
+        )
+
+        await handle_canonical_publication_edit(
+            callback,
+            state,
+            data=data,
+            payload=dict(data.get("payload") or {}),
+        )
+        return
     if edit_chat_id and edit_msg_id and not bool(data.get("is_draft", False)):
         payload: dict = dict(data.get("payload") or {})
         prev_id = data.get("preview_msg_id")

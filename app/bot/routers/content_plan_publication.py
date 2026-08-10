@@ -181,6 +181,10 @@ async def cb_cp_edit_publication(callback: CallbackQuery, state: FSMContext):
         pin_on=False,
         comments_on=True,
         is_draft=False,
+        canonical_edit_context={
+            "publication_id": view.publication_id,
+            "expected_revision": view.content_revision,
+        },
         canonical_return_to_notice={
             "publication_id": view.publication_id,
             "date": date_iso,
