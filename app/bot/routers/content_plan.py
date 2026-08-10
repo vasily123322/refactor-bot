@@ -334,6 +334,26 @@ async def _render_content_plan(
                     tz_code = st.filters.get("tz")
             except Exception:
                 pass
+            publication_by_task: dict[int, tuple[int, str]] = {}
+            if items:
+                from app.domain.publishing.models import Publication
+
+                publication_rows = await session.execute(
+                    select(
+                        Publication.legacy_post_task_id,
+                        Publication.id,
+                        Publication.status,
+                    ).where(
+                        Publication.legacy_post_task_id.in_(
+                            [int(item.id) for item in items]
+                        )
+                    )
+                )
+                publication_by_task = {
+                    int(task_id): (int(publication_id), str(status))
+                    for task_id, publication_id, status in publication_rows.all()
+                    if task_id is not None
+                }
             for p in items:
                 when = p.scheduled_at
                 if when:
@@ -383,7 +403,14 @@ async def _render_content_plan(
                 row_btns = [
                     InlineKeyboardButton(
                         text=btn_text,
-                        callback_data=f"cp_open_post:{p.id}:{center_date.date().isoformat()}",
+                        callback_data=(
+                            f"cp_open_publication:{publication_by_task[int(p.id)][0]}:{center_date.date().isoformat()}"
+                            if (
+                                int(p.id) in publication_by_task
+                                and publication_by_task[int(p.id)][1] == "published"
+                            )
+                            else f"cp_open_post:{p.id}:{center_date.date().isoformat()}"
+                        ),
                     )
                 ]
                 # Быстрая кнопка отключить автоповтор для серии
