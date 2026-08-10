@@ -182,6 +182,7 @@ async def run_bot() -> None:
                 interval_seconds=settings.post_task_retention_interval_seconds,
                 retention_days=settings.post_task_retention_days,
                 batch_size=settings.post_task_retention_batch_size,
+                retire_successful=settings.post_task_retention_successful_enabled,
             )
             await post_task_retention.start()
         else:
