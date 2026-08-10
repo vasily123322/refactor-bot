@@ -66,7 +66,7 @@ def test_get_message_views_rejects_invalid_message_identity_before_network() -> 
         client = FakeTelethonClient(views=100)
         gateway = _gateway(client)
 
-        for invalid in (0, -1, "bad", None):
+        for invalid in (0, -1, True, "bad", None):
             assert await gateway.get_message_views(-100123, invalid) is None  # type: ignore[arg-type]
 
         assert client.entity_calls == []
