@@ -20,7 +20,9 @@ async def published_publication_ids_for_legacy_tasks(
     """Return only canonical published links safe for new content-plan callbacks.
 
     Historical/unmirrored/inconsistent rows are deliberately omitted so callers can
-    keep emitting the legacy callback during the staged migration.
+    keep emitting the legacy callback during the staged migration. Canonical lookup
+    itself is fail-soft: a read failure returns no promoted links, preserving the
+    legacy callback producer instead of hiding the content-plan row.
     """
     try:
         safe_channel_id = int(channel_id)
@@ -41,48 +43,51 @@ async def published_publication_ids_for_legacy_tasks(
     if not safe_task_ids:
         return {}
 
-    rows = (
-        await session.execute(
-            select(Publication.legacy_post_task_id, Publication.id)
-            .join(
-                PostTask,
-                and_(
-                    PostTask.id == Publication.legacy_post_task_id,
-                    PostTask.channel_id == Publication.channel_id,
-                    PostTask.status == "done",
-                ),
+    try:
+        rows = (
+            await session.execute(
+                select(Publication.legacy_post_task_id, Publication.id)
+                .join(
+                    PostTask,
+                    and_(
+                        PostTask.id == Publication.legacy_post_task_id,
+                        PostTask.channel_id == Publication.channel_id,
+                        PostTask.status == "done",
+                    ),
+                )
+                .join(
+                    ScheduleEntry,
+                    and_(
+                        ScheduleEntry.id == Publication.schedule_entry_id,
+                        ScheduleEntry.channel_id == Publication.channel_id,
+                        ScheduleEntry.content_item_id == Publication.content_item_id,
+                        ScheduleEntry.content_revision == Publication.content_revision,
+                    ),
+                )
+                .join(
+                    ContentItem,
+                    and_(
+                        ContentItem.id == Publication.content_item_id,
+                        ContentItem.channel_id == Publication.channel_id,
+                    ),
+                )
+                .join(
+                    ContentRevision,
+                    and_(
+                        ContentRevision.content_item_id == Publication.content_item_id,
+                        ContentRevision.revision == Publication.content_revision,
+                    ),
+                )
+                .where(
+                    Publication.channel_id == safe_channel_id,
+                    Publication.status == "published",
+                    ScheduleEntry.status == "completed",
+                    Publication.legacy_post_task_id.in_(safe_task_ids),
+                )
             )
-            .join(
-                ScheduleEntry,
-                and_(
-                    ScheduleEntry.id == Publication.schedule_entry_id,
-                    ScheduleEntry.channel_id == Publication.channel_id,
-                    ScheduleEntry.content_item_id == Publication.content_item_id,
-                    ScheduleEntry.content_revision == Publication.content_revision,
-                ),
-            )
-            .join(
-                ContentItem,
-                and_(
-                    ContentItem.id == Publication.content_item_id,
-                    ContentItem.channel_id == Publication.channel_id,
-                ),
-            )
-            .join(
-                ContentRevision,
-                and_(
-                    ContentRevision.content_item_id == Publication.content_item_id,
-                    ContentRevision.revision == Publication.content_revision,
-                ),
-            )
-            .where(
-                Publication.channel_id == safe_channel_id,
-                Publication.status == "published",
-                ScheduleEntry.status == "completed",
-                Publication.legacy_post_task_id.in_(safe_task_ids),
-            )
-        )
-    ).all()
+        ).all()
+    except Exception:
+        return {}
 
     result: dict[int, int] = {}
     for raw_task_id, raw_publication_id in rows:
