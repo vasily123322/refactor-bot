@@ -118,6 +118,8 @@ class PublicationEditPersistenceService:
                 raise PublicationEditPersistenceError("publication not found or not owned")
 
             publication, schedule, item = row
+            publication_id_value = int(publication.id)
+            content_item_id = int(item.id)
             publication_revision = int(publication.content_revision or 0)
             schedule_revision = int(schedule.content_revision or 0)
             current_revision = int(item.current_revision or 0)
@@ -133,7 +135,7 @@ class PublicationEditPersistenceService:
             previous = (
                 await self.session.execute(
                     select(ContentRevision).where(
-                        ContentRevision.content_item_id == int(item.id),
+                        ContentRevision.content_item_id == content_item_id,
                         ContentRevision.revision == safe_expected_revision,
                     )
                 )
@@ -146,15 +148,24 @@ class PublicationEditPersistenceService:
             except LegacyPayloadError as exc:
                 raise PublicationEditPersistenceError(str(exc)) from exc
 
+            if telegram_message_ids is None:
+                ids = normalize_telegram_message_ids(publication.telegram_message_ids)
+            else:
+                ids = normalize_telegram_message_ids(list(telegram_message_ids))
+            if not ids:
+                raise PublicationEditPersistenceError(
+                    "confirmed provider edit requires valid Telegram message ids"
+                )
+
             next_revision = safe_expected_revision + 1
             revision = ContentRevision(
-                content_item_id=int(item.id),
+                content_item_id=content_item_id,
                 revision=next_revision,
                 document=document.to_dict(),
                 source="telegram_edit",
                 created_by_tg_user_id=safe_user_id,
                 meta={
-                    "publication_id": int(publication.id),
+                    "publication_id": publication_id_value,
                     "edited_from_revision": safe_expected_revision,
                 },
             )
@@ -162,23 +173,12 @@ class PublicationEditPersistenceService:
             item.current_revision = next_revision
             publication.content_revision = next_revision
             schedule.content_revision = next_revision
-
-            ids: list[int]
-            if telegram_message_ids is None:
-                ids = normalize_telegram_message_ids(publication.telegram_message_ids)
-            else:
-                ids = normalize_telegram_message_ids(list(telegram_message_ids))
-                if not ids:
-                    raise PublicationEditPersistenceError(
-                        "confirmed provider edit requires valid Telegram message ids"
-                    )
-                publication.telegram_message_ids = ids
+            publication.telegram_message_ids = ids
 
             await self.session.commit()
-            await self.session.refresh(publication)
             return PublicationEditPersistenceResult(
-                publication_id=int(publication.id),
-                content_item_id=int(item.id),
+                publication_id=publication_id_value,
+                content_item_id=content_item_id,
                 previous_revision=safe_expected_revision,
                 revision=next_revision,
                 telegram_message_ids=tuple(ids),
