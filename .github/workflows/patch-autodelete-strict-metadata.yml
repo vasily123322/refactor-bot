@@ -1,0 +1,61 @@
+name: Patch strict canonical autodelete metadata guards
+
+on:
+  push:
+    branches:
+      - agent/canonical-publication-autodelete-operation
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: agent/canonical-publication-autodelete-operation
+      - name: Apply strict metadata guards
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("app/services/publication_autodelete.py")
+          text = path.read_text(encoding="utf-8")
+
+          old_repeat = '''def _repeat_enabled(schedule: ScheduleEntry) -> bool:\n    rule = _safe_mapping(schedule.repeat_rule)\n    return rule.get("enabled") is True and _positive_int(rule.get("seconds")) is not None\n'''
+          new_repeat = '''def _safe_nonrepeat(schedule: ScheduleEntry) -> bool:\n    raw_rule = schedule.repeat_rule\n    if raw_rule is not None and not isinstance(raw_rule, Mapping):\n        return False\n    rule = _safe_mapping(raw_rule)\n    enabled = rule.get("enabled")\n    return enabled is None or enabled is False\n'''
+          if text.count(old_repeat) != 1:
+              raise SystemExit(f"expected one repeat helper, got {text.count(old_repeat)}")
+          text = text.replace(old_repeat, new_repeat, 1)
+          text = text.replace("if _repeat_enabled(schedule):", "if not _safe_nonrepeat(schedule):")
+
+          old_meta = '''        meta = _safe_mapping(publication.meta)\n        runtime = _safe_mapping(meta.get(AUTODELETE_RUNTIME_META_KEY))\n        options = _safe_mapping(meta.get("runtime_options"))\n        ids = tuple(normalize_telegram_message_ids(publication.telegram_message_ids))\n\n        if runtime.get("deleted") is True:\n'''
+          new_meta = '''        meta = _safe_mapping(publication.meta)\n        raw_runtime = meta.get(AUTODELETE_RUNTIME_META_KEY)\n        raw_options = meta.get("runtime_options")\n        if raw_runtime is not None and not isinstance(raw_runtime, Mapping):\n            await self.session.rollback()\n            return None, PublicationAutodeleteResult(\n                publication_id=int(publication.id), outcome="ineligible"\n            )\n        if raw_options is not None and not isinstance(raw_options, Mapping):\n            await self.session.rollback()\n            return None, PublicationAutodeleteResult(\n                publication_id=int(publication.id), outcome="ineligible"\n            )\n        runtime = _safe_mapping(raw_runtime)\n        options = _safe_mapping(raw_options)\n        ids = tuple(normalize_telegram_message_ids(publication.telegram_message_ids))\n\n        deleted_flag = runtime.get("deleted")\n        if deleted_flag not in (None, False, True):\n            await self.session.rollback()\n            return None, PublicationAutodeleteResult(\n                publication_id=int(publication.id), outcome="ineligible"\n            )\n        if deleted_flag is True:\n'''
+          if text.count(old_meta) != 1:
+              raise SystemExit(f"expected one candidate metadata block, got {text.count(old_meta)}")
+          text = text.replace(old_meta, new_meta, 1)
+
+          old_options = '''        if options.get("autodelete_report") is True:\n            await self.session.rollback()\n            return None, PublicationAutodeleteResult(\n                publication_id=int(publication.id), outcome="ineligible"\n            )\n        if _positive_int(options.get("autodelete_views")) is not None:\n'''
+          new_options = '''        report_flag = options.get("autodelete_report")\n        if report_flag not in (None, False, True) or report_flag is True:\n            await self.session.rollback()\n            return None, PublicationAutodeleteResult(\n                publication_id=int(publication.id), outcome="ineligible"\n            )\n        raw_views = options.get("autodelete_views")\n        parsed_views = _positive_int(raw_views)\n        if (\n            raw_views not in (None, False, 0, "0", "")\n            and parsed_views is None\n        ):\n            await self.session.rollback()\n            return None, PublicationAutodeleteResult(\n                publication_id=int(publication.id), outcome="ineligible"\n            )\n        if parsed_views is not None:\n'''
+          if text.count(old_options) != 1:
+              raise SystemExit(f"expected one options block, got {text.count(old_options)}")
+          text = text.replace(old_options, new_options, 1)
+
+          old_mark = '''        meta = _safe_mapping(publication.meta)\n        runtime = _safe_mapping(meta.get(AUTODELETE_RUNTIME_META_KEY))\n        due_at, due_token = _runtime_due_at(runtime)\n        if runtime.get("deleted") is True:\n'''
+          new_mark = '''        meta = _safe_mapping(publication.meta)\n        raw_runtime = meta.get(AUTODELETE_RUNTIME_META_KEY)\n        if raw_runtime is not None and not isinstance(raw_runtime, Mapping):\n            await self.session.rollback()\n            raise PublicationAutodeleteSyncConflict()\n        runtime = _safe_mapping(raw_runtime)\n        due_at, due_token = _runtime_due_at(runtime)\n        deleted_flag = runtime.get("deleted")\n        if deleted_flag not in (None, False, True):\n            await self.session.rollback()\n            raise PublicationAutodeleteSyncConflict()\n        if deleted_flag is True:\n'''
+          if text.count(old_mark) != 1:
+              raise SystemExit(f"expected one mark metadata block, got {text.count(old_mark)}")
+          text = text.replace(old_mark, new_mark, 1)
+
+          path.write_text(text, encoding="utf-8")
+          Path(".github/workflows/patch-autodelete-strict-metadata.yml").unlink()
+          PY
+      - name: Commit strict metadata guards
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/services/publication_autodelete.py .github/workflows/patch-autodelete-strict-metadata.yml
+          git commit -m "fix: fail closed on ambiguous autodelete metadata"
+          git push origin HEAD:agent/canonical-publication-autodelete-operation
