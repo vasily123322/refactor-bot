@@ -91,6 +91,20 @@ def test_repeat_child_reuses_canonical_root_after_root_transport_deleted(tmp_pat
                 root_content_item_id = int(root_publication.content_item_id)
                 root_content_revision = int(root_publication.content_revision)
 
+                # Keep a higher row id alive so SQLite cannot recycle the deleted
+                # root id for the child. Production sequences do not redefine a child
+                # as the repeat root merely because the test table became empty.
+                sentinel = PostTask(
+                    channel_id=999,
+                    status="pending",
+                    scheduled_at=when,
+                    payload={"type": "text", "text": "rowid sentinel"},
+                )
+                session.add(sentinel)
+                await session.commit()
+                await session.refresh(sentinel)
+                assert int(sentinel.id) != root_task_id
+
                 # Simulate safe terminal root transport retirement. Canonical group
                 # metadata must remain sufficient for future repeat child provenance.
                 root_publication.legacy_post_task_id = None
@@ -120,6 +134,7 @@ def test_repeat_child_reuses_canonical_root_after_root_transport_deleted(tmp_pat
                 session.add(child)
                 await session.commit()
                 await session.refresh(child)
+                assert int(child.id) != root_task_id
 
                 child_publication = await mirror_legacy_post_task(session, child)
                 assert child_publication is not None
@@ -174,6 +189,16 @@ def test_repeat_group_lookup_is_channel_scoped(tmp_path) -> None:
                 root_publication = await mirror_legacy_post_task(session, root)
                 assert root_publication is not None
                 root_content_item_id = int(root_publication.content_item_id)
+
+                sentinel = PostTask(
+                    channel_id=999,
+                    status="pending",
+                    scheduled_at=when,
+                    payload={"type": "text", "text": "rowid sentinel"},
+                )
+                session.add(sentinel)
+                await session.commit()
+
                 root_publication.legacy_post_task_id = None
                 await session.delete(root)
                 await session.commit()
@@ -193,6 +218,7 @@ def test_repeat_group_lookup_is_channel_scoped(tmp_path) -> None:
                 session.add(foreign_child)
                 await session.commit()
                 await session.refresh(foreign_child)
+                assert int(foreign_child.id) != root_task_id
 
                 publication = await mirror_legacy_post_task(session, foreign_child)
                 assert publication is not None
