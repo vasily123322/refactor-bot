@@ -347,6 +347,20 @@ async def _render_content_plan(
                     tz_code = st.filters.get("tz")
             except Exception:
                 pass
+            from app.services.content_plan_publication_links import (
+                content_plan_open_callback,
+                published_publication_ids_for_legacy_tasks,
+            )
+
+            published_publication_ids = (
+                await published_publication_ids_for_legacy_tasks(
+                    session,
+                    channel_id=int(channel_id),
+                    post_task_ids=[int(item.id) for item in items],
+                )
+                if items
+                else {}
+            )
             for p in items:
                 when = p.scheduled_at
                 if when:
@@ -396,7 +410,11 @@ async def _render_content_plan(
                 row_btns = [
                     InlineKeyboardButton(
                         text=btn_text,
-                        callback_data=f"cp_open_post:{p.id}:{center_date.date().isoformat()}",
+                        callback_data=content_plan_open_callback(
+                            post_task_id=int(p.id),
+                            date_iso=center_date.date().isoformat(),
+                            published_publication_ids=published_publication_ids,
+                        ),
                     )
                 ]
                 # Быстрая кнопка отключить автоповтор для серии
