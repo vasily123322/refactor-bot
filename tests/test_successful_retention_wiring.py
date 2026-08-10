@@ -24,6 +24,7 @@ def test_successful_retention_is_separately_disabled_by_default() -> None:
     assert config.post_task_retention_enabled is True
     assert config.post_task_retention_successful_enabled is False
     assert config.post_task_retention_successful_pending_autodelete_enabled is False
+    assert config.post_task_retention_successful_repeat_occurrences_enabled is False
 
 
 def test_successful_retention_accepts_explicit_env_aliases() -> None:
@@ -31,11 +32,13 @@ def test_successful_retention_accepts_explicit_env_aliases() -> None:
         POST_TASK_RETENTION_ENABLED=True,
         POST_TASK_RETENTION_SUCCESSFUL_ENABLED=True,
         POST_TASK_RETENTION_SUCCESSFUL_PENDING_AUTODELETE_ENABLED=True,
+        POST_TASK_RETENTION_SUCCESSFUL_REPEAT_OCCURRENCES_ENABLED=True,
     )
 
     assert config.post_task_retention_enabled is True
     assert config.post_task_retention_successful_enabled is True
     assert config.post_task_retention_successful_pending_autodelete_enabled is True
+    assert config.post_task_retention_successful_repeat_occurrences_enabled is True
 
 
 def test_retention_worker_forwards_success_scopes_to_service(monkeypatch) -> None:
@@ -82,6 +85,7 @@ def test_retention_worker_forwards_success_scopes_to_service(monkeypatch) -> Non
             batch_size=17,
             retire_successful=True,
             retire_successful_pending_autodelete=True,
+            retire_successful_repeat_occurrences=True,
         )
 
         await worker._tick()  # noqa: SLF001 - worker/service wiring boundary
@@ -90,5 +94,6 @@ def test_retention_worker_forwards_success_scopes_to_service(monkeypatch) -> Non
         assert captured["batch_size"] == 17
         assert captured["retire_successful"] is True
         assert captured["retire_successful_pending_autodelete"] is True
+        assert captured["retire_successful_repeat_occurrences"] is True
 
     asyncio.run(run())
