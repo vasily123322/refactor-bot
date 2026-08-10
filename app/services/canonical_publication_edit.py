@@ -3,8 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.domain.content.models import ContentItem
+from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.publication_edit_persistence import (
     PublicationEditConflictError,
     PublicationEditPersistenceError,
@@ -72,11 +75,56 @@ class CanonicalPublicationEditCoordinator:
                 publication_id=publication_id,
                 tg_user_id=tg_user_id,
             )
-        if view is None:
-            raise PublicationEditPersistenceError("canonical edit is unavailable")
-        if view.status != "published" or view.primary_message_id is None:
+            if view is None:
+                raise PublicationEditPersistenceError("canonical edit is unavailable")
+
+            lifecycle = (
+                await session.execute(
+                    select(
+                        Publication.status,
+                        Publication.content_revision,
+                        ScheduleEntry.status,
+                        ScheduleEntry.content_revision,
+                        ContentItem.current_revision,
+                        ContentItem.kind,
+                    )
+                    .join(
+                        ScheduleEntry,
+                        ScheduleEntry.id == Publication.schedule_entry_id,
+                    )
+                    .join(ContentItem, ContentItem.id == Publication.content_item_id)
+                    .where(
+                        Publication.id == int(view.publication_id),
+                        ScheduleEntry.channel_id == Publication.channel_id,
+                        ScheduleEntry.content_item_id == Publication.content_item_id,
+                        ContentItem.channel_id == Publication.channel_id,
+                    )
+                )
+            ).one_or_none()
+
+        if lifecycle is None:
+            raise PublicationEditConflictError("canonical publication linkage changed")
+        (
+            publication_status,
+            publication_revision,
+            schedule_status,
+            schedule_revision,
+            current_revision,
+            content_kind,
+        ) = lifecycle
+        safe_expected_revision = int(expected_revision)
+        if view.primary_message_id is None:
             raise PublicationEditConflictError("publication is not editable")
-        if int(view.content_revision) != int(expected_revision):
+        if str(publication_status or "") != "published" or str(schedule_status or "") != "completed":
+            raise PublicationEditConflictError("publication lifecycle is not editable")
+        if str(content_kind or "") != "post":
+            raise PublicationEditConflictError("content item is not editable")
+        if not (
+            int(view.content_revision) == safe_expected_revision
+            and int(publication_revision or 0) == safe_expected_revision
+            and int(schedule_revision or 0) == safe_expected_revision
+            and int(current_revision or 0) == safe_expected_revision
+        ):
             raise PublicationEditConflictError("canonical content revision changed")
         return view
 
