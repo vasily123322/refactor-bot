@@ -62,16 +62,11 @@ class PublicationReconcilerWorker:
             reconciled = await LegacyPublicationBridge(session).reconcile_active(
                 limit=self.batch_size
             )
-            if not self._runtime_backfill_done:
-                batch = await PublicationRuntimeProjector(session).backfill_terminal(
-                    after_publication_id=self._runtime_backfill_cursor,
-                    limit=self.batch_size,
-                )
-                runtime_scanned = batch.scanned
-                runtime_updated = batch.updated
-                self._runtime_backfill_cursor = batch.next_cursor
-                self._runtime_backfill_done = batch.done
-            if not self._views_backfill_done:
+
+            # Historical views intent is reconstructed only after the entire terminal
+            # runtime backfill has completed in a previous tick. This guarantees old
+            # `autodeleted=true` evidence is canonical before views state is rebuilt.
+            if self._runtime_backfill_done and not self._views_backfill_done:
                 views_batch = await PublicationAutodeleteViewsBackfillService(
                     session
                 ).backfill_published(
@@ -84,6 +79,16 @@ class PublicationReconcilerWorker:
                 views_backfill_invalid = views_batch.invalid
                 self._views_backfill_cursor = views_batch.next_cursor
                 self._views_backfill_done = views_batch.done
+
+            if not self._runtime_backfill_done:
+                batch = await PublicationRuntimeProjector(session).backfill_terminal(
+                    after_publication_id=self._runtime_backfill_cursor,
+                    limit=self.batch_size,
+                )
+                runtime_scanned = batch.scanned
+                runtime_updated = batch.updated
+                self._runtime_backfill_cursor = batch.next_cursor
+                self._runtime_backfill_done = batch.done
 
         if (
             mirrored
