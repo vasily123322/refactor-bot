@@ -62,7 +62,6 @@ def _canonical_return(data: dict, publication_id: int) -> str | None:
 async def _canonical_result(
     *,
     callback: CallbackQuery,
-    state: FSMContext,
     data: dict,
     payload: dict,
     publication_id: int,
@@ -166,7 +165,6 @@ async def handle_canonical_publication_edit(
     try:
         result = await _canonical_result(
             callback=callback,
-            state=state,
             data=data,
             payload=payload,
             publication_id=publication_id,
@@ -209,14 +207,6 @@ async def handle_canonical_publication_edit(
         await callback.answer("Не удалось сохранить изменение", show_alert=True)
         return
 
-    await state.update_data(
-        edit_chat_id=result.tg_chat_id,
-        edit_msg_id=result.message_id,
-        result_ids=list(result.telegram_message_ids),
-        canonical_edit_context=None,
-        prev_editor_restore=None,
-    )
-
     if bool(data.get("pin_on", False)):
         with suppress(Exception):
             await tg_bot.pin_chat_message(
@@ -226,6 +216,15 @@ async def handle_canonical_publication_edit(
 
     date_iso = _canonical_return(data, publication_id)
     if date_iso is not None:
+        # The card reloads all authoritative delivery/content state from canonical DB.
+        # Do not leave edit transport fields live in FSM after a successful save.
+        await state.update_data(
+            edit_chat_id=None,
+            edit_msg_id=None,
+            result_ids=None,
+            canonical_edit_context=None,
+            prev_editor_restore=None,
+        )
         from app.bot.routers.content_plan_publication import cb_cp_open_publication
 
         cb2 = callback.model_copy(
