@@ -29,11 +29,11 @@ from app.services.llm.openrouter_client import OpenRouterClient
 from app.userbot.client import app as userbot
 from app.workers.ai_auto_tasks import AIAutoTasksWorker
 from app.workers.candidate_enrichment import LocalCandidateEnrichmentWorker
+from app.workers.canonical_scheduler import Scheduler
 from app.workers.grab_poll import GrabPoller
 from app.workers.post_task_retention import PostTaskRetentionWorker
 from app.workers.publication_autodelete import PublicationAutodeleteWorker
 from app.workers.publication_reconciler import PublicationReconcilerWorker
-from app.workers.publication_scheduler import Scheduler
 from app.workers.scheduler_recovery import SchedulerRecoveryWorker
 from app.workers.source_ingestion import SourceIngestionWorker
 

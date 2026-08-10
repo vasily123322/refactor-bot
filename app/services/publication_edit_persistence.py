@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Mapping
 
 from sqlalchemy import select
@@ -9,9 +10,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import Channel, Client
-from app.domain.publishing.models import Publication, ScheduleEntry
+from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.services.content import LegacyPayloadError, document_from_legacy_payload
-from app.services.telegram_results import normalize_telegram_message_ids
+from app.services.publication_edit_autodelete import (
+    PublicationEditAutodeleteSyncError,
+    PublicationEditAutodeleteSyncService,
+)
+from app.services.telegram_results import (
+    normalize_telegram_message_ids,
+    rewrite_telegram_result_link_message_id,
+)
 
 
 _EDITOR_RUNTIME_OPTION_FIELDS = frozenset(
@@ -146,6 +154,16 @@ def validate_publication_edit_runtime_options(
     _edited_runtime_options(existing, payload)
 
 
+def edited_publication_runtime_options(
+    existing: Any,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the normalized editor runtime intent for preflight/execution guards."""
+    if not isinstance(payload, Mapping):
+        raise PublicationEditPersistenceError("editor payload must be an object")
+    return _edited_runtime_options(existing, payload)
+
+
 def _with_runtime_options(meta: Any, runtime_options: Mapping[str, Any]) -> dict[str, Any]:
     if meta is None:
         result: dict[str, Any] = {}
@@ -180,6 +198,7 @@ class PublicationEditPersistenceService:
         expected_revision: int,
         payload: Mapping[str, Any],
         telegram_message_ids: list[int] | tuple[int, ...] | None = None,
+        now: datetime | None = None,
     ) -> PublicationEditPersistenceResult:
         try:
             safe_publication_id = int(publication_id)
@@ -195,7 +214,7 @@ class PublicationEditPersistenceService:
         try:
             row = (
                 await self.session.execute(
-                    select(Publication, ScheduleEntry, ContentItem)
+                    select(Publication, ScheduleEntry, ContentItem, Channel)
                     .join(Channel, Channel.id == Publication.channel_id)
                     .join(Client, Client.id == Channel.owner_id)
                     .join(ScheduleEntry, ScheduleEntry.id == Publication.schedule_entry_id)
@@ -213,7 +232,7 @@ class PublicationEditPersistenceService:
             if row is None:
                 raise PublicationEditPersistenceError("publication not found or not owned")
 
-            publication, schedule, item = row
+            publication, schedule, item, channel = row
             publication_id_value = int(publication.id)
             content_item_id = int(item.id)
             publication_revision = int(publication.content_revision or 0)
@@ -274,6 +293,42 @@ class PublicationEditPersistenceService:
                 raise PublicationEditPersistenceError(
                     "confirmed provider edit requires valid Telegram message ids"
                 )
+            result_link = rewrite_telegram_result_link_message_id(
+                publication.result_link,
+                chat_id=int(channel.tg_chat_id),
+                message_id=int(ids[-1]),
+            )
+
+            try:
+                await PublicationEditAutodeleteSyncService(self.session).apply(
+                    publication=publication,
+                    schedule=schedule,
+                    previous_runtime_options=(
+                        dict(existing_runtime_options)
+                        if isinstance(existing_runtime_options, Mapping)
+                        else {}
+                    ),
+                    runtime_options=runtime_options,
+                    telegram_message_ids=ids,
+                    result_link=result_link,
+                    now=now,
+                )
+            except PublicationEditAutodeleteSyncError as exc:
+                raise PublicationEditConflictError(str(exc)) from None
+
+            if int(publication.attempt_count or 0) > 0:
+                latest_attempt = (
+                    await self.session.execute(
+                        select(PublicationAttempt)
+                        .where(
+                            PublicationAttempt.publication_id == publication_id_value,
+                            PublicationAttempt.attempt == int(publication.attempt_count),
+                        )
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if latest_attempt is not None and str(latest_attempt.status) == "published":
+                    latest_attempt.telegram_message_ids = list(ids)
 
             next_revision = safe_expected_revision + 1
             revision = ContentRevision(
@@ -292,6 +347,7 @@ class PublicationEditPersistenceService:
             publication.content_revision = next_revision
             schedule.content_revision = next_revision
             publication.telegram_message_ids = ids
+            publication.result_link = result_link
             publication.meta = _with_runtime_options(publication.meta, runtime_options)
             schedule.meta = _with_runtime_options(schedule.meta, runtime_options)
 
