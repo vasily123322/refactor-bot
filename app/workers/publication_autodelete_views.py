@@ -188,6 +188,7 @@ class PublicationAutodeleteViewsWorker:
                         view_source=self.view_source,
                         delete_provider=self.delete_provider,
                         next_check_seconds=self.next_check_seconds,
+                        allow_report=True,
                     ).evaluate_and_delete(int(publication_id), now=current)
 
                 if result.outcome == "deleted":
