@@ -262,6 +262,11 @@ def test_retention_ignores_expired_scheduler_lease(tmp_path) -> None:
 
             async with Session() as session:
                 assert await session.get(PostTask, task_id) is None
+                # This engine intentionally does not enable SQLite FK enforcement.
+                # Retention must remove the expired lease explicitly rather than rely
+                # on ON DELETE CASCADE, otherwise later Alembic adoption would fail
+                # its foreign-key integrity audit on an orphan lease row.
+                assert await session.get(SchedulerTaskLease, task_id) is None
                 publication = await session.get(Publication, publication_id)
                 assert publication is not None
                 assert publication.legacy_post_task_id is None
