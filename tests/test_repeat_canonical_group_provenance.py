@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.domain  # noqa: F401 register complete ORM metadata
@@ -135,7 +136,7 @@ def test_repeat_child_reuses_canonical_root_after_root_transport_deleted(tmp_pat
                 assert child_schedule.meta["repeat_root_provenance"] is True
 
                 # No second ContentItem was created from the child's mutable payload.
-                items = (await session.execute(__import__("sqlalchemy").select(ContentItem))).scalars().all()
+                items = (await session.execute(select(ContentItem))).scalars().all()
                 assert len(items) == 1
         finally:
             await engine.dispose()
