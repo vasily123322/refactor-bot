@@ -118,7 +118,12 @@ async def load_owned_publication_editor_view(
     Missing, malformed and foreign-owner state intentionally collapse to ``None`` so
     callback callers cannot use the editor surface as an ownership oracle.
     """
-    if int(publication_id) <= 0 or int(tg_user_id) <= 0:
+    try:
+        safe_publication_id = int(publication_id)
+        safe_user_id = int(tg_user_id)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if safe_publication_id <= 0 or safe_user_id <= 0:
         return None
 
     row = (
@@ -128,8 +133,8 @@ async def load_owned_publication_editor_view(
             .join(Client, Client.id == Channel.owner_id)
             .join(ScheduleEntry, ScheduleEntry.id == Publication.schedule_entry_id)
             .where(
-                Publication.id == int(publication_id),
-                Client.tg_user_id == int(tg_user_id),
+                Publication.id == safe_publication_id,
+                Client.tg_user_id == safe_user_id,
                 ScheduleEntry.channel_id == Publication.channel_id,
                 ScheduleEntry.content_item_id == Publication.content_item_id,
                 ScheduleEntry.content_revision == Publication.content_revision,
