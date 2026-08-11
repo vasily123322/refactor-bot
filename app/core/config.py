@@ -48,6 +48,12 @@ class Settings(BaseSettings):
         default=False,
         alias="CANONICAL_REPEAT_OVERDUE_RECOVERY_SHADOW_ENABLED",
     )
+    # Default-off cutover for one overdue repeat occurrence. This is guarded by the
+    # dedicated recovery shadow flag; boot group cleanup is still a separate migration.
+    canonical_repeat_overdue_recovery_planning_enabled: bool = Field(
+        default=False,
+        alias="CANONICAL_REPEAT_OVERDUE_RECOVERY_PLANNING_ENABLED",
+    )
 
     # Opt-in cleanup for canonicalized unsuccessful legacy scheduler rows.
     post_task_retention_enabled: bool = Field(
