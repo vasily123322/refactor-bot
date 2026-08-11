@@ -54,6 +54,7 @@ def test_primary_runtime_disabled_constructs_nothing(monkeypatch) -> None:
             recovery_worker=None,
             bot=object(),
             session_factory=object(),  # type: ignore[arg-type]
+            time_autodelete_executor_available=True,
         )
         assert worker is None
 
@@ -77,6 +78,7 @@ def test_primary_runtime_requires_started_recovery_before_construction(monkeypat
                 recovery_worker=None,
                 bot=object(),
                 session_factory=object(),  # type: ignore[arg-type]
+                time_autodelete_executor_available=True,
             )
 
     asyncio.run(run())
@@ -132,6 +134,7 @@ def test_primary_runtime_starts_with_exact_safe_configuration(monkeypatch) -> No
             recovery_worker=object(),
             bot=provider,
             session_factory=session_factory,  # type: ignore[arg-type]
+            time_autodelete_executor_available=True,
         )
 
         assert isinstance(worker, FakeWorker)
@@ -141,6 +144,7 @@ def test_primary_runtime_starts_with_exact_safe_configuration(monkeypatch) -> No
             "session_factory": session_factory,
             "lease_seconds": 120,
             "heartbeat_interval_seconds": 29.0,
+            "allow_time_autodelete": True,
         }
         assert captured["handoff"] == {
             "executor": executor,
@@ -155,6 +159,42 @@ def test_primary_runtime_starts_with_exact_safe_configuration(monkeypatch) -> No
             "batch_size": 31,
             "scan_limit": 411,
         }
+
+    asyncio.run(run())
+
+
+def test_primary_runtime_defaults_timer_capability_off(monkeypatch) -> None:
+    async def run() -> None:
+        captured: dict[str, object] = {}
+
+        def fake_runtime(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(executor=object())
+
+        class FakeWorker:
+            def __init__(self, **kwargs) -> None:
+                pass
+
+            async def start(self) -> None:
+                pass
+
+            async def stop(self) -> None:
+                pass
+
+        monkeypatch.setattr(
+            control,
+            "build_canonical_publication_delivery_runtime",
+            fake_runtime,
+        )
+        monkeypatch.setattr(control, "CanonicalPublicationDeliveryWorker", FakeWorker)
+
+        await control.start_canonical_publication_delivery_primary_if_enabled(
+            config=_enabled_config(),
+            recovery_worker=object(),
+            bot=object(),
+            session_factory=object(),  # type: ignore[arg-type]
+        )
+        assert captured["allow_time_autodelete"] is False
 
     asyncio.run(run())
 
