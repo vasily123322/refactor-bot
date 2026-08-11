@@ -160,7 +160,6 @@ class CanonicalPublicationDeliveryPlanner:
             or publication.telegram_message_ids not in (None, [])
             or publication.result_link is not None
             or publication.last_error is not None
-            or publication.published_at is not None
         ):
             return None
 
