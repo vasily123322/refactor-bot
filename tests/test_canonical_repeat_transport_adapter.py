@@ -243,6 +243,7 @@ def test_adapter_refuses_duplicate_when_unmirrored_legacy_transport_already_exis
                 session.add(existing_transport)
                 await session.commit()
                 await session.refresh(existing_transport)
+                existing_transport_id = int(existing_transport.id)
                 before = await _counts(session)
 
                 result = await CanonicalRepeatTransportAdapter(session).materialize(
@@ -251,12 +252,12 @@ def test_adapter_refuses_duplicate_when_unmirrored_legacy_transport_already_exis
                 after = await _counts(session)
 
                 assert result.outcome == "existing_transport"
-                assert result.legacy_post_task_id == int(existing_transport.id)
+                assert result.legacy_post_task_id == existing_transport_id
                 assert before == after
                 linked = (
                     await session.execute(
                         select(Publication).where(
-                            Publication.legacy_post_task_id == int(existing_transport.id)
+                            Publication.legacy_post_task_id == existing_transport_id
                         )
                     )
                 ).scalar_one_or_none()
