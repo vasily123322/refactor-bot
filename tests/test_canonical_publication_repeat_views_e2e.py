@@ -233,22 +233,8 @@ def test_repeat_views_primary_delete_continuation_and_replay_are_single_effect(t
                 message_id=7601,
             )
 
-            continuation = CanonicalRepeatContinuationWorker(
-                session_factory=Session,
-                batch_size=10,
-                scan_limit=50,
-            )
-            continuation_tick = await continuation.run_once(
-                now=datetime.now(timezone.utc) + timedelta(seconds=2)
-            )
-            assert continuation_tick.materialized == 1
-            assert continuation_tick.conflicts == 0
-            successor_id = await _assert_one_pristine_successor(
-                Session,
-                seeded["publication_id"],
-                threshold=seeded["threshold"],
-            )
-
+            # Destructive completion may beat continuation in production. Generated
+            # source delete evidence must not poison the independent repeat authority.
             views = _Views(seeded["threshold"])
             delete_provider = _DeleteProvider()
             delete_worker = PublicationAutodeleteViewsWorker(
@@ -260,7 +246,7 @@ def test_repeat_views_primary_delete_continuation_and_replay_are_single_effect(t
                 allow_repeat_views=True,
             )
             delete_tick = await delete_worker.run_once(
-                now=datetime.now(timezone.utc) + timedelta(seconds=3)
+                now=datetime.now(timezone.utc) + timedelta(seconds=2)
             )
             assert delete_tick.deleted == 1
             assert delete_tick.ambiguous == 0
@@ -288,6 +274,22 @@ def test_repeat_views_primary_delete_continuation_and_replay_are_single_effect(t
                 assert actions[0]["state"] == "succeeded"
                 assert int(actions[0]["telegram_message_id"]) == 7601
 
+            continuation = CanonicalRepeatContinuationWorker(
+                session_factory=Session,
+                batch_size=10,
+                scan_limit=50,
+            )
+            continuation_tick = await continuation.run_once(
+                now=datetime.now(timezone.utc) + timedelta(seconds=3)
+            )
+            assert continuation_tick.materialized == 1
+            assert continuation_tick.conflicts == 0
+            successor_id = await _assert_one_pristine_successor(
+                Session,
+                seeded["publication_id"],
+                threshold=seeded["threshold"],
+            )
+
             primary_replay = await router.execute(seeded["publication_id"])
             assert primary_replay.outcome == "ineligible"
             assert len(sender.calls) == 1
@@ -296,8 +298,9 @@ def test_repeat_views_primary_delete_continuation_and_replay_are_single_effect(t
                 now=datetime.now(timezone.utc) + timedelta(seconds=4)
             )
             assert continuation_replay.materialized == 0
-            assert len(await _successors(Session, seeded["publication_id"])) == 1
-            assert int((await _successors(Session, seeded["publication_id"]))[0].id) == successor_id
+            successors = await _successors(Session, seeded["publication_id"])
+            assert len(successors) == 1
+            assert int(successors[0].id) == successor_id
 
             views_calls_before = list(views.calls)
             delete_replay = await delete_worker.run_once(
@@ -329,22 +332,6 @@ def test_repeat_views_ambiguous_delete_never_replays_or_duplicates_successor(tmp
             assert first.outcome == "published"
             assert len(sender.calls) == 1
 
-            continuation = CanonicalRepeatContinuationWorker(
-                session_factory=Session,
-                batch_size=10,
-                scan_limit=50,
-            )
-            continuation_tick = await continuation.run_once(
-                now=datetime.now(timezone.utc) + timedelta(seconds=2)
-            )
-            assert continuation_tick.materialized == 1
-            assert continuation_tick.conflicts == 0
-            successor_id = await _assert_one_pristine_successor(
-                Session,
-                seeded["publication_id"],
-                threshold=seeded["threshold"],
-            )
-
             views = _Views(seeded["threshold"] + 10)
             delete_provider = _DeleteProvider(
                 [RuntimeError("transport outcome unknown after delete request")]
@@ -358,7 +345,7 @@ def test_repeat_views_ambiguous_delete_never_replays_or_duplicates_successor(tmp
                 allow_repeat_views=True,
             )
             first_delete = await delete_worker.run_once(
-                now=datetime.now(timezone.utc) + timedelta(seconds=3)
+                now=datetime.now(timezone.utc) + timedelta(seconds=2)
             )
             assert first_delete.deleted == 0
             assert first_delete.ambiguous == 1
@@ -379,6 +366,24 @@ def test_repeat_views_ambiguous_delete_never_replays_or_duplicates_successor(tmp
                 assert isinstance(actions, list) and len(actions) == 1
                 assert actions[0]["state"] == "unknown"
                 assert int(actions[0]["telegram_message_id"]) == 7701
+
+            # Unknown destructive outcome is source-local operator reconciliation state.
+            # It must neither reauthorize DELETE nor prevent exactly-one successor.
+            continuation = CanonicalRepeatContinuationWorker(
+                session_factory=Session,
+                batch_size=10,
+                scan_limit=50,
+            )
+            continuation_tick = await continuation.run_once(
+                now=datetime.now(timezone.utc) + timedelta(seconds=3)
+            )
+            assert continuation_tick.materialized == 1
+            assert continuation_tick.conflicts == 0
+            successor_id = await _assert_one_pristine_successor(
+                Session,
+                seeded["publication_id"],
+                threshold=seeded["threshold"],
+            )
 
             primary_replay = await router.execute(seeded["publication_id"])
             assert primary_replay.outcome == "ineligible"
