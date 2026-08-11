@@ -14,6 +14,7 @@ from app.domain.publishing.models import Publication, PublicationAttempt, Schedu
 
 HEALTHY_LIVE_LEASE = "healthy_live_lease"
 LEGACY_TRANSPORT_RELINKED = "legacy_transport_relinked"
+LEGACY_TRANSPORT_LINKED = "legacy_transport_linked"
 DURABLE_DELIVERY_EVIDENCE = "durable_delivery_evidence"
 SCHEDULE_MISMATCH = "schedule_mismatch"
 ATTEMPT_MISMATCH = "attempt_mismatch"
@@ -22,6 +23,7 @@ EXPIRED_LEASE = "expired_lease"
 
 _FINDING_PRECEDENCE = (
     LEGACY_TRANSPORT_RELINKED,
+    LEGACY_TRANSPORT_LINKED,
     DURABLE_DELIVERY_EVIDENCE,
     SCHEDULE_MISMATCH,
     ATTEMPT_MISMATCH,
@@ -88,6 +90,14 @@ class CanonicalPublicationDeliveryInflightAuditService:
             or int(schedule.content_revision) != int(publication.content_revision)
             or int(schedule.channel_id) != int(publication.channel_id)
         )
+
+    @staticmethod
+    def _canonical_attempt_present(attempts: list[PublicationAttempt]) -> bool:
+        for attempt in attempts:
+            meta = attempt.meta
+            if isinstance(meta, Mapping) and meta.get("canonical_delivery") is True:
+                return True
+        return False
 
     @staticmethod
     def _attempt_mismatch(
@@ -182,14 +192,18 @@ class CanonicalPublicationDeliveryInflightAuditService:
                 )
             ).scalars()
         }
-        schedules = {
-            int(schedule.id): schedule
-            for schedule in (
-                await self.session.execute(
-                    select(ScheduleEntry).where(ScheduleEntry.id.in_(schedule_ids))
-                )
-            ).scalars()
-        } if schedule_ids else {}
+        schedules = (
+            {
+                int(schedule.id): schedule
+                for schedule in (
+                    await self.session.execute(
+                        select(ScheduleEntry).where(ScheduleEntry.id.in_(schedule_ids))
+                    )
+                ).scalars()
+            }
+            if schedule_ids
+            else {}
+        )
         attempts_by_publication: dict[int, list[PublicationAttempt]] = defaultdict(list)
         for attempt in (
             await self.session.execute(
@@ -216,7 +230,10 @@ class CanonicalPublicationDeliveryInflightAuditService:
             findings: set[str] = set()
 
             if publication.legacy_post_task_id is not None:
-                findings.add(LEGACY_TRANSPORT_RELINKED)
+                if self._canonical_attempt_present(attempts):
+                    findings.add(LEGACY_TRANSPORT_RELINKED)
+                else:
+                    findings.add(LEGACY_TRANSPORT_LINKED)
             if self._has_durable_delivery_evidence(publication, attempts):
                 findings.add(DURABLE_DELIVERY_EVIDENCE)
             if self._schedule_mismatch(publication, schedule):
