@@ -54,6 +54,11 @@ class Settings(BaseSettings):
         default=False,
         alias="CANONICAL_REPEAT_OVERDUE_RECOVERY_PLANNING_ENABLED",
     )
+    # Independent default-off observer for the one-time grouped boot repeat cleanup.
+    canonical_repeat_boot_recovery_shadow_enabled: bool = Field(
+        default=False,
+        alias="CANONICAL_REPEAT_BOOT_RECOVERY_SHADOW_ENABLED",
+    )
 
     # Opt-in cleanup for canonicalized unsuccessful legacy scheduler rows.
     post_task_retention_enabled: bool = Field(
