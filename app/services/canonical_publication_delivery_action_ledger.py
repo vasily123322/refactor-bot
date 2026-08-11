@@ -52,7 +52,7 @@ class CanonicalPublicationDeliveryActionLedger:
 
     `reserved` is a one-way no-retry barrier. Only the caller that receives a *new*
     `reserved` outcome may invoke the provider. Existing rows never authorize another
-    call, regardless of whether their state is still reserved, succeeded, or unknown.
+    call, regardless of terminal evidence (`succeeded`, `unknown`, or `suppressed`).
 
     Reservation itself requires the exact still-live primary delivery lease and the
     canonical `sending` lifecycle. Terminal action state may be recorded after provider
@@ -268,7 +268,7 @@ class CanonicalPublicationDeliveryActionLedger:
         self,
         reservation: CanonicalPublicationDeliveryActionReservation,
         *,
-        state: Literal["succeeded", "unknown"],
+        state: Literal["succeeded", "unknown", "suppressed"],
         finished_at: datetime | None,
     ) -> bool:
         identity = self._normalized_identity(
@@ -340,5 +340,17 @@ class CanonicalPublicationDeliveryActionLedger:
         return await self._finish(
             reservation,
             state="unknown",
+            finished_at=finished_at,
+        )
+
+    async def mark_suppressed(
+        self,
+        reservation: CanonicalPublicationDeliveryActionReservation,
+        *,
+        finished_at: datetime | None = None,
+    ) -> bool:
+        return await self._finish(
+            reservation,
+            state="suppressed",
             finished_at=finished_at,
         )
