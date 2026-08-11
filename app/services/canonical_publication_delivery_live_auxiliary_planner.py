@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -8,7 +9,8 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.content.models import ContentItem
+from app.domain.content import PostDocument
+from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import Channel, ChannelSettings, Client
 from app.domain.publication_delivery import PublicationDeliveryLease
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
@@ -34,6 +36,35 @@ def _mapping(value) -> dict | None:
     if not isinstance(value, Mapping):
         return None
     return dict(value)
+
+
+def _json_snapshot(value) -> str | None:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _runtime_options(
+    publication_meta: Mapping,
+    schedule_meta: Mapping,
+) -> dict | None:
+    publication_value = publication_meta.get("runtime_options")
+    schedule_value = schedule_meta.get("runtime_options")
+    if publication_value is None and schedule_value is None:
+        return {}
+    publication_options = _mapping(publication_value)
+    schedule_options = _mapping(schedule_value)
+    if publication_options is None or schedule_options is None:
+        return None
+    if publication_options != schedule_options:
+        return None
+    return publication_options
 
 
 def _safe_nonrepeat(rule) -> bool:
@@ -99,6 +130,12 @@ class CanonicalPublicationDeliveryLiveAuxiliaryPlanner:
     Telegram send but before marking the PostTask terminal. This planner reproduces that
     authority boundary without reading PostTask: it requires the exact live canonical
     delivery lease, the unfinished canonical attempt and the immutable post-send context.
+
+    Before producing any non-idempotent auxiliary plan it repeats the full claimed-intent
+    snapshot proof used by the success finalizer. If runtime options, repeat intent,
+    document revision or source destination drifted after the primary Telegram side
+    effect, no auxiliary action is authorized; the finalizer will later keep delivery
+    ambiguous for fail-closed recovery as well.
 
     The returned plans are one-shot snapshots. They are not durable retry tokens; owner
     notices and admin logs are non-idempotent and must be executed only inside the same
@@ -182,6 +219,17 @@ class CanonicalPublicationDeliveryLiveAuxiliaryPlanner:
         ):
             return None
 
+        revision = (
+            await self.session.execute(
+                select(ContentRevision).where(
+                    ContentRevision.content_item_id == content_item_id,
+                    ContentRevision.revision == content_revision,
+                )
+            )
+        ).scalar_one_or_none()
+        if revision is None:
+            return None
+
         channel = await self.session.get(Channel, channel_id)
         if (
             channel is None
@@ -206,6 +254,25 @@ class CanonicalPublicationDeliveryLiveAuxiliaryPlanner:
             or attempt.error is not None
             or not isinstance(attempt.meta, Mapping)
             or dict(attempt.meta).get("canonical_delivery") is not True
+        ):
+            return None
+
+        publication_meta = _mapping(publication.meta)
+        schedule_meta = _mapping(schedule.meta)
+        repeat_rule = _mapping(schedule.repeat_rule)
+        if publication_meta is None or schedule_meta is None or repeat_rule is None:
+            return None
+        runtime_options = _runtime_options(publication_meta, schedule_meta)
+        if runtime_options is None:
+            return None
+        try:
+            document = PostDocument.from_dict(revision.document)
+        except (TypeError, ValueError):
+            return None
+        if (
+            _json_snapshot(runtime_options) != context.plan.runtime_options_snapshot
+            or _json_snapshot(repeat_rule) != context.plan.repeat_rule_snapshot
+            or _json_snapshot(document.to_dict()) != context.plan.document_snapshot
         ):
             return None
 
