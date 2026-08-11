@@ -30,6 +30,7 @@ class CanonicalPublicationDeliveryRuntimeCapability:
     pin_on: bool = False
     forward_to: tuple[int, ...] = ()
     time_autodelete_seconds: int | None = None
+    views_autodelete_threshold: int | None = None
     autodelete_report: bool = False
 
     @property
@@ -39,6 +40,10 @@ class CanonicalPublicationDeliveryRuntimeCapability:
     @property
     def time_autodelete_requested(self) -> bool:
         return self.time_autodelete_seconds is not None
+
+    @property
+    def views_autodelete_requested(self) -> bool:
+        return self.views_autodelete_threshold is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,9 +109,7 @@ def parse_canonical_publication_delivery_runtime_capability(
         forward_to = tuple(parsed)
 
     views_ok, views = _strict_optional_positive_int(options.get("autodelete_views"))
-    if not views_ok or views is not None:
-        # Views-based deletion has a separate worker/authority path and is not part of
-        # canonical primary delivery widening in this capability profile.
+    if not views_ok:
         return None
 
     report = options.get("autodelete_report", False)
@@ -122,9 +125,14 @@ def parse_canonical_publication_delivery_runtime_capability(
     if not effective_ok or not base_ok:
         return None
     time_autodelete_seconds = effective_seconds or base_seconds
-    if report and time_autodelete_seconds is None:
+    if time_autodelete_seconds is not None and views is not None:
+        # Historical runtime treats time- and views-based deletion as separate modes.
+        # Refuse ambiguous dual authority instead of letting one mechanism shadow the
+        # other after canonical cutover.
+        return None
+    if report and time_autodelete_seconds is None and views is None:
         # A deletion report has no independent execution meaning. Reject it instead of
-        # silently dropping requested semantics when there is no actual timer.
+        # silently dropping requested semantics when no delete trigger exists.
         return None
 
     return CanonicalPublicationDeliveryRuntimeCapability(
@@ -132,6 +140,7 @@ def parse_canonical_publication_delivery_runtime_capability(
         pin_on=pin_on,
         forward_to=forward_to,
         time_autodelete_seconds=time_autodelete_seconds,
+        views_autodelete_threshold=views,
         autodelete_report=report,
     )
 
