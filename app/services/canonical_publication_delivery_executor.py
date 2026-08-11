@@ -57,13 +57,14 @@ class CanonicalPublicationDeliveryExecutor:
     """Execute a committed exact-token canonical delivery claim.
 
     Canonical-only rows use `execute()`, which first obtains a capability claim. Linked
-    transport rows may instead use `execute_claim()` after the atomic handoff+claim
+    transport rows may instead use `execute_claim()` after an atomic handoff+claim
     coordinator has committed transport retirement, `sending`, Attempt #1 and the exact
     delivery lease in one transaction.
 
-    Once primary Telegram returns message ids, required post-send semantics (currently
-    time-autodelete when enabled) can block terminal success. Such a block leaves the
-    durable sending claim for fail-closed recovery and never retries primary delivery.
+    Time-autodelete is a required post-send semantic when enabled. Views-autodelete is
+    different: its indexed threshold is staged before the authority commit and is
+    therefore already durable before the first provider call. Both capabilities are
+    independently gated by actual executor availability facts.
     """
 
     def __init__(
@@ -77,6 +78,7 @@ class CanonicalPublicationDeliveryExecutor:
         lease_seconds: int = 180,
         heartbeat_interval_seconds: float = 45.0,
         allow_time_autodelete: bool = False,
+        allow_views_autodelete: bool = False,
     ) -> None:
         self.session_factory = session_factory
         self.sender = sender
@@ -84,6 +86,7 @@ class CanonicalPublicationDeliveryExecutor:
         self.post_send_hook = post_send_hook
         self.holder = str(holder).strip()[:64] or "canonical-publication-delivery"
         self.allow_time_autodelete = bool(allow_time_autodelete)
+        self.allow_views_autodelete = bool(allow_views_autodelete)
         try:
             parsed_lease_seconds = int(lease_seconds)
         except (TypeError, ValueError, OverflowError):
@@ -113,6 +116,7 @@ class CanonicalPublicationDeliveryExecutor:
                 ttl_seconds=self.lease_seconds,
                 now=now,
                 allow_time_autodelete=self.allow_time_autodelete,
+                allow_views_autodelete=self.allow_views_autodelete,
             )
 
     async def _heartbeat(
