@@ -86,6 +86,8 @@ class CanonicalPublicationDeliveryClaimService:
     Normal claim never deletes/reuses an expired lease. An expired delivery lease may
     represent an ambiguous Telegram side effect and is therefore a recovery barrier.
     ``take_expired`` only transfers recovery ownership; it never retries delivery.
+    A lease attached to ``Publication.status == 'sending'`` also cannot be released
+    independently: only terminal finalization may remove that recovery barrier.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -394,13 +396,37 @@ class CanonicalPublicationDeliveryClaimService:
         )
 
     async def release(self, handle: CanonicalPublicationDeliveryLeaseHandle) -> bool:
-        result = await self.session.execute(
-            delete(PublicationDeliveryLease).where(
-                PublicationDeliveryLease.publication_id == int(handle.publication_id),
-                PublicationDeliveryLease.lease_token == str(handle.lease_token),
-            )
-        )
+        """Release only a lease no longer protecting an in-flight delivery.
+
+        A ``sending`` Publication may already have produced an ambiguous Telegram side
+        effect. Removing its lease independently would destroy the expiry-recovery
+        barrier and leave durable lifecycle state orphaned. Terminal finalizers therefore
+        own lease deletion for in-flight delivery; this helper is limited to cleanup of
+        leases attached to non-sending lifecycle state.
+        """
+
         try:
+            publication_id = int(handle.publication_id)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        try:
+            publication = (
+                await self.session.execute(
+                    select(Publication)
+                    .where(Publication.id == publication_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if publication is None or publication.status == "sending":
+                await self.session.rollback()
+                return False
+
+            result = await self.session.execute(
+                delete(PublicationDeliveryLease).where(
+                    PublicationDeliveryLease.publication_id == publication_id,
+                    PublicationDeliveryLease.lease_token == str(handle.lease_token),
+                )
+            )
             await self.session.commit()
         except Exception:
             await self.session.rollback()
