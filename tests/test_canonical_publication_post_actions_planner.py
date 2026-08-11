@@ -260,3 +260,41 @@ def test_malformed_duplicate_or_missing_forward_target_fails_closed(tmp_path) ->
             await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_retired_legacy_attempt_does_not_authorize_secondary_action_replay(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'canonical-post-actions-legacy-origin.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            publication_id, _source_chat, _target_one, _target_two = await _seed_published(
+                Session,
+                seed=5,
+                runtime_options={"pin_on": True},
+            )
+
+            async with Session() as session:
+                publication = await session.get(Publication, publication_id)
+                assert publication is not None
+                attempt = (
+                    await session.execute(
+                        select(PublicationAttempt).where(
+                            PublicationAttempt.publication_id == publication_id,
+                            PublicationAttempt.attempt == 1,
+                        )
+                    )
+                ).scalar_one()
+                attempt.meta = {"legacy_post_task_id": 12345}
+                await session.commit()
+
+                assert await CanonicalPublicationPostDeliveryActionPlanner(session).plan(
+                    publication_id
+                ) is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
