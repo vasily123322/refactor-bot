@@ -115,8 +115,6 @@ def test_forward_target_drift_after_claim_blocks_planning_before_reservation(tmp
                 message_ids=(2601,),
                 result_link=None,
                 primary_finished_at=now + timedelta(seconds=1),
-                runtime_capability=claim.runtime_capability,
-                forward_targets=claim.forward_targets,
             )
 
             async with Session() as session:
@@ -166,8 +164,6 @@ def test_forward_target_drift_after_reservation_marks_suppressed_before_provider
                 message_ids=(2602,),
                 result_link=None,
                 primary_finished_at=now + timedelta(seconds=1),
-                runtime_capability=claim.runtime_capability,
-                forward_targets=claim.forward_targets,
             )
 
             class _DriftAfterReserveExecutor(
