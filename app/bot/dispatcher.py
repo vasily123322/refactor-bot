@@ -280,10 +280,24 @@ async def run_bot() -> None:
         publication_reconciler = PublicationReconcilerWorker(interval_seconds=5)
         await publication_reconciler.start()
 
-        # A timer-capable primary delivery runtime may start only after its delete
-        # consumer has actually started. If the worker is disabled, primary still starts
-        # but its locked capability claim keeps timer intent ineligible.
+        # Start optional destructive consumers before any timer-capable canonical primary
+        # loop. Availability below is based on successful start, never only on config.
         publication_autodelete = await _start_publication_autodelete_worker_if_enabled()
+        publication_autodelete_views = (
+            await _start_publication_autodelete_views_worker_if_enabled(
+                userbot_available=userbot_started,
+            )
+        )
+
+        # Run all executor-availability interlocks before canonical primary delivery is
+        # allowed to execute provider side effects.
+        validate_retention_executor_availability(
+            settings,
+            publication_autodelete_worker_started=publication_autodelete is not None,
+            publication_autodelete_views_worker_started=(
+                publication_autodelete_views is not None
+            ),
+        )
 
         (
             canonical_publication_delivery,
@@ -291,19 +305,6 @@ async def run_bot() -> None:
         ) = await _start_canonical_publication_delivery_workers(
             primary_delivery_config,
             time_autodelete_executor_available=publication_autodelete is not None,
-        )
-
-        publication_autodelete_views = (
-            await _start_publication_autodelete_views_worker_if_enabled(
-                userbot_available=userbot_started,
-            )
-        )
-        validate_retention_executor_availability(
-            settings,
-            publication_autodelete_worker_started=publication_autodelete is not None,
-            publication_autodelete_views_worker_started=(
-                publication_autodelete_views is not None
-            ),
         )
 
         if settings.post_task_retention_enabled:
@@ -372,18 +373,17 @@ async def run_bot() -> None:
             await _safe_stop("source ingestion", source_ingestion.stop)
         if post_task_retention is not None:
             await _safe_stop("PostTask retention", post_task_retention.stop)
+
+        # Stop the canonical producer/recovery pair before dependent delete consumers.
+        await stop_canonical_publication_delivery_workers(
+            primary_worker=canonical_publication_delivery,
+            recovery_worker=canonical_publication_delivery_recovery,
+        )
         if publication_autodelete_views is not None:
             await _safe_stop(
                 "canonical views publication autodelete",
                 publication_autodelete_views.stop,
             )
-
-        # Stop the producer before the consumer: after primary delivery stops, no new
-        # canonical timer runtime can be materialized while the time worker shuts down.
-        await stop_canonical_publication_delivery_workers(
-            primary_worker=canonical_publication_delivery,
-            recovery_worker=canonical_publication_delivery_recovery,
-        )
         if publication_autodelete is not None:
             await _safe_stop("canonical publication autodelete", publication_autodelete.stop)
         if publication_reconciler is not None:
