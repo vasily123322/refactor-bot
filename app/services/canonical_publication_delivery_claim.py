@@ -55,10 +55,11 @@ class CanonicalPublicationDeliveryExpiredLeaseRef:
 
 @dataclass(frozen=True, slots=True)
 class CanonicalPublicationDeliveryClaimRequirements:
-    """Optional executor capability restrictions applied inside the claim transaction."""
+    """Optional execution/cutover restrictions applied inside the claim transaction."""
 
     require_empty_runtime_options: bool = False
     require_nonrepeat: bool = False
+    require_transport_retired: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,9 +74,14 @@ class CanonicalPublicationDeliveryClaimService:
 
     The pure delivery planner remains the eligibility proof. Claim acquires locks for
     every mutable row used by that proof, re-runs the planner under those locks, then
-    optionally applies executor capability restrictions before atomically transitioning
+    optionally applies execution/cutover restrictions before atomically transitioning
     Publication ``queued -> sending``, creating unfinished PublicationAttempt #1 and
     inserting the typed delivery lease. Any conflict rolls the whole transaction back.
+
+    Runtime authority restrictions live here rather than in the canonical planner so
+    canonical eligibility remains transport-independent. In particular a caller may
+    require ``legacy_post_task_id IS NULL`` under the Publication row lock before it is
+    allowed to take delivery authority from the legacy scheduler.
 
     Normal claim never deletes/reuses an expired lease. An expired delivery lease may
     represent an ambiguous Telegram side effect and is therefore a recovery barrier.
@@ -146,11 +152,17 @@ class CanonicalPublicationDeliveryClaimService:
     @staticmethod
     def _meets_requirements(
         plan: CanonicalPublicationDeliveryPlan,
+        publication: Publication,
         schedule: ScheduleEntry,
         requirements: CanonicalPublicationDeliveryClaimRequirements | None,
     ) -> bool:
         if requirements is None:
             return True
+        if (
+            requirements.require_transport_retired
+            and publication.legacy_post_task_id is not None
+        ):
+            return False
         if requirements.require_empty_runtime_options:
             try:
                 if plan.runtime_options():
@@ -207,7 +219,12 @@ class CanonicalPublicationDeliveryClaimService:
                 or int(plan.content_item_id) != int(publication.content_item_id)
                 or int(plan.content_revision) != int(publication.content_revision)
                 or int(plan.channel_id) != int(publication.channel_id)
-                or not self._meets_requirements(plan, schedule, requirements)
+                or not self._meets_requirements(
+                    plan,
+                    publication,
+                    schedule,
+                    requirements,
+                )
             ):
                 await self.session.rollback()
                 return None
