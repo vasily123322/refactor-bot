@@ -97,6 +97,7 @@ async def _children(session, *, root_task_id: int) -> list[PostTask]:
                 select(PostTask)
                 .where(
                     PostTask.id != int(root_task_id),
+                    PostTask.status == "pending",
                     PostTask.payload["repeat_group_id"].as_integer()
                     == int(root_task_id),
                 )
