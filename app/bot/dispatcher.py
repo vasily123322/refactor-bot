@@ -124,6 +124,7 @@ async def _start_canonical_publication_delivery_workers(
     time_autodelete_executor_available: bool = False,
     views_autodelete_executor_available: bool = False,
     repeat_continuation_executor_available: bool = False,
+    repeat_views_executor_available: bool = False,
 ):
     recovery_worker = (
         await _start_canonical_publication_delivery_recovery_worker_if_enabled()
@@ -144,6 +145,7 @@ async def _start_canonical_publication_delivery_workers(
                 repeat_continuation_available=(
                     repeat_continuation_executor_available
                 ),
+                repeat_views_executor_available=repeat_views_executor_available,
                 repeat_owner_policy_enforced=True,
             )
         )
@@ -175,6 +177,7 @@ async def _start_publication_autodelete_worker_if_enabled():
 async def _start_publication_autodelete_views_worker_if_enabled(
     *,
     userbot_available: bool,
+    repeat_continuation_available: bool = False,
 ):
     if not settings.publication_autodelete_views_worker_enabled:
         logger.info("Boot: canonical views autodelete worker disabled")
@@ -198,6 +201,7 @@ async def _start_publication_autodelete_views_worker_if_enabled(
         ineligible_backoff_seconds=(
             settings.publication_autodelete_views_worker_ineligible_backoff_seconds
         ),
+        allow_repeat_views=bool(repeat_continuation_available),
     )
     await worker.start()
     return worker
@@ -295,11 +299,15 @@ async def run_bot() -> None:
         await publication_reconciler.start()
 
         # Start optional destructive consumers before any delete-capable canonical
-        # primary loop. Availability below is based on successful start, never config.
+        # primary loop. Repeat views is enabled only from the already-started continuation
+        # dependency, never directly from configuration.
         publication_autodelete = await _start_publication_autodelete_worker_if_enabled()
         publication_autodelete_views = (
             await _start_publication_autodelete_views_worker_if_enabled(
                 userbot_available=userbot_started,
+                repeat_continuation_available=bool(
+                    scheduler.repeat_continuation_available
+                ),
             )
         )
 
@@ -313,6 +321,10 @@ async def run_bot() -> None:
             ),
         )
 
+        repeat_views_executor_available = bool(
+            publication_autodelete_views is not None
+            and publication_autodelete_views.allow_repeat_views
+        )
         (
             canonical_publication_delivery,
             canonical_publication_delivery_recovery,
@@ -325,6 +337,7 @@ async def run_bot() -> None:
             repeat_continuation_executor_available=bool(
                 scheduler.repeat_continuation_available
             ),
+            repeat_views_executor_available=repeat_views_executor_available,
         )
 
         if settings.post_task_retention_enabled:
