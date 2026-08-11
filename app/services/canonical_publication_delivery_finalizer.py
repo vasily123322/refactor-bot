@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -7,10 +9,16 @@ from typing import Any, Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.content import PostDocument
+from app.domain.content.models import ContentItem, ContentRevision
+from app.domain.models import Channel
 from app.domain.publication_delivery import PublicationDeliveryLease
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.services.canonical_publication_delivery_claim import (
     CanonicalPublicationDeliveryLeaseHandle,
+)
+from app.services.canonical_publication_delivery_planner import (
+    CanonicalPublicationDeliveryPlan,
 )
 from app.services.scheduler_errors import SAFE_DELIVERY_ERROR, public_scheduler_error
 from app.services.telegram_results import (
@@ -33,14 +41,48 @@ def _utc(value: datetime | None = None) -> datetime:
     return current.astimezone(timezone.utc)
 
 
+def _mapping(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    return {str(key): item for key, item in value.items()}
+
+
+def _json_snapshot(value: Any) -> str | None:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _runtime_options(
+    publication_meta: Mapping[str, Any],
+    schedule_meta: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    publication_value = publication_meta.get("runtime_options")
+    schedule_value = schedule_meta.get("runtime_options")
+    if publication_value is None and schedule_value is None:
+        return {}
+    publication_options = _mapping(publication_value)
+    schedule_options = _mapping(schedule_value)
+    if publication_options is None or schedule_options is None:
+        return None
+    if publication_options != schedule_options:
+        return None
+    return publication_options
+
+
 class CanonicalPublicationDeliveryFinalizer:
     """Finalize one claimed canonical Publication under its exact live delivery lease.
 
-    This service owns only durable canonical lifecycle state. It performs no Telegram
-    calls and does not read or write ``PostTask``. Exact lease-token matching prevents
-    a stale worker from committing after recovery has taken ownership. An expired lease
-    is also a hard barrier: ambiguous delivery is resolved only after recovery takes a
-    fresh token through ``CanonicalPublicationDeliveryClaimService.take_expired()``.
+    Success is stricter than failure because a Telegram side effect has already happened:
+    the immutable plan returned by claim must still match the locked canonical delivery
+    intent before terminal ``published`` state can be committed. Any drift leaves the
+    claim ambiguous for expiry recovery without automatic resend.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -55,6 +97,9 @@ class CanonicalPublicationDeliveryFinalizer:
         PublicationDeliveryLease,
         Publication,
         ScheduleEntry,
+        ContentItem,
+        ContentRevision,
+        Channel,
         PublicationAttempt,
     ] | None:
         try:
@@ -113,6 +158,39 @@ class CanonicalPublicationDeliveryFinalizer:
         if schedule is None:
             return None
 
+        item = (
+            await self.session.execute(
+                select(ContentItem)
+                .where(ContentItem.id == int(publication.content_item_id))
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if item is None:
+            return None
+
+        revision = (
+            await self.session.execute(
+                select(ContentRevision)
+                .where(
+                    ContentRevision.content_item_id == int(publication.content_item_id),
+                    ContentRevision.revision == int(publication.content_revision),
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if revision is None:
+            return None
+
+        channel = (
+            await self.session.execute(
+                select(Channel)
+                .where(Channel.id == int(publication.channel_id))
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if channel is None:
+            return None
+
         attempt = (
             await self.session.execute(
                 select(PublicationAttempt)
@@ -133,12 +211,69 @@ class CanonicalPublicationDeliveryFinalizer:
         ):
             return None
 
-        return lease, publication, schedule, attempt
+        return lease, publication, schedule, item, revision, channel, attempt
+
+    @staticmethod
+    def _intent_matches(
+        plan: CanonicalPublicationDeliveryPlan,
+        *,
+        publication: Publication,
+        schedule: ScheduleEntry,
+        item: ContentItem,
+        revision: ContentRevision,
+        channel: Channel,
+    ) -> bool:
+        try:
+            if (
+                int(plan.publication_id) != int(publication.id)
+                or int(plan.schedule_entry_id) != int(schedule.id)
+                or int(plan.schedule_entry_id) != int(publication.schedule_entry_id or 0)
+                or int(plan.channel_id) != int(publication.channel_id)
+                or int(plan.channel_id) != int(schedule.channel_id)
+                or int(plan.channel_id) != int(item.channel_id)
+                or int(plan.channel_id) != int(channel.id)
+                or int(plan.telegram_chat_id) != int(channel.tg_chat_id)
+                or channel.is_active is not True
+                or str(item.kind) != "post"
+                or int(plan.content_item_id) != int(publication.content_item_id)
+                or int(plan.content_item_id) != int(schedule.content_item_id)
+                or int(plan.content_item_id) != int(item.id)
+                or int(plan.content_revision) != int(publication.content_revision)
+                or int(plan.content_revision) != int(schedule.content_revision)
+                or int(plan.content_revision) != int(revision.revision)
+                or int(plan.content_item_id) != int(revision.content_item_id)
+                or _utc(plan.scheduled_at) != _utc(schedule.scheduled_at)
+                or plan.timezone != schedule.timezone
+            ):
+                return False
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+        publication_meta = _mapping(publication.meta)
+        schedule_meta = _mapping(schedule.meta)
+        repeat_rule = _mapping(schedule.repeat_rule)
+        if publication_meta is None or schedule_meta is None or repeat_rule is None:
+            return False
+        runtime_options = _runtime_options(publication_meta, schedule_meta)
+        if runtime_options is None:
+            return False
+
+        try:
+            document = PostDocument.from_dict(revision.document)
+        except (TypeError, ValueError):
+            return False
+
+        return (
+            _json_snapshot(runtime_options) == plan.runtime_options_snapshot
+            and _json_snapshot(repeat_rule) == plan.repeat_rule_snapshot
+            and _json_snapshot(document.to_dict()) == plan.document_snapshot
+        )
 
     async def complete_success(
         self,
         handle: CanonicalPublicationDeliveryLeaseHandle,
         *,
+        plan: CanonicalPublicationDeliveryPlan,
         message_ids: Any,
         result_link: Any = None,
         finished_at: datetime | None = None,
@@ -165,6 +300,12 @@ class CanonicalPublicationDeliveryFinalizer:
                     outcome="invalid",
                 )
 
+        if not isinstance(plan, CanonicalPublicationDeliveryPlan):
+            return CanonicalPublicationDeliveryFinalizeResult(
+                publication_id=publication_id,
+                outcome="invalid",
+            )
+
         current = _utc(now)
         try:
             state = await self._locked_state(handle, at=current)
@@ -174,7 +315,20 @@ class CanonicalPublicationDeliveryFinalizer:
                     publication_id=publication_id,
                     outcome="conflict",
                 )
-            lease, publication, schedule, attempt = state
+            lease, publication, schedule, item, revision, channel, attempt = state
+            if not self._intent_matches(
+                plan,
+                publication=publication,
+                schedule=schedule,
+                item=item,
+                revision=revision,
+                channel=channel,
+            ):
+                await self.session.rollback()
+                return CanonicalPublicationDeliveryFinalizeResult(
+                    publication_id=publication_id,
+                    outcome="conflict",
+                )
 
             completed_at = _utc(finished_at or current)
             publication.status = "published"
@@ -221,7 +375,7 @@ class CanonicalPublicationDeliveryFinalizer:
                     publication_id=publication_id,
                     outcome="conflict",
                 )
-            lease, publication, schedule, attempt = state
+            lease, publication, schedule, _item, _revision, _channel, attempt = state
 
             completed_at = _utc(finished_at or current)
             publication.status = "failed"
