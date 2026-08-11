@@ -13,6 +13,7 @@ from app.domain.content import PostDocument
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import Channel
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
+from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
 from app.services.scheduling import as_utc
 
 
@@ -184,6 +185,8 @@ class CanonicalPublicationDeliveryPlanner:
         schedule_meta = _mapping(schedule.meta)
         repeat_rule = _mapping(schedule.repeat_rule)
         if publication_meta is None or schedule_meta is None or repeat_rule is None:
+            return None
+        if AUTODELETE_RUNTIME_META_KEY in publication_meta:
             return None
         runtime_options = _runtime_options(publication_meta, schedule_meta)
         if runtime_options is None:
