@@ -53,7 +53,8 @@ def _safe_nonrepeat(schedule: ScheduleEntry) -> bool:
     if raw_rule is not None and not isinstance(raw_rule, Mapping):
         return False
     rule = _mapping(raw_rule) or {}
-    return rule.get("enabled") in (None, False)
+    enabled = rule.get("enabled")
+    return enabled is None or enabled is False
 
 
 def _time_only_seconds(options: Mapping[str, Any]) -> int | None:
@@ -83,13 +84,13 @@ class CanonicalPublicationAutodeleteRuntimePlan:
 
 
 class CanonicalPublicationAutodeleteRuntimePlanner:
-    """Pure non-repeat time-based autodelete runtime proof.
+    """Pure canonical-only non-repeat time-based autodelete runtime proof.
 
-    Legacy non-repeat delivery schedules deletion from the actual successful send time.
-    Canonical delivery records that moment as ``PublicationAttempt.finished_at``. This
-    planner derives the same due instant from canonical runtime intent and refuses
-    repeat- or views-based semantics that the canonical autodelete worker does not yet
-    support.
+    Legacy-backed Publications keep using PublicationRuntimeProjector until their
+    compatibility transport is retired. Canonical-only delivery records the actual
+    successful send moment as ``PublicationAttempt.finished_at``; this planner derives
+    the same non-repeat due instant without allowing a second runtime writer to compete
+    with the legacy projection path.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -127,6 +128,7 @@ class CanonicalPublicationAutodeleteRuntimePlanner:
                 )
                 .where(
                     Publication.id == safe_publication_id,
+                    Publication.legacy_post_task_id.is_(None),
                     Publication.status == "published",
                     ScheduleEntry.status == "completed",
                     PublicationAttempt.status == "published",
