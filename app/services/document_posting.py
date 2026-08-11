@@ -136,9 +136,10 @@ class DocumentPostingService(PostingService):
     ) -> list[int]:
         """Send one canonical document with an optional runtime silent override.
 
-        ``None`` preserves the renderer/document value. A boolean explicitly overrides
-        that value for both classic payload dispatch and rich-message delivery, allowing
-        canonical runtime intent to remain outside the immutable content document.
+        ``None`` preserves each existing adapter path: classic keeps its historical
+        compatibility payload unchanged, while rich keeps the renderer's document-level
+        value. A boolean explicitly overrides delivery silence for either path so
+        canonical runtime intent can stay outside the immutable content document.
         """
         render_document = await self._resolve_media_assets(
             document,
