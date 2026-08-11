@@ -27,6 +27,9 @@ from app.services.canonical_publication_delivery_post_send import (
 from app.services.canonical_publication_delivery_runtime_capability import (
     parse_canonical_publication_delivery_runtime_capability,
 )
+from app.services.canonical_publication_owner_notification_policy import (
+    CanonicalPublicationOwnerNotificationPolicy,
+)
 
 
 class CanonicalPublicationDeliveryLiveAuxiliaryExecutorLike(Protocol):
@@ -62,6 +65,12 @@ class CanonicalPublicationDeliveryLiveAuxiliaryHook:
     primary ownership is live, this hook raises a blocking error so the already-sent
     primary delivery remains ambiguous for recovery instead of being finalized without
     its requested deletion timer.
+
+    When repeat owner policy enforcement is enabled, the final owner provider boundary
+    additionally requires the strict repeat-rule policy. This is deliberately checked
+    after the second live reauthorization so malformed/future repeat semantics can never
+    widen into an owner notification while admin/timer/post-actions keep their existing
+    independent behavior.
     """
 
     def __init__(
@@ -73,11 +82,13 @@ class CanonicalPublicationDeliveryLiveAuxiliaryHook:
         post_action_executor: CanonicalPublicationDeliveryLivePostActionExecutorLike
         | None = None,
         session_factory: async_sessionmaker[AsyncSession] = AsyncSessionLocal,
+        repeat_owner_policy_enforced: bool = False,
     ) -> None:
         self.executor = executor
         self.autodelete_writer = autodelete_writer
         self.post_action_executor = post_action_executor
         self.session_factory = session_factory
+        self.repeat_owner_policy_enforced = bool(repeat_owner_policy_enforced)
 
     async def _plan(
         self,
@@ -99,6 +110,24 @@ class CanonicalPublicationDeliveryLiveAuxiliaryHook:
         except (AttributeError, TypeError, ValueError):
             capability = None
         return bool(capability is not None and capability.time_autodelete_requested)
+
+    def _owner_notice_authorized(
+        self,
+        context: CanonicalPublicationDeliveryPostSendContext,
+    ) -> bool:
+        if not self.repeat_owner_policy_enforced:
+            return True
+        decision = CanonicalPublicationOwnerNotificationPolicy.decide(context.plan)
+        if decision.owner_notice_allowed:
+            return True
+        logger.info(
+            "Canonical live owner notice suppressed by repeat policy "
+            "publication_id={} outcome={} repeat_enabled={}",
+            int(context.publication_id),
+            str(decision.outcome),
+            bool(decision.repeat_enabled),
+        )
+        return False
 
     async def _materialize_autodelete(
         self,
@@ -215,7 +244,7 @@ class CanonicalPublicationDeliveryLiveAuxiliaryHook:
             )
             return
 
-        if second.owner_notice is not None:
+        if second.owner_notice is not None and self._owner_notice_authorized(context):
             owner_result = await self.executor.execute(
                 CanonicalPublicationDeliveryLiveAuxiliaryPlan(
                     publication_id=int(second.publication_id),
