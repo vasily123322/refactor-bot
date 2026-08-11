@@ -96,7 +96,7 @@ class CanonicalPublicationDeliveryLiveAuxiliaryHook:
             capability = parse_canonical_publication_delivery_runtime_capability(
                 context.plan.runtime_options()
             )
-        except (TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError):
             capability = None
         return bool(capability is not None and capability.time_autodelete_requested)
 
