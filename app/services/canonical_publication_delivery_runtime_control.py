@@ -30,16 +30,14 @@ async def start_canonical_publication_delivery_primary_if_enabled(
     recovery_worker: object | None,
     bot,
     session_factory: async_sessionmaker[AsyncSession] = AsyncSessionLocal,
+    time_autodelete_executor_available: bool = False,
 ) -> CanonicalPublicationDeliveryWorker | None:
-    """Start primary delivery only after recovery has successfully started.
+    """Start primary only after recovery and optional dependent executors are proven.
 
-    The caller passes the concrete recovery worker returned only after its awaited
-    ``start()`` completed. A missing object therefore fails closed before runtime
-    composition or provider-capable worker construction.
-
-    The polling worker receives a handoff-gated executor rather than the concrete
-    provider executor directly. Linked legacy rows must first commit the atomic
-    PostTask retirement seam; canonical-only rows delegate without a handoff write.
+    Recovery is mandatory for every enabled primary worker. Time-autodelete capability
+    is narrower: plain/silent/pin/forward delivery remains available without the delete
+    worker, while timer intent is admitted only when the caller passes the fact that the
+    canonical time-autodelete worker successfully started.
     """
 
     if not config.enabled:
@@ -56,6 +54,7 @@ async def start_canonical_publication_delivery_primary_if_enabled(
         session_factory=session_factory,
         lease_seconds=config.lease_ttl_seconds,
         heartbeat_interval_seconds=float(config.heartbeat_interval_seconds),
+        allow_time_autodelete=bool(time_autodelete_executor_available),
     )
     handoff_executor = CanonicalPublicationDeliveryHandoffExecutor(
         executor=runtime.executor,
