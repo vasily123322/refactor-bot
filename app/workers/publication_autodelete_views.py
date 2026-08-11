@@ -15,9 +15,9 @@ from app.services.publication_autodelete_lease import (
     PublicationAutodeleteLeaseHandle,
     PublicationAutodeleteLeaseService,
 )
-from app.services.publication_autodelete_views import (
-    PublicationAutodeleteViewsService,
-    PublicationAutodeleteViewsSyncConflict,
+from app.services.publication_autodelete_views import PublicationAutodeleteViewsSyncConflict
+from app.services.publication_autodelete_views_destructive import (
+    PublicationAutodeleteViewsDestructiveService,
 )
 from app.services.publication_autodelete_views_state import (
     PublicationAutodeleteViewStateService,
@@ -35,6 +35,7 @@ class PublicationAutodeleteViewsWorkerTick:
     deferred: int = 0
     not_due: int = 0
     ineligible: int = 0
+    ambiguous: int = 0
     retry: int = 0
     conflicts: int = 0
     failures: int = 0
@@ -53,9 +54,9 @@ class PublicationAutodeleteViewsWorker:
     """Bounded lease-backed orchestrator for views-based canonical deletion.
 
     Selection, ownership, destructive evaluation, optional ineligible backoff and lease
-    release all use separate sessions. Cancellation deliberately leaves ownership until
-    lease expiry so an ambiguous provider operation cannot be immediately duplicated by
-    another process.
+    release all use separate sessions. The exact acquired lease handle is passed into the
+    reserve-before-DELETE service. A committed reserved/unknown action therefore remains
+    the destructive replay barrier even after this scheduling lease is later released.
     """
 
     def __init__(
@@ -154,6 +155,7 @@ class PublicationAutodeleteViewsWorker:
         deferred = 0
         not_due = 0
         ineligible = 0
+        ambiguous = 0
         retry = 0
         conflicts = 0
         failures = 0
@@ -183,12 +185,13 @@ class PublicationAutodeleteViewsWorker:
 
             try:
                 async with self.session_factory() as operation_session:
-                    result = await PublicationAutodeleteViewsService(
+                    result = await PublicationAutodeleteViewsDestructiveService(
                         operation_session,
                         view_source=self.view_source,
                         delete_provider=self.delete_provider,
                         next_check_seconds=self.next_check_seconds,
                         allow_report=True,
+                        lease_handle=handle,
                     ).evaluate_and_delete(int(publication_id), now=current)
 
                 if result.outcome == "deleted":
@@ -223,10 +226,14 @@ class PublicationAutodeleteViewsWorker:
                                 int(publication_id),
                                 type(exc).__name__,
                             )
+                elif result.outcome == "ambiguous":
+                    ambiguous += 1
                 else:
                     retry += 1
             except asyncio.CancelledError:
-                # Keep ownership until expiry when transport outcome may be ambiguous.
+                # Keep the scheduling lease until expiry on cancellation. If Telegram was
+                # already invoked, the committed reserved action (or best-effort unknown)
+                # remains a permanent no-replay barrier independently of this lease.
                 release_after = False
                 raise
             except PublicationAutodeleteViewsSyncConflict:
@@ -266,6 +273,7 @@ class PublicationAutodeleteViewsWorker:
             deferred=deferred,
             not_due=not_due,
             ineligible=ineligible,
+            ambiguous=ambiguous,
             retry=retry,
             conflicts=conflicts,
             failures=failures,
@@ -277,6 +285,7 @@ class PublicationAutodeleteViewsWorker:
         tick = await self.run_once()
         if (
             tick.deleted
+            or tick.ambiguous
             or tick.retry
             or tick.conflicts
             or tick.failures
@@ -286,7 +295,7 @@ class PublicationAutodeleteViewsWorker:
             logger.info(
                 "Publication views autodelete: selected={} leased={} busy={} deleted={} "
                 "already_deleted={} below_threshold={} deferred={} not_due={} "
-                "ineligible={} retry={} conflicts={} failures={} "
+                "ineligible={} ambiguous={} retry={} conflicts={} failures={} "
                 "release_failures={} backoff_failures={}",
                 tick.selected,
                 tick.leased,
@@ -297,6 +306,7 @@ class PublicationAutodeleteViewsWorker:
                 tick.deferred,
                 tick.not_due,
                 tick.ineligible,
+                tick.ambiguous,
                 tick.retry,
                 tick.conflicts,
                 tick.failures,
