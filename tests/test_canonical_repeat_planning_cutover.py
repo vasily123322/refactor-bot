@@ -101,13 +101,13 @@ async def _successors(session, *, root_task_id: int) -> list[PostTask]:
     )
 
 
-def test_cutover_flag_is_default_off_and_requires_shadow_guard() -> None:
+def test_successful_cutover_flag_is_default_off_and_requires_shadow_guard() -> None:
     default = _settings()
     assert default.canonical_repeat_shadow_planning_enabled is False
-    assert default.canonical_repeat_transport_adapter_enabled is False
+    assert default.canonical_repeat_successful_planning_enabled is False
 
     unsafe = _settings(
-        CANONICAL_REPEAT_TRANSPORT_ADAPTER_ENABLED=True,
+        CANONICAL_REPEAT_SUCCESSFUL_PLANNING_ENABLED=True,
         CANONICAL_REPEAT_SHADOW_PLANNING_ENABLED=False,
     )
     with pytest.raises(
@@ -117,13 +117,13 @@ def test_cutover_flag_is_default_off_and_requires_shadow_guard() -> None:
         validate_runtime_configuration(unsafe)
 
     safe = _settings(
-        CANONICAL_REPEAT_TRANSPORT_ADAPTER_ENABLED=True,
+        CANONICAL_REPEAT_SUCCESSFUL_PLANNING_ENABLED=True,
         CANONICAL_REPEAT_SHADOW_PLANNING_ENABLED=True,
     )
     validate_runtime_configuration(safe)
 
 
-def test_enabled_cutover_creates_exactly_one_adapter_successor_without_legacy_duplicate(
+def test_enabled_successful_cutover_creates_one_adapter_successor_without_legacy_duplicate(
     tmp_path,
 ) -> None:
     async def run() -> None:
@@ -146,7 +146,7 @@ def test_enabled_cutover_creates_exactly_one_adapter_successor_without_legacy_du
                     session,
                     object(),
                     repeat_shadow_planning=True,
-                    repeat_transport_adapter=True,
+                    repeat_successful_planning=True,
                 )
                 await scheduler._schedule_next_repeat_if_needed(  # noqa: SLF001
                     session,
@@ -185,7 +185,7 @@ def test_enabled_cutover_creates_exactly_one_adapter_successor_without_legacy_du
     asyncio.run(run())
 
 
-def test_cutover_conflict_is_strict_and_never_falls_back_to_legacy_creator(
+def test_successful_cutover_conflict_never_falls_back_to_legacy_creator(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -222,7 +222,7 @@ def test_cutover_conflict_is_strict_and_never_falls_back_to_legacy_creator(
                     session,
                     object(),
                     repeat_shadow_planning=True,
-                    repeat_transport_adapter=True,
+                    repeat_successful_planning=True,
                 )
                 await scheduler._schedule_next_repeat_if_needed(  # noqa: SLF001
                     session,
@@ -236,7 +236,7 @@ def test_cutover_conflict_is_strict_and_never_falls_back_to_legacy_creator(
     asyncio.run(run())
 
 
-def test_disabled_cutover_preserves_legacy_creator(tmp_path) -> None:
+def test_disabled_successful_cutover_preserves_legacy_creator(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'repeat-cutover-disabled.db'}"
@@ -254,7 +254,7 @@ def test_disabled_cutover_preserves_legacy_creator(tmp_path) -> None:
                     session,
                     object(),
                     repeat_shadow_planning=False,
-                    repeat_transport_adapter=False,
+                    repeat_successful_planning=False,
                 )
                 await scheduler._schedule_next_repeat_if_needed(  # noqa: SLF001
                     session,
@@ -277,6 +277,47 @@ def test_disabled_cutover_preserves_legacy_creator(tmp_path) -> None:
                     child_publication.meta or {}
                 )
                 assert publication_id > 0
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_successful_cutover_does_not_intercept_overdue_recovery(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'repeat-cutover-overdue.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            _, task_id = await _seed_repeat(Session, seed=4)
+
+            async with Session() as session:
+                now = datetime.now(timezone.utc)
+                task = await session.get(PostTask, task_id)
+                assert task is not None
+                task.status = "pending"
+                task.scheduled_at = now - timedelta(hours=2)
+                await session.commit()
+
+                scheduler = Scheduler(
+                    session,
+                    object(),
+                    repeat_shadow_planning=True,
+                    repeat_successful_planning=True,
+                )
+                scheduler._boot_time = now  # noqa: SLF001 - recovery boundary
+                skipped = await scheduler._skip_overdue_repeat_and_schedule_next(  # noqa: SLF001
+                    session,
+                    task,
+                    dict(task.payload or {}),
+                )
+                assert skipped is True
+                children = await _successors(session, root_task_id=task_id)
+                assert len(children) == 1
+                assert children[0].dedupe_key is None
         finally:
             await engine.dispose()
 
