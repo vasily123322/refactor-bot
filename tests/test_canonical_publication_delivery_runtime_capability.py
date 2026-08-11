@@ -11,6 +11,7 @@ def test_runtime_capability_accepts_plain_silent_pin_and_ordered_forwards() -> N
     assert plain.silent is None
     assert plain.pin_on is False
     assert plain.forward_to == ()
+    assert plain.time_autodelete_requested is False
 
     full = parse_canonical_publication_delivery_runtime_capability(
         {
@@ -33,9 +34,45 @@ def test_runtime_capability_accepts_plain_silent_pin_and_ordered_forwards() -> N
     assert explicit_false.forward_silent is False
 
 
-def test_runtime_capability_rejects_unknown_types_duplicates_and_unbounded_fanout() -> None:
+def test_runtime_capability_accepts_time_autodelete_with_legacy_effective_precedence() -> None:
+    base = parse_canonical_publication_delivery_runtime_capability(
+        {"autodelete_seconds": 90, "autodelete_report": True}
+    )
+    assert base is not None
+    assert base.time_autodelete_seconds == 90
+    assert base.time_autodelete_requested is True
+    assert base.autodelete_report is True
+
+    effective = parse_canonical_publication_delivery_runtime_capability(
+        {
+            "silent": True,
+            "pin_on": True,
+            "forward_to": [7],
+            "autodelete_seconds": 90,
+            "autodelete_effective_seconds": 120,
+            "autodelete_views": 0,
+            "autodelete_report": False,
+        }
+    )
+    assert effective is not None
+    assert effective.time_autodelete_seconds == 120
+    assert effective.autodelete_report is False
+
+    neutral = parse_canonical_publication_delivery_runtime_capability(
+        {
+            "autodelete_seconds": 0,
+            "autodelete_effective_seconds": "0",
+            "autodelete_views": False,
+            "autodelete_report": False,
+        }
+    )
+    assert neutral is not None
+    assert neutral.time_autodelete_requested is False
+
+
+def test_runtime_capability_rejects_unknown_malformed_views_and_report_without_timer() -> None:
     invalid = [
-        {"autodelete_seconds": 10},
+        {"future_side_effect": True},
         {"silent": 1},
         {"pin_on": 1},
         {"forward_to": None},
@@ -44,6 +81,13 @@ def test_runtime_capability_rejects_unknown_types_duplicates_and_unbounded_fanou
         {"forward_to": [0]},
         {"forward_to": [-1]},
         {"forward_to": list(range(1, 102))},
+        {"autodelete_seconds": "later"},
+        {"autodelete_seconds": -1},
+        {"autodelete_effective_seconds": -1},
+        {"autodelete_views": 10},
+        {"autodelete_views": "many"},
+        {"autodelete_report": 1},
+        {"autodelete_report": True},
     ]
     for options in invalid:
         assert parse_canonical_publication_delivery_runtime_capability(options) is None
