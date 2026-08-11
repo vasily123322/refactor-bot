@@ -93,6 +93,10 @@ async def _legacy_recover(
         dict(task.payload or {}),
     )
     assert skipped is True
+    # The real PublicationScheduler runtime projects the terminal source after the
+    # base scheduler returns. Exercise that post-processing boundary too so the
+    # verifier sees the same canonical skipped audit as production.
+    await scheduler._project_publication(session, task)  # noqa: SLF001
 
 
 def test_verifier_tracks_real_legacy_recovery_and_survives_source_transport_retirement(
