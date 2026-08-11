@@ -32,6 +32,7 @@ def test_safe_repeat_runtime_needs_both_continuation_and_owner_policy() -> None:
     )
     assert isinstance(blocked.executor, CanonicalPublicationSafeRepeatDeliveryExecutor)
     assert blocked.executor.allow_repeat is False
+    assert blocked.post_send_hook.repeat_owner_policy_enforced is False
 
     allowed = build_canonical_publication_safe_repeat_runtime(
         bot=bot,
@@ -41,6 +42,8 @@ def test_safe_repeat_runtime_needs_both_continuation_and_owner_policy() -> None:
     )
     assert isinstance(allowed.executor, CanonicalPublicationSafeRepeatDeliveryExecutor)
     assert allowed.executor.allow_repeat is True
+    assert allowed.post_send_hook.repeat_owner_policy_enforced is True
+    assert allowed.executor.post_send_hook is allowed.post_send_hook
 
     no_continuation = build_canonical_publication_safe_repeat_runtime(
         bot=bot,
@@ -49,6 +52,7 @@ def test_safe_repeat_runtime_needs_both_continuation_and_owner_policy() -> None:
         repeat_owner_policy_enforced=True,
     )
     assert no_continuation.executor.allow_repeat is False
+    assert no_continuation.post_send_hook.repeat_owner_policy_enforced is True
 
 
 def test_safe_repeat_runtime_preserves_nonrepeat_delete_dependency_flags() -> None:
