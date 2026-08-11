@@ -83,7 +83,7 @@ class Scheduler(PublicationScheduler):
         self,
         *args,
         repeat_shadow_planning: bool | None = None,
-        repeat_transport_adapter: bool | None = None,
+        repeat_successful_planning: bool | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -92,10 +92,10 @@ class Scheduler(PublicationScheduler):
             if repeat_shadow_planning is None
             else bool(repeat_shadow_planning)
         )
-        self._repeat_transport_adapter = (
-            bool(settings.canonical_repeat_transport_adapter_enabled)
-            if repeat_transport_adapter is None
-            else bool(repeat_transport_adapter)
+        self._repeat_successful_planning = (
+            bool(settings.canonical_repeat_successful_planning_enabled)
+            if repeat_successful_planning is None
+            else bool(repeat_successful_planning)
         )
 
     @staticmethod
@@ -219,7 +219,7 @@ class Scheduler(PublicationScheduler):
                 type(exc).__name__,
             )
 
-    async def _cutover_repeat_materialize(
+    async def _successful_repeat_materialize(
         self,
         session: AsyncSession,
         *,
@@ -232,8 +232,9 @@ class Scheduler(PublicationScheduler):
             )
             if result.outcome in {"created", "existing", "existing_transport"}:
                 logger.info(
-                    "Scheduler: canonical repeat cutover handled source_publication_id={} "
-                    "post_id={} outcome={} successor_publication_id={} successor_post_id={}",
+                    "Scheduler: canonical successful repeat planning handled "
+                    "source_publication_id={} post_id={} outcome={} "
+                    "successor_publication_id={} successor_post_id={}",
                     int(source_publication_id),
                     int(post_id),
                     result.outcome,
@@ -242,8 +243,8 @@ class Scheduler(PublicationScheduler):
                 )
                 return True
             logger.error(
-                "Scheduler: canonical repeat cutover blocked source_publication_id={} "
-                "post_id={} outcome={}",
+                "Scheduler: canonical successful repeat planning blocked "
+                "source_publication_id={} post_id={} outcome={}",
                 int(source_publication_id),
                 int(post_id),
                 result.outcome,
@@ -259,8 +260,8 @@ class Scheduler(PublicationScheduler):
             raise
         except Exception as exc:
             logger.error(
-                "Scheduler: canonical repeat cutover failed source_publication_id={} "
-                "post_id={} type={}",
+                "Scheduler: canonical successful repeat planning failed "
+                "source_publication_id={} post_id={} type={}",
                 int(source_publication_id),
                 int(post_id),
                 type(exc).__name__,
@@ -273,7 +274,10 @@ class Scheduler(PublicationScheduler):
         post: PostTask,
         pl: dict,
     ) -> None:
-        if self._repeat_transport_adapter:
+        # This cutover covers only the normal transition after a successful publication.
+        # Overdue and boot recovery still use their dedicated legacy paths until the
+        # canonical recovery planner is proven in a separate migration stage.
+        if self._repeat_successful_planning:
             expected_at = self._shadow_repeat_expected_at(post, pl)
             if expected_at is None:
                 return
@@ -284,11 +288,12 @@ class Scheduler(PublicationScheduler):
             )
             if source_publication_id is None:
                 logger.error(
-                    "Scheduler: canonical repeat cutover could not reserve post_id={}",
+                    "Scheduler: canonical successful repeat planning could not reserve "
+                    "post_id={}",
                     int(post.id),
                 )
                 return
-            handled = await self._cutover_repeat_materialize(
+            handled = await self._successful_repeat_materialize(
                 session,
                 source_publication_id=source_publication_id,
                 post_id=int(post.id),
@@ -299,7 +304,8 @@ class Scheduler(PublicationScheduler):
                     source_publication_id=source_publication_id,
                     post_id=int(post.id),
                 )
-            # Strict cutover: never invoke the legacy creator after a canonical attempt.
+            # Strict successful-transition cutover: never invoke the legacy creator
+            # after a canonical materialization attempt.
             return
 
         if not self._repeat_shadow_planning:
