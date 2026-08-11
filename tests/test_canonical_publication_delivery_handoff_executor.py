@@ -39,29 +39,39 @@ class _DelegateResult:
 
 
 class _Delegate:
+    holder = "atomic-handoff-unit"
+    lease_seconds = 120
+    allow_time_autodelete = False
+
     def __init__(self, events: list[str]) -> None:
         self.events = events
         self.calls: list[int] = []
+        self.claim_calls: list[object] = []
 
     async def execute(self, publication_id: int):
-        self.events.append("delegate")
+        self.events.append("delegate-id")
         self.calls.append(int(publication_id))
         return _DelegateResult("published")
 
+    async def execute_claim(self, claim):
+        self.events.append("delegate-claim")
+        self.claim_calls.append(claim)
+        return _DelegateResult("published")
 
-def test_handoff_executor_delegates_canonical_only_without_handoff(monkeypatch) -> None:
+
+def test_handoff_executor_delegates_canonical_only_without_atomic_transfer(monkeypatch) -> None:
     async def run() -> None:
         events: list[str] = []
         delegate = _Delegate(events)
 
-        class UnexpectedHandoff:
+        class UnexpectedAtomicTransfer:
             def __init__(self, session) -> None:
                 raise AssertionError("canonical-only delivery must not construct handoff")
 
         monkeypatch.setattr(
             module,
-            "CanonicalPublicationLegacyTransportHandoffService",
-            UnexpectedHandoff,
+            "CanonicalPublicationAtomicHandoffClaimService",
+            UnexpectedAtomicTransfer,
         )
         wrapper = CanonicalPublicationDeliveryHandoffExecutor(
             executor=delegate,
@@ -74,28 +84,32 @@ def test_handoff_executor_delegates_canonical_only_without_handoff(monkeypatch) 
 
         assert result.outcome == "published"
         assert delegate.calls == [41]
-        assert events == ["delegate"]
+        assert delegate.claim_calls == []
+        assert events == ["delegate-id"]
 
     asyncio.run(run())
 
 
-def test_handoff_executor_commits_linked_handoff_before_delegate(monkeypatch) -> None:
+def test_handoff_executor_executes_only_committed_atomic_claim(monkeypatch) -> None:
     async def run() -> None:
         events: list[str] = []
         delegate = _Delegate(events)
+        claim = object()
+        captured: dict[str, object] = {}
 
-        class SuccessfulHandoff:
+        class SuccessfulAtomicTransfer:
             def __init__(self, session) -> None:
                 pass
 
-            async def retire_for_canonical_delivery(self, publication_id: int):
-                events.append("handoff")
-                return SimpleNamespace(outcome="retired")
+            async def claim_linked(self, publication_id: int, **kwargs):
+                events.append("atomic-claim")
+                captured.update(kwargs)
+                return SimpleNamespace(outcome="claimed", claim=claim)
 
         monkeypatch.setattr(
             module,
-            "CanonicalPublicationLegacyTransportHandoffService",
-            SuccessfulHandoff,
+            "CanonicalPublicationAtomicHandoffClaimService",
+            SuccessfulAtomicTransfer,
         )
         wrapper = CanonicalPublicationDeliveryHandoffExecutor(
             executor=delegate,
@@ -107,30 +121,36 @@ def test_handoff_executor_commits_linked_handoff_before_delegate(monkeypatch) ->
         result = await wrapper.execute(42)
 
         assert result.outcome == "published"
-        assert delegate.calls == [42]
-        assert events == ["handoff", "delegate"]
+        assert delegate.calls == []
+        assert delegate.claim_calls == [claim]
+        assert events == ["atomic-claim", "delegate-claim"]
+        assert captured == {
+            "holder": "atomic-handoff-unit",
+            "ttl_seconds": 120,
+            "allow_time_autodelete": False,
+        }
 
     asyncio.run(run())
 
 
-def test_handoff_executor_blocks_delegate_on_any_nonretired_handoff(monkeypatch) -> None:
+def test_handoff_executor_blocks_delegate_on_nonclaimed_atomic_transfer(monkeypatch) -> None:
     async def run() -> None:
-        for handoff_outcome in ("contention", "conflict", "ineligible"):
+        for transfer_outcome in ("contention", "conflict", "ineligible"):
             events: list[str] = []
             delegate = _Delegate(events)
 
-            class BlockedHandoff:
+            class BlockedAtomicTransfer:
                 def __init__(self, session) -> None:
                     pass
 
-                async def retire_for_canonical_delivery(self, publication_id: int):
-                    events.append("handoff")
-                    return SimpleNamespace(outcome=handoff_outcome)
+                async def claim_linked(self, publication_id: int, **kwargs):
+                    events.append("atomic-claim")
+                    return SimpleNamespace(outcome=transfer_outcome, claim=None)
 
             monkeypatch.setattr(
                 module,
-                "CanonicalPublicationLegacyTransportHandoffService",
-                BlockedHandoff,
+                "CanonicalPublicationAtomicHandoffClaimService",
+                BlockedAtomicTransfer,
             )
             wrapper = CanonicalPublicationDeliveryHandoffExecutor(
                 executor=delegate,
@@ -142,30 +162,31 @@ def test_handoff_executor_blocks_delegate_on_any_nonretired_handoff(monkeypatch)
             result = await wrapper.execute(43)
 
             assert result.outcome == "ineligible"
-            assert result.handoff_outcome == handoff_outcome
+            assert result.handoff_outcome == transfer_outcome
             assert delegate.calls == []
-            assert events == ["handoff"]
+            assert delegate.claim_calls == []
+            assert events == ["atomic-claim"]
 
     asyncio.run(run())
 
 
-def test_handoff_executor_propagates_cancellation_without_delegate(monkeypatch) -> None:
+def test_handoff_executor_claim_unavailable_is_lease_lost_not_retryable(monkeypatch) -> None:
     async def run() -> None:
         events: list[str] = []
         delegate = _Delegate(events)
 
-        class CancelledHandoff:
+        class UnavailableAtomicTransfer:
             def __init__(self, session) -> None:
                 pass
 
-            async def retire_for_canonical_delivery(self, publication_id: int):
-                events.append("handoff")
-                raise asyncio.CancelledError
+            async def claim_linked(self, publication_id: int, **kwargs):
+                events.append("atomic-claim")
+                return SimpleNamespace(outcome="claim_unavailable", claim=None)
 
         monkeypatch.setattr(
             module,
-            "CanonicalPublicationLegacyTransportHandoffService",
-            CancelledHandoff,
+            "CanonicalPublicationAtomicHandoffClaimService",
+            UnavailableAtomicTransfer,
         )
         wrapper = CanonicalPublicationDeliveryHandoffExecutor(
             executor=delegate,
@@ -174,15 +195,51 @@ def test_handoff_executor_propagates_cancellation_without_delegate(monkeypatch) 
             ),  # type: ignore[arg-type]
         )
 
+        result = await wrapper.execute(44)
+        assert result.outcome == "lease_lost"
+        assert result.handoff_outcome == "claim_unavailable"
+        assert delegate.calls == []
+        assert delegate.claim_calls == []
+        assert events == ["atomic-claim"]
+
+    asyncio.run(run())
+
+
+def test_handoff_executor_propagates_atomic_transfer_cancellation(monkeypatch) -> None:
+    async def run() -> None:
+        events: list[str] = []
+        delegate = _Delegate(events)
+
+        class CancelledAtomicTransfer:
+            def __init__(self, session) -> None:
+                pass
+
+            async def claim_linked(self, publication_id: int, **kwargs):
+                events.append("atomic-claim")
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(
+            module,
+            "CanonicalPublicationAtomicHandoffClaimService",
+            CancelledAtomicTransfer,
+        )
+        wrapper = CanonicalPublicationDeliveryHandoffExecutor(
+            executor=delegate,
+            session_factory=_session_factory(
+                SimpleNamespace(legacy_post_task_id=9004)
+            ),  # type: ignore[arg-type]
+        )
+
         try:
-            await wrapper.execute(44)
+            await wrapper.execute(45)
         except asyncio.CancelledError:
             pass
         else:
-            raise AssertionError("handoff cancellation must propagate")
+            raise AssertionError("atomic handoff cancellation must propagate")
 
         assert delegate.calls == []
-        assert events == ["handoff"]
+        assert delegate.claim_calls == []
+        assert events == ["atomic-claim"]
 
     asyncio.run(run())
 
@@ -196,10 +253,11 @@ def test_handoff_executor_missing_publication_is_ineligible() -> None:
             session_factory=_session_factory(None),  # type: ignore[arg-type]
         )
 
-        result = await wrapper.execute(45)
+        result = await wrapper.execute(46)
 
         assert result.outcome == "ineligible"
         assert result.handoff_outcome == "missing_publication"
         assert delegate.calls == []
+        assert delegate.claim_calls == []
 
     asyncio.run(run())
