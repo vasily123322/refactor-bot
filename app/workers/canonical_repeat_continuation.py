@@ -108,7 +108,7 @@ class CanonicalRepeatContinuationWorker:
     async def stop(self) -> None:
         await self._loop.stop()
 
-    async def _select(self) -> tuple[list[int], int, bool]:
+    async def _select(self) -> tuple[list[int], int, int, bool]:
         after_id = int(self._cursor or 0)
         async with self.session_factory() as session:
             rows = (
@@ -144,17 +144,24 @@ class CanonicalRepeatContinuationWorker:
             ).all()
 
         ids: list[int] = []
+        scanned = 0
+        next_cursor = after_id
+        batch_full = False
         for publication, schedule, attempt in rows:
+            scanned += 1
+            next_cursor = int(publication.id)
             if not _canonical_attempt(attempt) or not _repeat_enabled(schedule):
                 continue
             ids.append(int(publication.id))
             if len(ids) >= self.batch_size:
+                batch_full = True
                 break
 
-        scanned = len(rows)
-        next_cursor = int(rows[-1][0].id) if rows else after_id
-        done = scanned < self.scan_limit
-        return ids, next_cursor, done
+        # If we stopped because the eligible batch filled, unread rows from this fetched
+        # page must remain reachable on the next scan. Otherwise the page is exhausted;
+        # reset only when the database itself returned fewer than scan_limit rows.
+        done = not batch_full and len(rows) < self.scan_limit
+        return ids, scanned, next_cursor, done
 
     async def _verify(self, publication_id: int):
         async with self.session_factory() as session:
@@ -210,7 +217,7 @@ class CanonicalRepeatContinuationWorker:
         now: datetime | None = None,
     ) -> CanonicalRepeatContinuationTick:
         current = as_utc(now or datetime.now(timezone.utc))
-        publication_ids, next_cursor, done = await self._select()
+        publication_ids, scanned, next_cursor, done = await self._select()
         counts = {
             "reserved": 0,
             "materialized": 0,
@@ -248,7 +255,7 @@ class CanonicalRepeatContinuationWorker:
 
         self._cursor = None if done else next_cursor
         return CanonicalRepeatContinuationTick(
-            scanned=(0 if not publication_ids and next_cursor == int(self._cursor or 0) else max(len(publication_ids), 0)),
+            scanned=scanned,
             eligible=len(publication_ids),
             cursor_reset=done,
             **counts,
@@ -258,8 +265,10 @@ class CanonicalRepeatContinuationWorker:
         tick = await self.run_once()
         if tick.materialized or tick.conflicts or tick.failures:
             logger.info(
-                "Canonical repeat continuation: eligible={} reserved={} materialized={} "
-                "already_complete={} ineligible={} conflicts={} failures={} cursor_reset={}",
+                "Canonical repeat continuation: scanned={} eligible={} reserved={} "
+                "materialized={} already_complete={} ineligible={} conflicts={} "
+                "failures={} cursor_reset={}",
+                tick.scanned,
                 tick.eligible,
                 tick.reserved,
                 tick.materialized,
