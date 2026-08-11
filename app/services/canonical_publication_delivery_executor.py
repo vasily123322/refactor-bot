@@ -22,6 +22,7 @@ from app.services.canonical_publication_delivery_finalizer import (
     CanonicalPublicationDeliveryFinalizer,
 )
 from app.services.canonical_publication_delivery_post_send import (
+    CanonicalPublicationDeliveryPostSendBlockingError,
     CanonicalPublicationDeliveryPostSendContext,
     CanonicalPublicationDeliveryPostSendHook,
 )
@@ -56,15 +57,13 @@ class CanonicalPublicationDeliveryExecutor:
     """Execute one supported canonical delivery slice with live-lease auxiliaries.
 
     Runtime execution requires physical legacy transport retirement inside the atomic
-    claim transaction. Canonical planning/candidate discovery remain PostTask-independent,
-    but this concrete executor cannot compete with the still-authoritative legacy
-    Scheduler while ``Publication.legacy_post_task_id`` is present.
+    claim transaction. Optional time-autodelete authority is additionally gated by the
+    concrete runtime's proven delete-worker availability.
 
-    The current canonical-only non-repeat capability accepts explicit ``silent``, pin,
-    and forward intent through the locked capability claim. Forward Channel destinations
-    are resolved and durably snapshotted before this executor receives an executable
-    lease; live post-send actions then require the same snapshot and durable no-retry
-    reservations before any secondary Telegram provider call.
+    Once the primary provider returns message ids, requested timer materialization is a
+    required post-send semantic. A blocking post-send failure never finalizes success:
+    the exact `sending + lease` claim remains for expiry recovery, preventing both silent
+    timer loss and automatic primary resend after an ambiguous provider side effect.
     """
 
     def __init__(
@@ -77,12 +76,14 @@ class CanonicalPublicationDeliveryExecutor:
         holder: str = "canonical-publication-delivery",
         lease_seconds: int = 180,
         heartbeat_interval_seconds: float = 45.0,
+        allow_time_autodelete: bool = False,
     ) -> None:
         self.session_factory = session_factory
         self.sender = sender
         self.result_link_resolver = result_link_resolver
         self.post_send_hook = post_send_hook
         self.holder = str(holder).strip()[:64] or "canonical-publication-delivery"
+        self.allow_time_autodelete = bool(allow_time_autodelete)
         try:
             parsed_lease_seconds = int(lease_seconds)
         except (TypeError, ValueError, OverflowError):
@@ -111,6 +112,7 @@ class CanonicalPublicationDeliveryExecutor:
                 holder=self.holder,
                 ttl_seconds=self.lease_seconds,
                 now=now,
+                allow_time_autodelete=self.allow_time_autodelete,
             )
 
     async def _heartbeat(
@@ -208,6 +210,8 @@ class CanonicalPublicationDeliveryExecutor:
             await self.post_send_hook.execute(context)
             return False
         except asyncio.CancelledError:
+            raise
+        except CanonicalPublicationDeliveryPostSendBlockingError:
             raise
         except Exception as exc:
             logger.warning(
@@ -316,6 +320,21 @@ class CanonicalPublicationDeliveryExecutor:
         except asyncio.CancelledError:
             await self._stop_heartbeat(heartbeat, stop)
             raise
+        except CanonicalPublicationDeliveryPostSendBlockingError as exc:
+            logger.warning(
+                "Canonical publication required post-send semantics blocked terminal success "
+                "publication_id={} error_type={}",
+                safe_publication_id,
+                type(exc).__name__,
+            )
+            await self._stop_heartbeat(heartbeat, stop)
+            return CanonicalPublicationDeliveryExecutionResult(
+                safe_publication_id,
+                "lease_lost",
+                message_ids=tuple(ids),
+                result_link=result_link,
+                post_send_hook_failed=True,
+            )
 
         await self._stop_heartbeat(heartbeat, stop)
         if lost.is_set():
