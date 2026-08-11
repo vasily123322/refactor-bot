@@ -227,10 +227,10 @@ def test_repeat_views_or_report_remain_ineligible(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_partial_retry_does_not_mark_deleted_until_every_message_resolves(tmp_path) -> None:
+def test_ambiguous_provider_result_is_never_replayed(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'canonical-autodelete-retry.db'}"
+            f"sqlite+aiosqlite:///{tmp_path / 'canonical-autodelete-ambiguity.db'}"
         )
         try:
             async with engine.begin() as connection:
@@ -247,26 +247,25 @@ def test_partial_retry_does_not_mark_deleted_until_every_message_resolves(tmp_pa
                 result = await PublicationAutodeleteService(
                     session, provider=first
                 ).delete_if_due(publication_id, now=now)
-                assert result.outcome == "retry"
-                assert result.deleted_count == 1
-                assert result.retryable_count == 1
+
+            assert result.outcome == "ambiguous"
+            assert result.deleted_count == 1
+            assert result.ambiguous_count == 1
+            assert first.calls == [(-10078001, 98001), (-10078001, 98002)]
 
             async with Session() as session:
                 publication = await session.get(Publication, publication_id)
                 assert publication is not None
                 assert publication.meta[AUTODELETE_RUNTIME_META_KEY]["deleted"] is False
 
-            second = FakeProvider(
-                {98001: DeleteUnavailable("message to delete not found")}
-            )
+            replay = FakeProvider()
             async with Session() as session:
                 result = await PublicationAutodeleteService(
-                    session, provider=second
+                    session, provider=replay
                 ).delete_if_due(publication_id, now=now + timedelta(minutes=1))
 
-            assert result.outcome == "deleted"
-            assert result.deleted_count == 1
-            assert result.unavailable_count == 1
+            assert result.outcome == "ambiguous"
+            assert replay.calls == []
         finally:
             await engine.dispose()
 

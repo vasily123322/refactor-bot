@@ -120,6 +120,7 @@ def test_worker_deletes_due_publication_and_releases_lease(tmp_path) -> None:
             assert tick.selected == 1
             assert tick.leased == 1
             assert tick.deleted == 1
+            assert tick.ambiguous == 0
             assert tick.failures == 0
             assert tick.release_failures == 0
             assert provider.calls == [(chat_id, 99101), (chat_id, 99102)]
@@ -184,10 +185,10 @@ def test_worker_skips_active_lease_without_provider_call(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_worker_retry_releases_lease_and_preserves_pending_runtime(tmp_path) -> None:
+def test_worker_ambiguous_releases_lease_and_preserves_pending_runtime(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'autodelete-worker-retry.db'}"
+            f"sqlite+aiosqlite:///{tmp_path / 'autodelete-worker-ambiguous.db'}"
         )
         try:
             async with engine.begin() as connection:
@@ -209,7 +210,8 @@ def test_worker_retry_releases_lease_and_preserves_pending_runtime(tmp_path) -> 
             tick = await worker.run_once()
 
             assert tick.leased == 1
-            assert tick.retry == 1
+            assert tick.retry == 0
+            assert tick.ambiguous == 1
             assert tick.deleted == 0
             assert tick.release_failures == 0
             async with Session() as session:

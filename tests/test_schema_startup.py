@@ -60,12 +60,10 @@ def test_unmanaged_database_uses_legacy_initializer(tmp_path) -> None:
             )
             assert state.managed is False
             assert state.current_heads == ()
-            assert state.expected_heads == ("20260811_0005",)
+            assert state.expected_heads == ("20260812_0006",)
             assert state.at_head is False
             assert calls == 1
 
-            # The transitional unmanaged path keeps its historical semantics. FK
-            # enforcement is adopted only after the DB is Alembic-managed and audited.
             async with engine.connect() as connection:
                 enabled = await connection.exec_driver_sql("PRAGMA foreign_keys")
                 assert int(enabled.scalar_one() or 0) == 0
@@ -136,7 +134,7 @@ def test_managed_database_at_head_skips_runtime_schema_initializer(tmp_path) -> 
             inspected = await inspect_alembic_schema(engine)
             assert inspected.managed is True
             assert inspected.at_head is True
-            assert inspected.current_heads == ("20260811_0005",)
+            assert inspected.current_heads == ("20260812_0006",)
 
             state = await bootstrap_database_schema(
                 engine,
@@ -168,7 +166,7 @@ def test_managed_database_behind_head_fails_closed_before_initializer(tmp_path) 
         try:
             with pytest.raises(
                 DatabaseSchemaOutOfDate,
-                match=r"current=20260809_0001, expected=20260811_0005",
+                match=r"current=20260809_0001, expected=20260812_0006",
             ):
                 await bootstrap_database_schema(
                     engine,
@@ -233,8 +231,6 @@ def test_managed_sqlite_with_existing_foreign_key_violation_fails_closed(
         database_path = tmp_path / "managed-dirty-fk.db"
         _upgrade(repo_root, database_path, "head")
 
-        # sqlite3 starts with FK enforcement disabled, matching historical app
-        # connections. Seed one orphan row to prove startup audits before enabling.
         with sqlite3.connect(database_path) as connection:
             connection.execute(
                 """
