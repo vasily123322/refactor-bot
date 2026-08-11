@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -15,6 +16,9 @@ from app.services.canonical_publication_delivery_atomic_handoff_claim import (
 )
 from app.services.canonical_publication_delivery_claim import (
     CanonicalPublicationDeliveryClaim,
+)
+from app.services.canonical_publication_linked_forward_atomic_handoff import (
+    CanonicalPublicationLinkedForwardAtomicHandoffService,
 )
 
 
@@ -37,18 +41,25 @@ class CanonicalPublicationDeliveryHandoffExecutionResult:
     handoff_outcome: str
 
 
+def _publication_requests_forward(publication: Publication) -> bool:
+    meta = publication.meta
+    if not isinstance(meta, Mapping):
+        return False
+    runtime_options = meta.get("runtime_options")
+    return isinstance(runtime_options, Mapping) and "forward_to" in runtime_options
+
+
 class CanonicalPublicationDeliveryHandoffExecutor:
     """Execute canonical-only rows directly and linked rows via atomic authority transfer.
 
-    For a linked row, legacy transport retirement and the canonical `sending + attempt +
-    delivery lease` claim share one database transaction. There is no committed
-    transport-free `queued` window between handoff and claim.
+    Linked plain/silent/pin/time profiles use the established atomic handoff service.
+    Linked rows whose canonical queue-time intent contains `forward_to` are routed through
+    the dedicated forward coordinator, which requires #239 legacy/canonical parity and
+    locks the exact destination Channels before sharing the capability claim transaction.
 
-    Only the resulting committed exact claim is passed to provider execution. If the
-    capability claim returns no executable handle, durable state is classified before
-    choosing the wrapper outcome: a complete rollback is ordinary `claim_rejected`,
-    while every partial/already-committed state is `claim_unavailable` and remains
-    recovery-owned/non-retryable.
+    If capability claim returns no executable handle, durable state is classified before
+    choosing the wrapper outcome: complete rollback is ordinary `claim_rejected`; every
+    partial/already-committed state is `claim_unavailable` and remains recovery-owned.
     """
 
     def __init__(
@@ -79,19 +90,29 @@ class CanonicalPublicationDeliveryHandoffExecutor:
                     handoff_outcome="missing_publication",
                 )
             linked = publication.legacy_post_task_id is not None
+            forward_requested = linked and _publication_requests_forward(publication)
 
         if not linked:
             return await self.executor.execute(safe_publication_id)
 
         async with self.session_factory() as session:
-            transfer = await CanonicalPublicationAtomicHandoffClaimService(
-                session
-            ).claim_linked(
-                safe_publication_id,
-                holder=str(self.executor.holder),
-                ttl_seconds=int(self.executor.lease_seconds),
-                allow_time_autodelete=bool(self.executor.allow_time_autodelete),
-            )
+            if forward_requested:
+                transfer = await CanonicalPublicationLinkedForwardAtomicHandoffService(
+                    session
+                ).claim_linked_forward(
+                    safe_publication_id,
+                    holder=str(self.executor.holder),
+                    ttl_seconds=int(self.executor.lease_seconds),
+                )
+            else:
+                transfer = await CanonicalPublicationAtomicHandoffClaimService(
+                    session
+                ).claim_linked(
+                    safe_publication_id,
+                    holder=str(self.executor.holder),
+                    ttl_seconds=int(self.executor.lease_seconds),
+                    allow_time_autodelete=bool(self.executor.allow_time_autodelete),
+                )
 
         if transfer.outcome == "claim_unavailable":
             task_id = transfer.legacy_post_task_id
