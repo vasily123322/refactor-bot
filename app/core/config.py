@@ -42,6 +42,12 @@ class Settings(BaseSettings):
         default=False,
         alias="CANONICAL_REPEAT_SUCCESSFUL_PLANNING_ENABLED",
     )
+    # Independent default-off shadow observer for one overdue repeat occurrence.
+    # Boot group cleanup remains on the legacy path until separately proven.
+    canonical_repeat_overdue_recovery_shadow_enabled: bool = Field(
+        default=False,
+        alias="CANONICAL_REPEAT_OVERDUE_RECOVERY_SHADOW_ENABLED",
+    )
 
     # Opt-in cleanup for canonicalized unsuccessful legacy scheduler rows.
     post_task_retention_enabled: bool = Field(
