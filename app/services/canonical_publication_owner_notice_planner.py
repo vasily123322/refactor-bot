@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -23,12 +24,19 @@ def _as_utc(value: datetime | None = None) -> datetime:
     return current.astimezone(timezone.utc)
 
 
+def _mapping(value) -> dict | None:
+    if not isinstance(value, Mapping):
+        return None
+    return dict(value)
+
+
 def _safe_nonrepeat(rule) -> bool:
     if rule is None:
         return True
-    if not isinstance(rule, dict):
+    if not isinstance(rule, Mapping):
         return False
-    return rule.get("enabled") in (None, False, 0)
+    normalized = dict(rule)
+    return normalized.get("enabled") in (None, False, 0)
 
 
 def _local_time(current: datetime, tz_code: str | None) -> datetime:
@@ -62,7 +70,13 @@ class CanonicalPublicationOwnerNoticePlan:
 
 
 class CanonicalPublicationOwnerNoticePlanner:
-    """Pure canonical proof for the historical non-repeat published owner notice."""
+    """Pure proof for one canonical-origin historical non-repeat owner notice.
+
+    Transport retirement alone is not authority to replay historical notifications.
+    Only a Publication whose latest terminal attempt was created by canonical delivery
+    is eligible, preventing old legacy publications from producing a second owner notice
+    after PostTask retention clears the compatibility foreign key.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -109,6 +123,7 @@ class CanonicalPublicationOwnerNoticePlanner:
                 .join(Client, Client.id == Channel.owner_id)
                 .where(
                     Publication.id == safe_publication_id,
+                    Publication.legacy_post_task_id.is_(None),
                     Publication.status == "published",
                     ScheduleEntry.status == "completed",
                     PublicationAttempt.status == "published",
@@ -119,6 +134,9 @@ class CanonicalPublicationOwnerNoticePlanner:
         if row is None:
             return None
         publication, schedule, attempt, channel, owner = row
+        attempt_meta = _mapping(attempt.meta)
+        if attempt_meta is None or attempt_meta.get("canonical_delivery") is not True:
+            return None
         if not _safe_nonrepeat(schedule.repeat_rule):
             return None
 
@@ -137,7 +155,12 @@ class CanonicalPublicationOwnerNoticePlanner:
                 )
             )
         ).scalar_one_or_none()
-        filters = dict(getattr(settings, "filters", {}) or {}) if settings else {}
+        if settings is None:
+            filters: dict = {}
+        else:
+            filters = _mapping(getattr(settings, "filters", None))
+            if filters is None:
+                return None
         raw_tz = filters.get("tz")
         tz_code = str(raw_tz).strip() if raw_tz else "UTC"
         current = _as_utc(at)
