@@ -186,8 +186,8 @@ class CanonicalPublicationDeliveryActionLedger:
         current = _utc(now)
 
         try:
-            state = await self._live_lifecycle(handle, at=current)
-            if state is None:
+            lifecycle = await self._live_lifecycle(handle, at=current)
+            if lifecycle is None:
                 await self.session.rollback()
                 return CanonicalPublicationDeliveryActionReserveResult(outcome="ineligible")
 
@@ -203,14 +203,17 @@ class CanonicalPublicationDeliveryActionLedger:
                 )
             ).scalar_one_or_none()
             if existing is not None:
+                existing_action = str(existing.action_type)
+                existing_fingerprint = str(existing.intent_fingerprint)
+                existing_state = str(existing.state)
                 await self.session.rollback()
                 exact = (
-                    str(existing.action_type) == action
-                    and str(existing.intent_fingerprint) == fingerprint
+                    existing_action == action
+                    and existing_fingerprint == fingerprint
                 )
                 return CanonicalPublicationDeliveryActionReserveResult(
                     outcome="already_reserved" if exact else "conflict",
-                    existing_state=str(existing.state),
+                    existing_state=existing_state,
                 )
 
             reservation = CanonicalPublicationDeliveryActionReservation(
