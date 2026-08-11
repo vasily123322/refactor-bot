@@ -64,12 +64,15 @@ def build_canonical_publication_delivery_runtime(
     lease_seconds: int = 180,
     heartbeat_interval_seconds: float = 45.0,
     allow_time_autodelete: bool = False,
+    allow_views_autodelete: bool = False,
 ) -> CanonicalPublicationDeliveryRuntime:
     """Compose canonical delivery dependencies without starting provider-capable work.
 
     Construction is side-effect free. The live timer writer is always composed so a
     timer-capable runtime has the required durable boundary, but timer authority remains
     separately controlled by `allow_time_autodelete` inside the locked primary claim.
+    Views authority is independently controlled by `allow_views_autodelete`; its indexed
+    threshold is staged inside the claim transaction rather than through this hook.
     """
 
     sender = DocumentPostingService(bot, session_factory)
@@ -97,6 +100,7 @@ def build_canonical_publication_delivery_runtime(
         lease_seconds=lease_seconds,
         heartbeat_interval_seconds=heartbeat_interval_seconds,
         allow_time_autodelete=allow_time_autodelete,
+        allow_views_autodelete=allow_views_autodelete,
     )
     return CanonicalPublicationDeliveryRuntime(
         executor=executor,
