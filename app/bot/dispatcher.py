@@ -32,8 +32,10 @@ from app.core.runtime_configuration import (
 )
 from app.core.schema import bootstrap_database_schema
 from app.services.canonical_publication_delivery_runtime_control import (
-    start_canonical_publication_delivery_primary_if_enabled,
     stop_canonical_publication_delivery_workers,
+)
+from app.services.canonical_publication_safe_repeat_runtime_control import (
+    start_canonical_publication_safe_repeat_primary_if_enabled,
 )
 from app.services.document_posting import DocumentPostingService as PostingService
 from app.services.external_bots import ExternalBotsManager
@@ -121,13 +123,14 @@ async def _start_canonical_publication_delivery_workers(
     *,
     time_autodelete_executor_available: bool = False,
     views_autodelete_executor_available: bool = False,
+    repeat_continuation_executor_available: bool = False,
 ):
     recovery_worker = (
         await _start_canonical_publication_delivery_recovery_worker_if_enabled()
     )
     try:
         primary_worker = (
-            await start_canonical_publication_delivery_primary_if_enabled(
+            await start_canonical_publication_safe_repeat_primary_if_enabled(
                 config=primary_config,
                 recovery_worker=recovery_worker,
                 bot=bot,
@@ -138,6 +141,10 @@ async def _start_canonical_publication_delivery_workers(
                 views_autodelete_executor_available=(
                     views_autodelete_executor_available
                 ),
+                repeat_continuation_available=(
+                    repeat_continuation_executor_available
+                ),
+                repeat_owner_policy_enforced=True,
             )
         )
     except BaseException:
@@ -314,6 +321,9 @@ async def run_bot() -> None:
             time_autodelete_executor_available=publication_autodelete is not None,
             views_autodelete_executor_available=(
                 publication_autodelete_views is not None
+            ),
+            repeat_continuation_executor_available=bool(
+                scheduler.repeat_continuation_available
             ),
         )
 
