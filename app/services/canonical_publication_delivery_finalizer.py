@@ -34,11 +34,13 @@ def _utc(value: datetime | None = None) -> datetime:
 
 
 class CanonicalPublicationDeliveryFinalizer:
-    """Finalize one claimed canonical Publication under its exact delivery lease.
+    """Finalize one claimed canonical Publication under its exact live delivery lease.
 
     This service owns only durable canonical lifecycle state. It performs no Telegram
     calls and does not read or write ``PostTask``. Exact lease-token matching prevents
-    a stale worker from committing after recovery has taken ownership.
+    a stale worker from committing after recovery has taken ownership. An expired lease
+    is also a hard barrier: ambiguous delivery is resolved only after recovery takes a
+    fresh token through ``CanonicalPublicationDeliveryClaimService.take_expired()``.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -47,6 +49,8 @@ class CanonicalPublicationDeliveryFinalizer:
     async def _locked_state(
         self,
         handle: CanonicalPublicationDeliveryLeaseHandle,
+        *,
+        at: datetime,
     ) -> tuple[
         PublicationDeliveryLease,
         Publication,
@@ -60,12 +64,14 @@ class CanonicalPublicationDeliveryFinalizer:
         if publication_id <= 0 or not str(handle.lease_token):
             return None
 
+        current = _utc(at)
         lease = (
             await self.session.execute(
                 select(PublicationDeliveryLease)
                 .where(
                     PublicationDeliveryLease.publication_id == publication_id,
                     PublicationDeliveryLease.lease_token == str(handle.lease_token),
+                    PublicationDeliveryLease.expires_at > current,
                 )
                 .with_for_update()
             )
@@ -136,6 +142,7 @@ class CanonicalPublicationDeliveryFinalizer:
         message_ids: Any,
         result_link: Any = None,
         finished_at: datetime | None = None,
+        now: datetime | None = None,
     ) -> CanonicalPublicationDeliveryFinalizeResult:
         try:
             publication_id = int(handle.publication_id)
@@ -158,8 +165,9 @@ class CanonicalPublicationDeliveryFinalizer:
                     outcome="invalid",
                 )
 
+        current = _utc(now)
         try:
-            state = await self._locked_state(handle)
+            state = await self._locked_state(handle, at=current)
             if state is None:
                 await self.session.rollback()
                 return CanonicalPublicationDeliveryFinalizeResult(
@@ -168,7 +176,7 @@ class CanonicalPublicationDeliveryFinalizer:
                 )
             lease, publication, schedule, attempt = state
 
-            completed_at = _utc(finished_at)
+            completed_at = _utc(finished_at or current)
             publication.status = "published"
             publication.telegram_message_ids = list(ids)
             publication.result_link = normalized_link
@@ -196,15 +204,17 @@ class CanonicalPublicationDeliveryFinalizer:
         *,
         error: Any = SAFE_DELIVERY_ERROR,
         finished_at: datetime | None = None,
+        now: datetime | None = None,
     ) -> CanonicalPublicationDeliveryFinalizeResult:
         try:
             publication_id = int(handle.publication_id)
         except (TypeError, ValueError, OverflowError):
             publication_id = 0
         safe_error = public_scheduler_error(error)
+        current = _utc(now)
 
         try:
-            state = await self._locked_state(handle)
+            state = await self._locked_state(handle, at=current)
             if state is None:
                 await self.session.rollback()
                 return CanonicalPublicationDeliveryFinalizeResult(
@@ -213,7 +223,7 @@ class CanonicalPublicationDeliveryFinalizer:
                 )
             lease, publication, schedule, attempt = state
 
-            completed_at = _utc(finished_at)
+            completed_at = _utc(finished_at or current)
             publication.status = "failed"
             publication.telegram_message_ids = None
             publication.result_link = None
