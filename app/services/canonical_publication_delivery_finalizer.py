@@ -12,6 +12,13 @@ from app.domain.publishing.models import Publication, PublicationAttempt, Schedu
 from app.services.canonical_publication_delivery_claim import (
     CanonicalPublicationDeliveryLeaseHandle,
 )
+from app.services.canonical_publication_delivery_planner import (
+    CanonicalPublicationDeliveryPlan,
+)
+from app.services.canonical_publication_delivery_runtime import (
+    CanonicalPublicationDeliveryRuntimeConflict,
+    apply_canonical_delivery_success_runtime,
+)
 from app.services.scheduler_errors import SAFE_DELIVERY_ERROR, public_scheduler_error
 from app.services.telegram_results import (
     normalize_telegram_message_ids,
@@ -141,6 +148,7 @@ class CanonicalPublicationDeliveryFinalizer:
         *,
         message_ids: Any,
         result_link: Any = None,
+        plan: CanonicalPublicationDeliveryPlan | None = None,
         finished_at: datetime | None = None,
         now: datetime | None = None,
     ) -> CanonicalPublicationDeliveryFinalizeResult:
@@ -177,6 +185,21 @@ class CanonicalPublicationDeliveryFinalizer:
             lease, publication, schedule, attempt = state
 
             completed_at = _utc(finished_at or current)
+            if plan is not None:
+                try:
+                    apply_canonical_delivery_success_runtime(
+                        publication,
+                        schedule,
+                        plan,
+                        delivered_at=completed_at,
+                    )
+                except CanonicalPublicationDeliveryRuntimeConflict:
+                    await self.session.rollback()
+                    return CanonicalPublicationDeliveryFinalizeResult(
+                        publication_id=publication_id,
+                        outcome="conflict",
+                    )
+
             publication.status = "published"
             publication.telegram_message_ids = list(ids)
             publication.result_link = normalized_link
