@@ -100,6 +100,8 @@ def test_bridge_root_repeat_proves_fixed_delay_lineage_without_payload_group_id(
             assert proof.root_occurrence is True
             assert proof.pin_on is False
             assert proof.forward_channel_ids == ()
+            assert proof.views_autodelete_threshold is None
+            assert proof.autodelete_report is False
         finally:
             await engine.dispose()
 
@@ -203,6 +205,7 @@ def test_repeat_pin_parity_requires_exact_legacy_pin_intent(tmp_path) -> None:
             assert proof.pin_on is True
             assert proof.repeat_seconds == 60
             assert proof.forward_channel_ids == ()
+            assert proof.views_autodelete_threshold is None
 
             async with Session() as session:
                 task = await session.get(PostTask, task_id)
@@ -218,18 +221,92 @@ def test_repeat_pin_parity_requires_exact_legacy_pin_intent(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_repeat_effect_scope_still_rejects_delete_modes(tmp_path) -> None:
+def test_repeat_views_parity_requires_exact_threshold(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'repeat-effect-scope.db'}"
+            f"sqlite+aiosqlite:///{tmp_path / 'repeat-views-parity.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            publication_id, task_id, plan = await _seed_root(
+                Session,
+                seed=5,
+                runtime_options={"silent": True, "autodelete_views": 17},
+            )
+
+            proof = await _prove(Session, publication_id, task_id, plan)
+            assert proof is not None
+            assert proof.views_autodelete_threshold == 17
+            assert proof.autodelete_report is False
+            assert proof.pin_on is False
+            assert proof.forward_channel_ids == ()
+
+            async with Session() as session:
+                task = await session.get(PostTask, task_id)
+                assert task is not None
+                payload = dict(task.payload or {})
+                payload["autodelete_views"] = 18
+                task.payload = payload
+                await session.commit()
+
+            assert await _prove(Session, publication_id, task_id, plan) is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_repeat_views_report_requires_exact_legacy_parity(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'repeat-views-report-parity.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            publication_id, task_id, plan = await _seed_root(
+                Session,
+                seed=6,
+                runtime_options={"autodelete_views": 9, "autodelete_report": True},
+            )
+
+            proof = await _prove(Session, publication_id, task_id, plan)
+            assert proof is not None
+            assert proof.views_autodelete_threshold == 9
+            assert proof.autodelete_report is True
+
+            async with Session() as session:
+                task = await session.get(PostTask, task_id)
+                assert task is not None
+                payload = dict(task.payload or {})
+                payload["autodelete_report"] = False
+                task.payload = payload
+                await session.commit()
+
+            assert await _prove(Session, publication_id, task_id, plan) is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_repeat_views_parity_keeps_compositions_and_time_outside_stage(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'repeat-views-scope.db'}"
         )
         try:
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             cases = [
-                (6, {"autodelete_seconds": 60}),
-                (7, {"autodelete_views": 5}),
+                (7, {"autodelete_seconds": 60}),
+                (8, {"autodelete_seconds": 60, "autodelete_views": 5}),
+                (9, {"pin_on": True, "autodelete_views": 5}),
+                (10, {"forward_to": [999], "autodelete_views": 5}),
             ]
             for seed, options in cases:
                 publication_id, task_id, plan = await _seed_root(
@@ -238,6 +315,37 @@ def test_repeat_effect_scope_still_rejects_delete_modes(tmp_path) -> None:
                     runtime_options=options,
                 )
                 assert await _prove(Session, publication_id, task_id, plan) is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_repeat_views_generated_execution_evidence_blocks_parity(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'repeat-views-generated-state.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            publication_id, task_id, plan = await _seed_root(
+                Session,
+                seed=11,
+                runtime_options={"autodelete_views": 12},
+            )
+            assert await _prove(Session, publication_id, task_id, plan) is not None
+
+            async with Session() as session:
+                task = await session.get(PostTask, task_id)
+                assert task is not None
+                payload = dict(task.payload or {})
+                payload["autodelete_at"] = datetime.now(timezone.utc).isoformat()
+                task.payload = payload
+                await session.commit()
+
+            assert await _prove(Session, publication_id, task_id, plan) is None
         finally:
             await engine.dispose()
 
@@ -253,7 +361,7 @@ def test_repeat_generated_result_evidence_blocks_parity(tmp_path) -> None:
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
-            publication_id, task_id, plan = await _seed_root(Session, seed=9)
+            publication_id, task_id, plan = await _seed_root(Session, seed=12)
             async with Session() as session:
                 task = await session.get(PostTask, task_id)
                 assert task is not None

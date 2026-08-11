@@ -23,7 +23,9 @@ from app.services.scheduling import as_utc
 
 
 _NEUTRAL_NUMBER_VALUES = (None, False, 0, "0", "")
-_REPEAT_FORWARD_RUNTIME_KEYS = frozenset({"silent", "pin_on", "forward_to"})
+_REPEAT_RUNTIME_KEYS = frozenset(
+    {"silent", "pin_on", "forward_to", "autodelete_views", "autodelete_report"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +37,8 @@ class CanonicalPublicationLinkedRepeatParityProof:
     root_occurrence: bool
     pin_on: bool = False
     forward_channel_ids: tuple[int, ...] = ()
+    views_autodelete_threshold: int | None = None
+    autodelete_report: bool = False
 
 
 def _positive_int(value: Any) -> int | None:
@@ -62,16 +66,14 @@ def _repeat_rule(plan: CanonicalPublicationDeliveryPlan) -> tuple[int, dict[str,
     return seconds, deepcopy(rule)
 
 
-def _repeat_forward_runtime_options(
+def _repeat_runtime_options(
     plan: CanonicalPublicationDeliveryPlan,
-) -> tuple[dict[str, Any], tuple[int, ...]] | None:
+) -> tuple[dict[str, Any], tuple[int, ...], int | None, bool] | None:
     try:
         options = plan.runtime_options()
     except (TypeError, ValueError):
         return None
-    if not isinstance(options, dict) or not set(options).issubset(
-        _REPEAT_FORWARD_RUNTIME_KEYS
-    ):
+    if not isinstance(options, dict) or not set(options).issubset(_REPEAT_RUNTIME_KEYS):
         return None
     if "silent" in options and type(options.get("silent")) is not bool:
         return None
@@ -82,7 +84,20 @@ def _repeat_forward_runtime_options(
     if capability is None:
         return None
     forward_ids = tuple(int(channel_id) for channel_id in capability.forward_to)
-    return deepcopy(options), forward_ids
+    views_threshold = capability.views_autodelete_threshold
+    report = bool(capability.autodelete_report)
+
+    if views_threshold is not None:
+        # Views is introduced as one independent repeat parity slice first. Compositions
+        # with pin/forward remain fail-closed until their own lifecycle/replay proofs.
+        if bool(capability.pin_on) or forward_ids:
+            return None
+    elif "autodelete_report" in options:
+        # The generic parser already rejects report-without-trigger. Keep this explicit
+        # here so future parser evolution cannot silently give report independent meaning.
+        return None
+
+    return deepcopy(options), forward_ids, views_threshold, report
 
 
 def _canonical_group_id(
@@ -131,18 +146,48 @@ def _legacy_forward_ids(payload: Mapping[str, Any]) -> tuple[int, ...] | None:
     return tuple(normalized)
 
 
+def _legacy_views_intent_matches(
+    payload: Mapping[str, Any],
+    runtime_options: Mapping[str, Any],
+    *,
+    threshold: int | None,
+    report: bool,
+) -> bool:
+    if threshold is None:
+        return True
+
+    if (
+        "autodelete_views" not in payload
+        or payload.get("autodelete_views") != runtime_options.get("autodelete_views")
+        or _positive_int(payload.get("autodelete_views")) != threshold
+    ):
+        return False
+
+    if "autodelete_report" in runtime_options:
+        if (
+            type(payload.get("autodelete_report")) is not bool
+            or payload.get("autodelete_report") is not report
+        ):
+            return False
+    elif payload.get("autodelete_report") not in (None, False):
+        return False
+
+    # This stage intentionally does not prove any time-autodelete semantics.
+    if payload.get("autodelete_seconds") not in _NEUTRAL_NUMBER_VALUES:
+        return False
+    return True
+
+
 class CanonicalPublicationLinkedRepeatParityService:
     """Read-only proof for pristine fixed-delay linked repeat handoff.
 
-    The proof can now compose the already-proven optional pin and ordered forward intents,
-    plus optional explicit silent, when every legacy/canonical field matches exactly.
-    Forward target IDs remain exact ordered internal Channel IDs, and pin intent remains
-    exact rather than inferred. Both delete modes and unknown effects remain outside this
-    proof.
+    Already-proven pin and ordered-forward intents may compose with each other. Views
+    autodelete is now recognized only as a separate plain/silent repeat slice with exact
+    threshold/report legacy parity and pristine generated state. Views+pin/forward and all
+    time-autodelete semantics remain outside this proof.
 
-    This is parity only. The strict repeat capability claim remains an independent
-    authority barrier and still rejects pin+forward until a separate authority/replay PR
-    deliberately widens that composition.
+    This is parity only. The strict repeat capability claim still excludes every views
+    runtime key, and the destructive views worker remains independently non-repeat-only.
     """
 
     def prove(
@@ -183,12 +228,12 @@ class CanonicalPublicationLinkedRepeatParityService:
         if dict(schedule_rule) != {"enabled": True, "seconds": repeat_seconds}:
             return None
 
-        runtime_profile = _repeat_forward_runtime_options(plan)
+        runtime_profile = _repeat_runtime_options(plan)
         current = _mapping(task.payload)
         expected = _expected_transport_payload(plan)
         if runtime_profile is None or current is None or expected is None:
             return None
-        runtime_options, forward_ids = runtime_profile
+        runtime_options, forward_ids, views_threshold, autodelete_report = runtime_profile
         if any(key in current for key in _FORBIDDEN_EPHEMERAL_KEYS):
             return None
         if not _identity_markers_match(current, publication=publication, plan=plan):
@@ -207,6 +252,13 @@ class CanonicalPublicationLinkedRepeatParityService:
 
         legacy_forward_ids = _legacy_forward_ids(current)
         if legacy_forward_ids is None or legacy_forward_ids != forward_ids:
+            return None
+        if not _legacy_views_intent_matches(
+            current,
+            runtime_options,
+            threshold=views_threshold,
+            report=autodelete_report,
+        ):
             return None
 
         if current.get("repeat_on") is not True:
@@ -227,7 +279,7 @@ class CanonicalPublicationLinkedRepeatParityService:
             if task_group is None or task_group != group_id:
                 return None
 
-        # Remove only effects whose exact parity was proven above. Hidden delete or
+        # Remove only effects whose exact parity was proven above. Hidden time/delete or
         # unknown effects remain visible and fail the established immutable comparison.
         current_clean = deepcopy(current)
         for key in _IDENTITY_MARKERS:
@@ -240,6 +292,9 @@ class CanonicalPublicationLinkedRepeatParityService:
             "forward_to",
         ):
             current_clean.pop(key, None)
+        if views_threshold is not None:
+            current_clean.pop("autodelete_views", None)
+            current_clean.pop("autodelete_report", None)
         stripped_current = _strip_neutral_effect_fields(current_clean)
         stripped_expected = _strip_neutral_effect_fields(deepcopy(expected))
         if (
@@ -257,4 +312,6 @@ class CanonicalPublicationLinkedRepeatParityService:
             root_occurrence=root_occurrence,
             pin_on=pin_on,
             forward_channel_ids=forward_ids,
+            views_autodelete_threshold=views_threshold,
+            autodelete_report=autodelete_report,
         )
