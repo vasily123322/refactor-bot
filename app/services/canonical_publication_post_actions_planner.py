@@ -84,12 +84,18 @@ class CanonicalPublicationPostDeliveryActionPlan:
 
 
 class CanonicalPublicationPostDeliveryActionPlanner:
-    """Pure proof for legacy-compatible best-effort pin/forward actions.
+    """Pure proof for canonical best-effort pin/forward actions.
 
     Historical scheduler pin and forward actions do not decide whether primary
-    publication succeeded; provider failures are suppressed. Canonical execution can
-    therefore run the same actions after durable terminal success. This planner reads
-    only canonical Publication/Schedule/Attempt/Channel state and never ``PostTask``.
+    publication succeeded; provider failures are suppressed. This planner is deliberately
+    narrower than historical backfill: it plans actions only for a transport-retired
+    Publication whose latest terminal attempt was created by canonical delivery. That
+    authority boundary prevents replaying old legacy pin/forward intent after PostTask
+    retention has merely cleared ``legacy_post_task_id``.
+
+    The returned plan is a one-shot primitive, not a retry token. Forwarding is not
+    idempotent, so any future coordinator must execute it inside the live canonical
+    delivery lifecycle or add durable completion identity before retries are allowed.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -128,6 +134,7 @@ class CanonicalPublicationPostDeliveryActionPlanner:
                 .join(Channel, Channel.id == Publication.channel_id)
                 .where(
                     Publication.id == safe_publication_id,
+                    Publication.legacy_post_task_id.is_(None),
                     Publication.status == "published",
                     ScheduleEntry.status == "completed",
                     PublicationAttempt.status == "published",
@@ -138,6 +145,10 @@ class CanonicalPublicationPostDeliveryActionPlanner:
         if row is None:
             return None
         publication, schedule, attempt, source_channel = row
+        if _mapping(attempt.meta) is None or dict(attempt.meta or {}).get(
+            "canonical_delivery"
+        ) is not True:
+            return None
 
         publication_ids = normalize_telegram_message_ids(publication.telegram_message_ids)
         attempt_ids = normalize_telegram_message_ids(attempt.telegram_message_ids)
@@ -169,8 +180,6 @@ class CanonicalPublicationPostDeliveryActionPlanner:
             for channel_id in forward_ids:
                 target = by_id.get(int(channel_id))
                 if target is None:
-                    # Legacy silently skipped missing targets. The canonical planner is
-                    # stricter: unresolved configured identity is not a proven action.
                     return None
                 forward_targets.append(
                     CanonicalPublicationForwardTarget(
