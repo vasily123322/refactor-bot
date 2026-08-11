@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from sqlalchemy import and_, select
@@ -28,7 +29,12 @@ class CanonicalPublicationAdminLogPlan:
 
 
 class CanonicalPublicationAdminLogPlanner:
-    """Pure canonical proof for optional post-publication admin logging."""
+    """Pure proof for one canonical-origin optional post-publication admin log.
+
+    PostTask retention must never become a replay trigger for historical legacy logs.
+    The planner therefore requires a transport-retired Publication whose latest terminal
+    attempt was explicitly created by canonical delivery.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -79,10 +85,12 @@ class CanonicalPublicationAdminLogPlanner:
                     and_(
                         ContentItem.id == Publication.content_item_id,
                         ContentItem.channel_id == Publication.channel_id,
+                        ContentItem.kind == "post",
                     ),
                 )
                 .where(
                     Publication.id == safe_publication_id,
+                    Publication.legacy_post_task_id.is_(None),
                     Publication.status == "published",
                     ScheduleEntry.status == "completed",
                     PublicationAttempt.status == "published",
@@ -93,6 +101,10 @@ class CanonicalPublicationAdminLogPlanner:
         if row is None:
             return None
         publication, _schedule, attempt, channel, item = row
+        if not isinstance(attempt.meta, Mapping) or dict(attempt.meta).get(
+            "canonical_delivery"
+        ) is not True:
+            return None
 
         publication_ids = normalize_telegram_message_ids(publication.telegram_message_ids)
         attempt_ids = normalize_telegram_message_ids(attempt.telegram_message_ids)
