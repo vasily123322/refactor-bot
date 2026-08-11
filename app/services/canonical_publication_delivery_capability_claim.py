@@ -10,29 +10,23 @@ from app.services.canonical_publication_delivery_claim import (
 from app.services.canonical_publication_delivery_planner import (
     CanonicalPublicationDeliveryPlanner,
 )
-
-
-_SILENT_RUNTIME_KEY = "silent"
+from app.services.canonical_publication_delivery_runtime_capability import (
+    parse_canonical_publication_delivery_runtime_capability,
+    resolve_canonical_publication_delivery_forward_targets,
+)
 
 
 class CanonicalPublicationDeliveryCapabilityClaimService(
     CanonicalPublicationDeliveryClaimService
 ):
-    """Concrete claim profile for the current plain + explicit silent slice.
+    """Concrete claim profile for plain/silent/pin/forward canonical delivery.
 
-    Generic canonical claim remains transport/capability agnostic. This concrete layer
-    locks the same proof set first, verifies runtime options are either empty or exactly
-    `silent: bool`, then invokes the existing atomic claim while those locks are still
-    held. Unknown/effectful runtime keys therefore fail before `queued -> sending`.
+    Generic canonical claim remains capability agnostic. This layer locks the same
+    mutable delivery rows before authority transition, parses the exact supported
+    runtime profile, and resolves every forward target while the claim transaction is
+    still open. Unsupported intent or target drift therefore fails before
+    ``queued -> sending``, attempt creation, lease insertion, or provider execution.
     """
-
-    @staticmethod
-    def _runtime_supported(options: dict) -> bool:
-        if not options:
-            return True
-        if set(options) != {_SILENT_RUNTIME_KEY}:
-            return False
-        return type(options.get(_SILENT_RUNTIME_KEY)) is bool
 
     async def claim_supported(
         self,
@@ -54,7 +48,6 @@ class CanonicalPublicationDeliveryCapabilityClaimService(
         if locked is None:
             await self.session.rollback()
             return None
-        publication, _ = locked
 
         plan = await CanonicalPublicationDeliveryPlanner(self.session).plan(
             safe_publication_id,
@@ -68,12 +61,24 @@ class CanonicalPublicationDeliveryCapabilityClaimService(
         except (TypeError, ValueError):
             await self.session.rollback()
             return None
-        if not self._runtime_supported(options):
+        capability = parse_canonical_publication_delivery_runtime_capability(options)
+        if capability is None:
             await self.session.rollback()
             return None
 
-        # The underlying claim re-runs planner proof and the remaining restrictions
-        # under the same still-open transaction/row locks before committing authority.
+        # Resolve and lock target rows before primary authority is committed. Missing
+        # targets or duplicate Telegram destinations must not become post-send surprises.
+        targets = await resolve_canonical_publication_delivery_forward_targets(
+            self.session,
+            capability,
+            lock=True,
+        )
+        if targets is None:
+            await self.session.rollback()
+            return None
+
+        # The underlying claim re-runs canonical planner proof and remaining lifecycle
+        # restrictions under the same still-open transaction/row locks before commit.
         return await super().claim(
             publication_id=safe_publication_id,
             holder=holder,
