@@ -25,14 +25,16 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
     time_autodelete_executor_available: bool = False,
     views_autodelete_executor_available: bool = False,
     repeat_continuation_available: bool = False,
+    repeat_views_executor_available: bool = False,
     repeat_owner_policy_enforced: bool = False,
 ) -> CanonicalPublicationDeliveryWorker | None:
-    """Start a repeat-aware primary only after every authority dependency is explicit.
+    """Start repeat-aware primary only from concrete successfully started dependencies.
 
-    Recovery remains mandatory for the primary itself. Repeat is narrower: both the
-    continuation worker and the repeat-aware owner-notification hook must be proven before
-    the strict runtime receives `allow_repeat=True`. The two-factor gate avoids treating
-    an implementation prerequisite as equivalent to behavioral parity.
+    Recovery remains mandatory for the primary itself. Repeat requires continuation plus
+    owner-policy enforcement. Repeat+views is a narrower composition: it is forwarded to
+    the strict runtime only when the caller proves the repeat-capable destructive views
+    worker actually started in addition to ordinary views availability and continuation.
+    Config values alone never create this fact.
     """
 
     if not config.enabled:
@@ -43,14 +45,20 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
             "canonical publication delivery requires a successfully started recovery worker"
         )
 
+    repeat_available = bool(repeat_continuation_available)
+    views_available = bool(views_autodelete_executor_available)
+    repeat_views_available = bool(
+        repeat_views_executor_available and repeat_available and views_available
+    )
     runtime = build_canonical_publication_safe_repeat_runtime(
         bot=bot,
         session_factory=session_factory,
         lease_seconds=config.lease_ttl_seconds,
         heartbeat_interval_seconds=float(config.heartbeat_interval_seconds),
         allow_time_autodelete=bool(time_autodelete_executor_available),
-        allow_views_autodelete=bool(views_autodelete_executor_available),
-        allow_repeat=bool(repeat_continuation_available),
+        allow_views_autodelete=views_available,
+        allow_repeat=repeat_available,
+        allow_repeat_views=repeat_views_available,
         repeat_owner_policy_enforced=bool(repeat_owner_policy_enforced),
     )
     handoff_executor = CanonicalPublicationRepeatHandoffExecutor(

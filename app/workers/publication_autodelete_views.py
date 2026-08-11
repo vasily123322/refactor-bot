@@ -57,6 +57,10 @@ class PublicationAutodeleteViewsWorker:
     release all use separate sessions. The exact acquired lease handle is passed into the
     reserve-before-DELETE service. A committed reserved/unknown action therefore remains
     the destructive replay barrier even after this scheduling lease is later released.
+
+    Repeat evaluation is an independent construction-time authority fact. It defaults
+    off and is only passed into the destructive service when startup has already proven
+    the continuation dependency that makes repeat successor recovery available.
     """
 
     def __init__(
@@ -70,6 +74,7 @@ class PublicationAutodeleteViewsWorker:
         lease_ttl_seconds: int = DEFAULT_PUBLICATION_AUTODELETE_LEASE_SECONDS,
         next_check_seconds: int = 60,
         ineligible_backoff_seconds: int = 300,
+        allow_repeat_views: bool = False,
     ) -> None:
         self.view_source = view_source
         self.delete_provider = delete_provider
@@ -80,6 +85,7 @@ class PublicationAutodeleteViewsWorker:
         self.ineligible_backoff_seconds = max(
             30, min(int(ineligible_backoff_seconds), 3600)
         )
+        self.allow_repeat_views = bool(allow_repeat_views)
         self._holder = f"publication-autodelete-views-{uuid.uuid4().hex[:16]}"
         self._loop = PollingLoop(
             interval_seconds=max(30, int(interval_seconds)),
@@ -191,6 +197,7 @@ class PublicationAutodeleteViewsWorker:
                         delete_provider=self.delete_provider,
                         next_check_seconds=self.next_check_seconds,
                         allow_report=True,
+                        allow_repeat_views=self.allow_repeat_views,
                         lease_handle=handle,
                     ).evaluate_and_delete(int(publication_id), now=current)
 
