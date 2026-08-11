@@ -198,6 +198,7 @@ def test_live_timer_materialization_matches_terminal_runtime_and_is_not_prematur
                 assert claim is not None
 
             primary_finished_at = claim_at + timedelta(seconds=2)
+            materialization_at = claim_at + timedelta(seconds=3)
             context = CanonicalPublicationDeliveryPostSendContext(
                 publication_id=publication_id,
                 lease=claim.lease,
@@ -210,11 +211,13 @@ def test_live_timer_materialization_matches_terminal_runtime_and_is_not_prematur
                 writer = CanonicalPublicationDeliveryLiveAutodeleteWriter(session)
                 created = await writer.materialize(
                     context,
-                    at=claim_at + timedelta(seconds=3),
+                    at=materialization_at,
                 )
                 assert created.outcome == "created"
 
-            expected_due = primary_finished_at + timedelta(seconds=90)
+            expected_due = materialization_at + timedelta(seconds=90)
+            earliest_due = primary_finished_at + timedelta(seconds=90)
+            assert expected_due > earliest_due
             async with Session() as session:
                 publication = await session.get(Publication, publication_id)
                 assert publication is not None
@@ -231,9 +234,6 @@ def test_live_timer_materialization_matches_terminal_runtime_and_is_not_prematur
                 )
                 assert repeated.outcome == "existing"
 
-                # Generated runtime may exist while primary ownership is still live, but
-                # the mature destructive selector requires terminal `published` and must
-                # not expose this row to the delete worker yet.
                 before_terminal = await PublicationAutodeleteCandidateSelector(
                     session
                 ).select_batch(limit=200)
