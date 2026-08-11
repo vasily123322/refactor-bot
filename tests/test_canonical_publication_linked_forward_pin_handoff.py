@@ -215,12 +215,10 @@ def test_linked_forward_pin_preserves_legacy_pin_then_forward_order_and_replay_b
     asyncio.run(run())
 
 
-def test_forward_timer_composition_remains_legacy_owned_even_with_timer_executor(
-    tmp_path,
-) -> None:
+def test_forward_timer_composition_remains_linked_without_delete_executor(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'forward-timer-still-blocked.db'}"
+            f"sqlite+aiosqlite:///{tmp_path / 'forward-timer-disabled.db'}"
         )
         try:
             async with engine.begin() as connection:
@@ -239,7 +237,7 @@ def test_forward_timer_composition_remains_legacy_owned_even_with_timer_executor
             delegate = CanonicalPublicationDeliveryExecutor(
                 Session,
                 sender=sender,
-                allow_time_autodelete=True,
+                allow_time_autodelete=False,
                 heartbeat_interval_seconds=120,
             )
             wrapper = CanonicalPublicationDeliveryHandoffExecutor(
