@@ -28,19 +28,15 @@ def build_canonical_publication_safe_repeat_runtime(
     allow_views_autodelete: bool = False,
     allow_repeat: bool = False,
     allow_repeat_views: bool = False,
+    allow_repeat_views_pin: bool = False,
     repeat_owner_policy_enforced: bool = False,
 ) -> CanonicalPublicationDeliveryRuntime:
     """Compose strict repeat delivery only from concrete dependency facts.
 
-    The established delivery builder remains the source of sender/result-link/auxiliary,
-    timer and post-action dependencies. This composition then rebuilds only the live hook
-    and primary executor so the owner-policy fact corresponds to actual enforcement at
-    the final owner provider boundary rather than a declarative boolean.
-
-    Repeat authority requires both successor continuation availability and the enforced
-    owner policy. Non-repeat time/views capability facts remain independent. Repeat+views
-    is a third, default-off composition fact and is never inferred merely because repeat
-    continuation and a views worker are independently available.
+    Repeat authority requires continuation plus owner-policy enforcement. Plain repeat+
+    views remains an independent composition fact. Views+pin is narrower again: this
+    builder carries a separate default-off fact and never infers it from ordinary pin or
+    repeat+views support.
     """
 
     runtime = build_canonical_publication_delivery_runtime(
@@ -62,6 +58,7 @@ def build_canonical_publication_safe_repeat_runtime(
         repeat_owner_policy_enforced=owner_policy_enforced,
     )
     repeat_enabled = bool(allow_repeat and owner_policy_enforced)
+    repeat_views_enabled = bool(allow_repeat_views and repeat_enabled)
     executor = CanonicalPublicationSafeRepeatDeliveryExecutor(
         session_factory,
         sender=runtime.sender,
@@ -73,7 +70,10 @@ def build_canonical_publication_safe_repeat_runtime(
         allow_time_autodelete=allow_time_autodelete,
         allow_views_autodelete=allow_views_autodelete,
         allow_repeat=repeat_enabled,
-        allow_repeat_views=bool(allow_repeat_views and repeat_enabled),
+        allow_repeat_views=repeat_views_enabled,
+        allow_repeat_views_pin=bool(
+            allow_repeat_views_pin and repeat_views_enabled
+        ),
     )
     return replace(
         runtime,
