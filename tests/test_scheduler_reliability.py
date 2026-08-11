@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from app.bot import dispatcher
+from app.workers.canonical_recovery_scheduler import Scheduler as RecoveryScheduler
 from app.workers.canonical_scheduler import Scheduler as CanonicalScheduler
 from app.workers.publication_scheduler import Scheduler as PublicationAwareScheduler
 from app.workers.reliable_scheduler import Scheduler as ReliableScheduler
@@ -18,7 +19,8 @@ def _scheduler() -> ReliableScheduler:
 
 
 def test_dispatcher_uses_publication_aware_reliability_scheduler() -> None:
-    assert dispatcher.Scheduler is CanonicalScheduler
+    assert dispatcher.Scheduler is RecoveryScheduler
+    assert issubclass(RecoveryScheduler, CanonicalScheduler)
     assert issubclass(CanonicalScheduler, PublicationAwareScheduler)
     assert issubclass(PublicationAwareScheduler, ReliableScheduler)
     assert issubclass(ReliableScheduler, BaseScheduler)
