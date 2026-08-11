@@ -181,7 +181,7 @@ class CanonicalPublicationDeliveryClaimService:
                     Publication.attempt_count == 0,
                 )
                 .values(status="sending", attempt_count=1)
-                .execution_options(synchronize_session=False)
+                .execution_options(synchronize_session="fetch")
             )
             if int(claimed.rowcount or 0) != 1:
                 await self.session.rollback()
