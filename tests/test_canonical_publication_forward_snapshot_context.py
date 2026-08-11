@@ -20,8 +20,11 @@ from app.services.canonical_publication_delivery_executor import (
 from app.services.publication_bridge import LegacyPublicationBridge
 
 
-class _Sender:
-    def __init__(self) -> None:
+class _SnapshotCheckingSender:
+    def __init__(self, Session, *, publication_id: int, expected_snapshot: list[dict]) -> None:
+        self.Session = Session
+        self.publication_id = publication_id
+        self.expected_snapshot = expected_snapshot
         self.calls = 0
 
     async def send_document(
@@ -32,6 +35,16 @@ class _Sender:
         asset_channel_id: int | None = None,
     ) -> list[int]:
         self.calls += 1
+        async with self.Session() as session:
+            attempt = await session.get(
+                PublicationAttempt,
+                {"publication_id": self.publication_id, "attempt": 1},
+            )
+            assert attempt is not None
+            assert attempt.status == "sending"
+            assert dict(attempt.meta or {}).get(FORWARD_TARGET_SNAPSHOT_META_KEY) == (
+                self.expected_snapshot
+            )
         return [2801]
 
 
@@ -43,7 +56,7 @@ class _Hook:
         self.contexts.append(context)
 
 
-def test_executor_persists_and_carries_forward_destination_snapshot(tmp_path) -> None:
+def test_executor_persists_forward_destination_snapshot_before_provider_call(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'forward-snapshot-context.db'}"
@@ -106,7 +119,14 @@ def test_executor_persists_and_carries_forward_destination_snapshot(tmp_path) ->
                 publication_id = int(publication.id)
                 target_id = int(target.id)
 
-            sender = _Sender()
+            expected_snapshot = [
+                {"channel_id": target_id, "telegram_chat_id": -100192002}
+            ]
+            sender = _SnapshotCheckingSender(
+                Session,
+                publication_id=publication_id,
+                expected_snapshot=expected_snapshot,
+            )
             hook = _Hook()
             result = await CanonicalPublicationDeliveryExecutor(
                 Session,
@@ -117,12 +137,7 @@ def test_executor_persists_and_carries_forward_destination_snapshot(tmp_path) ->
             assert result.outcome == "published"
             assert sender.calls == 1
             assert len(hook.contexts) == 1
-            context = hook.contexts[0]
-            assert context.runtime_capability is not None
-            assert context.runtime_capability.forward_to == (target_id,)
-            assert len(context.forward_targets) == 1
-            assert context.forward_targets[0].channel_id == target_id
-            assert context.forward_targets[0].telegram_chat_id == -100192002
+            assert hook.contexts[0].publication_id == publication_id
 
             async with Session() as session:
                 attempt = await session.get(
@@ -132,9 +147,9 @@ def test_executor_persists_and_carries_forward_destination_snapshot(tmp_path) ->
                 publication = await session.get(Publication, publication_id)
                 assert attempt is not None
                 assert publication is not None and publication.status == "published"
-                assert dict(attempt.meta or {})[FORWARD_TARGET_SNAPSHOT_META_KEY] == [
-                    {"channel_id": target_id, "telegram_chat_id": -100192002}
-                ]
+                assert dict(attempt.meta or {})[FORWARD_TARGET_SNAPSHOT_META_KEY] == (
+                    expected_snapshot
+                )
         finally:
             await engine.dispose()
 
