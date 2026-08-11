@@ -16,11 +16,18 @@ class CanonicalPublicationSafeRepeatDeliveryExecutor(
 ):
     """Repeat-gated executor that keeps effectful repeat profiles fail-closed."""
 
-    def __init__(self, *args, allow_repeat_views: bool = False, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        allow_repeat_views: bool = False,
+        allow_repeat_views_pin: bool = False,
+        **kwargs,
+    ) -> None:
         super().__init__(*args, **kwargs)
-        # Deliberately independent from allow_repeat + allow_views_autodelete. The
-        # destructive composition must be enabled by a later concrete runtime fact.
         self.allow_repeat_views = bool(allow_repeat_views)
+        # Deliberately narrower than plain repeat+views. A later runtime stage must prove
+        # and forward this composition independently before views+pin can claim primary.
+        self.allow_repeat_views_pin = bool(allow_repeat_views_pin)
 
     async def _claim(
         self,
@@ -40,4 +47,5 @@ class CanonicalPublicationSafeRepeatDeliveryExecutor(
                 allow_views_autodelete=self.allow_views_autodelete,
                 allow_repeat=self.allow_repeat,
                 allow_repeat_views=self.allow_repeat_views,
+                allow_repeat_views_pin=self.allow_repeat_views_pin,
             )
