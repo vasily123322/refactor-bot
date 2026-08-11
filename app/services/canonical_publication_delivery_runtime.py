@@ -92,6 +92,7 @@ def apply_canonical_delivery_success_runtime(
         or schedule_options is None
         or publication_meta is None
         or current_repeat_rule is None
+        or AUTODELETE_RUNTIME_META_KEY in publication_meta
         or publication_options != planned_options
         or schedule_options != planned_options
         or current_repeat_rule != planned_repeat_rule
@@ -101,23 +102,21 @@ def apply_canonical_delivery_success_runtime(
         )
 
     seconds = _positive_int(planned_options.get("autodelete_seconds"))
-    new_meta = deepcopy(publication_meta)
     if seconds is None:
-        new_meta.pop(AUTODELETE_RUNTIME_META_KEY, None)
-    else:
-        repeat_enabled = planned_repeat_rule.get("enabled") is True
-        repeat_seconds = _positive_int(planned_repeat_rule.get("seconds"))
-        if repeat_enabled and repeat_seconds == seconds:
-            due_at = as_utc(plan.scheduled_at) + timedelta(seconds=repeat_seconds)
-        else:
-            due_at = current + timedelta(seconds=seconds)
-        new_meta[AUTODELETE_RUNTIME_META_KEY] = {
-            "deleted": False,
-            "effective_seconds": seconds,
-            "scheduled_at": due_at.isoformat(),
-        }
-
-    if new_meta == publication_meta:
         return False
+
+    repeat_enabled = planned_repeat_rule.get("enabled") is True
+    repeat_seconds = _positive_int(planned_repeat_rule.get("seconds"))
+    if repeat_enabled and repeat_seconds == seconds:
+        due_at = as_utc(plan.scheduled_at) + timedelta(seconds=repeat_seconds)
+    else:
+        due_at = current + timedelta(seconds=seconds)
+
+    new_meta = deepcopy(publication_meta)
+    new_meta[AUTODELETE_RUNTIME_META_KEY] = {
+        "deleted": False,
+        "effective_seconds": seconds,
+        "scheduled_at": due_at.isoformat(),
+    }
     publication.meta = new_meta
     return True
