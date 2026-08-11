@@ -55,6 +55,7 @@ def test_primary_runtime_disabled_constructs_nothing(monkeypatch) -> None:
             bot=object(),
             session_factory=object(),  # type: ignore[arg-type]
             time_autodelete_executor_available=True,
+            views_autodelete_executor_available=True,
         )
         assert worker is None
 
@@ -79,6 +80,7 @@ def test_primary_runtime_requires_started_recovery_before_construction(monkeypat
                 bot=object(),
                 session_factory=object(),  # type: ignore[arg-type]
                 time_autodelete_executor_available=True,
+                views_autodelete_executor_available=True,
             )
 
     asyncio.run(run())
@@ -135,6 +137,7 @@ def test_primary_runtime_starts_with_exact_safe_configuration(monkeypatch) -> No
             bot=provider,
             session_factory=session_factory,  # type: ignore[arg-type]
             time_autodelete_executor_available=True,
+            views_autodelete_executor_available=True,
         )
 
         assert isinstance(worker, FakeWorker)
@@ -145,6 +148,7 @@ def test_primary_runtime_starts_with_exact_safe_configuration(monkeypatch) -> No
             "lease_seconds": 120,
             "heartbeat_interval_seconds": 29.0,
             "allow_time_autodelete": True,
+            "allow_views_autodelete": True,
         }
         assert captured["handoff"] == {
             "executor": executor,
@@ -163,7 +167,7 @@ def test_primary_runtime_starts_with_exact_safe_configuration(monkeypatch) -> No
     asyncio.run(run())
 
 
-def test_primary_runtime_defaults_timer_capability_off(monkeypatch) -> None:
+def test_primary_runtime_defaults_delete_capabilities_off(monkeypatch) -> None:
     async def run() -> None:
         captured: dict[str, object] = {}
 
@@ -195,6 +199,7 @@ def test_primary_runtime_defaults_timer_capability_off(monkeypatch) -> None:
             session_factory=object(),  # type: ignore[arg-type]
         )
         assert captured["allow_time_autodelete"] is False
+        assert captured["allow_views_autodelete"] is False
 
     asyncio.run(run())
 
