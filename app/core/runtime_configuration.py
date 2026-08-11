@@ -8,6 +8,8 @@ class RuntimeConfigurationError(RuntimeError):
 
 
 class _RetentionRuntimeSettings(Protocol):
+    canonical_repeat_shadow_planning_enabled: bool
+    canonical_repeat_transport_adapter_enabled: bool
     post_task_retention_enabled: bool
     post_task_retention_successful_enabled: bool
     post_task_retention_successful_pending_autodelete_enabled: bool
@@ -24,7 +26,16 @@ def _pending_retention_active(settings: _RetentionRuntimeSettings) -> bool:
 
 
 def validate_runtime_configuration(settings: _RetentionRuntimeSettings) -> None:
-    """Reject destructive retention unless configured canonical executors are safe."""
+    """Reject explicitly enabled migration combinations that are not proven safe."""
+
+    if (
+        settings.canonical_repeat_transport_adapter_enabled
+        and not settings.canonical_repeat_shadow_planning_enabled
+    ):
+        raise RuntimeConfigurationError(
+            "CANONICAL_REPEAT_TRANSPORT_ADAPTER_ENABLED requires "
+            "CANONICAL_REPEAT_SHADOW_PLANNING_ENABLED"
+        )
 
     if (
         settings.post_task_retention_enabled
