@@ -11,6 +11,8 @@ class _CaptureDocumentPostingService(DocumentPostingService):
     def __init__(self) -> None:
         self.classic_calls: list[tuple[int, dict]] = []
         self.rich_calls: list[dict] = []
+        # send_document resolves the provider method before invoking _send_with_retry.
+        self.bot = SimpleNamespace(send_rich_message=object())
 
     async def _resolve_media_assets(
         self,
