@@ -82,11 +82,6 @@ def _repeat_forward_runtime_options(
     if capability is None:
         return None
     forward_ids = tuple(int(channel_id) for channel_id in capability.forward_to)
-
-    # repeat+pin and repeat+forward are intentionally separate migration slices. The
-    # composition remains fail-closed until its own authority/replay proof.
-    if bool(capability.pin_on) and forward_ids:
-        return None
     return deepcopy(options), forward_ids
 
 
@@ -139,13 +134,15 @@ def _legacy_forward_ids(payload: Mapping[str, Any]) -> tuple[int, ...] | None:
 class CanonicalPublicationLinkedRepeatParityService:
     """Read-only proof for pristine fixed-delay linked repeat handoff.
 
-    Proven repeat effects are intentionally independent slices: optional pin OR ordered
-    forward intent, plus optional explicit silent. Forward target IDs are exact ordered
-    internal Channel IDs, matching the established non-repeat forward parity contract.
-    Pin+forward and both delete modes remain outside this proof.
+    The proof can now compose the already-proven optional pin and ordered forward intents,
+    plus optional explicit silent, when every legacy/canonical field matches exactly.
+    Forward target IDs remain exact ordered internal Channel IDs, and pin intent remains
+    exact rather than inferred. Both delete modes and unknown effects remain outside this
+    proof.
 
-    This is still parity only. The strict repeat capability claim remains the independent
-    authority barrier until a later PR deliberately widens it to forward.
+    This is parity only. The strict repeat capability claim remains an independent
+    authority barrier and still rejects pin+forward until a separate authority/replay PR
+    deliberately widens that composition.
     """
 
     def prove(

@@ -130,7 +130,7 @@ def test_repeat_forward_parity_preserves_exact_ordered_internal_channel_ids(tmp_
     asyncio.run(run())
 
 
-def test_repeat_forward_parity_rejects_pin_composition_until_separate_stage(tmp_path) -> None:
+def test_repeat_pin_forward_parity_requires_both_exact_effects(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'repeat-pin-forward-parity.db'}"
@@ -139,7 +139,24 @@ def test_repeat_forward_parity_rejects_pin_composition_until_separate_stage(tmp_
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
-            publication_id, task_id, _, _, plan = await _seed(Session, pin_on=True)
+            publication_id, task_id, target_b, target_a, plan = await _seed(
+                Session,
+                pin_on=True,
+            )
+
+            proof = await _prove(Session, publication_id, task_id, plan)
+            assert proof is not None
+            assert proof.pin_on is True
+            assert proof.forward_channel_ids == (target_b, target_a)
+
+            async with Session() as session:
+                task = await session.get(PostTask, task_id)
+                assert task is not None
+                payload = dict(task.payload or {})
+                payload["pin_on"] = False
+                task.payload = payload
+                await session.commit()
+
             assert await _prove(Session, publication_id, task_id, plan) is None
         finally:
             await engine.dispose()
