@@ -42,7 +42,6 @@ _FORBIDDEN_EPHEMERAL_KEYS = {
     "_also_schedule_autodelete",
 }
 _NEUTRAL_BOOL_KEYS = {
-    "silent",
     "pin_on",
     "forward_silent",
     "autodelete_report",
@@ -132,14 +131,25 @@ def _nonrepeat(plan: CanonicalPublicationDeliveryPlan) -> bool:
     return enabled is None or enabled is False
 
 
-def _plain_runtime(plan: CanonicalPublicationDeliveryPlan) -> bool:
+def _supported_runtime_options(
+    plan: CanonicalPublicationDeliveryPlan,
+) -> dict[str, Any] | None:
     try:
-        return plan.runtime_options() == {}
+        options = plan.runtime_options()
     except (TypeError, ValueError):
-        return False
+        return None
+    if not options:
+        return {}
+    if set(options) != {"silent"}:
+        return None
+    if type(options.get("silent")) is not bool:
+        return None
+    return options
 
 
-def _expected_transport_payload(plan: CanonicalPublicationDeliveryPlan) -> dict[str, Any] | None:
+def _expected_transport_payload(
+    plan: CanonicalPublicationDeliveryPlan,
+) -> dict[str, Any] | None:
     try:
         document = plan.post_document()
     except (TypeError, ValueError):
@@ -187,6 +197,29 @@ def _identity_markers_match(
     return True
 
 
+def _silent_intent_matches(
+    current: Mapping[str, Any],
+    expected: Mapping[str, Any],
+    runtime_options: Mapping[str, Any],
+) -> bool:
+    if "silent" in runtime_options:
+        intended = runtime_options.get("silent")
+        if type(intended) is not bool:
+            return False
+        if type(current.get("silent")) is not bool or current.get("silent") is not intended:
+            return False
+        if "silent" in expected:
+            rendered_value = expected.get("silent")
+            if type(rendered_value) is not bool or rendered_value is not intended:
+                return False
+        return True
+
+    for payload in (current, expected):
+        if "silent" in payload and not _neutral_bool(payload.get("silent")):
+            return False
+    return True
+
+
 def _legacy_intent_matches(
     *,
     task: PostTask,
@@ -200,13 +233,16 @@ def _legacy_intent_matches(
     if task.error not in (None, ""):
         return False
 
+    runtime_options = _supported_runtime_options(plan)
     current = _mapping(task.payload)
     expected = _expected_transport_payload(plan)
-    if current is None or expected is None:
+    if runtime_options is None or current is None or expected is None:
         return False
     if any(key in current for key in _FORBIDDEN_EPHEMERAL_KEYS):
         return False
     if not _identity_markers_match(current, publication=publication, plan=plan):
+        return False
+    if not _silent_intent_matches(current, expected, runtime_options):
         return False
     for key in _IDENTITY_MARKERS:
         current.pop(key, None)
@@ -236,6 +272,10 @@ class CanonicalPublicationLegacyTransportHandoffService:
     Any SchedulerTaskLease, live or expired, is an execution/recovery barrier and blocks
     handoff. This service never deletes or takes a scheduler lease and never calls a
     provider. Canonical delivery remains `queued` until a later exact canonical claim.
+
+    Current capability is non-repeat with empty runtime options or explicit `silent: bool`.
+    The legacy PostTask silent bit must exactly match explicit canonical silent intent;
+    hidden legacy silent behavior is not inferred into canonical authority.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -291,7 +331,6 @@ class CanonicalPublicationLegacyTransportHandoffService:
                 return await self._result(_INELIGIBLE, safe_publication_id)
             task_id = int(publication.legacy_post_task_id)
 
-            # This CAS serializes against legacy SchedulerTaskLeaseService.claim_pending.
             claimed_cutover = await self.session.execute(
                 update(PostTask)
                 .where(
@@ -322,7 +361,6 @@ class CanonicalPublicationLegacyTransportHandoffService:
                 )
             ).scalar_one_or_none()
             if scheduler_lease is not None:
-                # Any lease, including expired recovery ambiguity, blocks authority transfer.
                 return await self._result(_CONFLICT, safe_publication_id, task_id)
 
             canonical_lease = (
@@ -381,7 +419,7 @@ class CanonicalPublicationLegacyTransportHandoffService:
                 or int(plan.content_item_id) != int(item.id)
                 or int(plan.content_revision) != int(revision.revision)
                 or int(plan.channel_id) != int(channel.id)
-                or not _plain_runtime(plan)
+                or _supported_runtime_options(plan) is None
                 or not _nonrepeat(plan)
                 or not _legacy_intent_matches(
                     task=task,
