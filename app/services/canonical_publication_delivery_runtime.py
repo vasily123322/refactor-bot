@@ -26,6 +26,23 @@ from app.services.canonical_publication_result_link import (
 from app.services.document_posting import DocumentPostingService
 
 
+class CanonicalPublicationDeliveryLiveAutodeleteCoordinator:
+    """Open one short DB session per live timer materialization request."""
+
+    def __init__(
+        self,
+        *,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        self.session_factory = session_factory
+
+    async def materialize(self, context):
+        async with self.session_factory() as session:
+            return await CanonicalPublicationDeliveryLiveAutodeleteWriter(
+                session
+            ).materialize(context)
+
+
 @dataclass(frozen=True, slots=True)
 class CanonicalPublicationDeliveryRuntime:
     """Concrete dependencies for canonical primary delivery, without worker startup."""
@@ -34,7 +51,7 @@ class CanonicalPublicationDeliveryRuntime:
     sender: DocumentPostingService
     result_link_resolver: CanonicalPublicationResultLinkResolver
     auxiliary_executor: CanonicalPublicationDeliveryLiveAuxiliaryExecutor
-    autodelete_writer: CanonicalPublicationDeliveryLiveAutodeleteWriter
+    autodelete_writer: CanonicalPublicationDeliveryLiveAutodeleteCoordinator
     post_action_executor: CanonicalPublicationDeliveryLivePostActionExecutor
     post_send_hook: CanonicalPublicationDeliveryLiveAuxiliaryHook
 
@@ -58,16 +75,16 @@ def build_canonical_publication_delivery_runtime(
     sender = DocumentPostingService(bot, session_factory)
     result_link_resolver = CanonicalPublicationResultLinkResolver(bot)
     auxiliary_executor = CanonicalPublicationDeliveryLiveAuxiliaryExecutor(bot)
-    autodelete_writer = CanonicalPublicationDeliveryLiveAutodeleteWriter(session_factory)  # type: ignore[arg-type]
+    autodelete_writer = CanonicalPublicationDeliveryLiveAutodeleteCoordinator(
+        session_factory=session_factory,
+    )
     post_action_executor = CanonicalPublicationDeliveryLivePostActionExecutor(
         bot=bot,
         session_factory=session_factory,
     )
     post_send_hook = CanonicalPublicationDeliveryLiveAuxiliaryHook(
         executor=auxiliary_executor,
-        autodelete_writer=_SessionFactoryAutodeleteWriter(
-            session_factory=session_factory,
-        ),
+        autodelete_writer=autodelete_writer,
         post_action_executor=post_action_executor,
         session_factory=session_factory,
     )
@@ -90,16 +107,3 @@ def build_canonical_publication_delivery_runtime(
         post_action_executor=post_action_executor,
         post_send_hook=post_send_hook,
     )
-
-
-class _SessionFactoryAutodeleteWriter:
-    """Open one short DB session per live timer materialization request."""
-
-    def __init__(self, *, session_factory: async_sessionmaker[AsyncSession]) -> None:
-        self.session_factory = session_factory
-
-    async def materialize(self, context):
-        async with self.session_factory() as session:
-            return await CanonicalPublicationDeliveryLiveAutodeleteWriter(
-                session
-            ).materialize(context)
