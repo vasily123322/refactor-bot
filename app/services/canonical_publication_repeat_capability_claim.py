@@ -48,6 +48,7 @@ def _strict_repeat_runtime_options(
     plan,
     *,
     allow_repeat_views: bool = False,
+    allow_repeat_views_pin: bool = False,
 ) -> dict[str, Any] | None:
     try:
         options = plan.runtime_options()
@@ -61,22 +62,16 @@ def _strict_repeat_runtime_options(
         return None
 
     if "forward_to" in options and not capability.forward_to:
-        # An explicit forward profile must contain at least one exact target. Pin may
-        # compose with forward because that exact linked parity/replay slice is proven by
-        # the parent stage; delete/unknown keys remain independently constrained below.
         return None
 
     if capability.views_autodelete_requested:
-        # Repeat+views is a separate destructive composition. Independent repeat and
-        # views availability facts must never compose implicitly into authority. Only a
-        # dedicated fact may admit the already-proven plain/silent views slice.
         if not allow_repeat_views:
             return None
-        if capability.pin_on or capability.forward_to:
+        if capability.forward_to:
+            return None
+        if capability.pin_on and not allow_repeat_views_pin:
             return None
     elif "autodelete_report" in options:
-        # Report has no independent meaning. The generic parser already enforces this,
-        # but keep the strict repeat barrier explicit against future parser widening.
         return None
 
     return deepcopy(options)
@@ -87,24 +82,15 @@ class CanonicalPublicationRepeatCapabilityClaimService(
 ):
     """Keep repeat authority limited to explicitly proven runtime slices.
 
-    `allow_repeat=True` never removes the nonrepeat barrier for arbitrary understood side
-    effects. The established profile admits fixed-delay repeat with optional silent/pin/
-    ordered-forward effects that already have dedicated parity/replay proof.
+    Base repeat, pin/forward and plain repeat+views retain their existing independent
+    gates. Views+pin is now recognized by the strict pre-send claim only behind the
+    additional `allow_repeat_views_pin` composition fact. That fact defaults off and is
+    not inferred from `allow_repeat_views`, pin support, or dependency availability.
 
-    Plain/silent views autodelete is admitted only when **three** facts are true at the
-    claim boundary: repeat continuation authority, a concrete views executor, and the
-    dedicated `allow_repeat_views` composition fact. The latter is intentionally default
-    off, so independent availability booleans cannot accidentally compose into new
-    destructive authority. Views+pin/forward, both time-autodelete keys, dual delete
-    modes, unknown runtime keys and unknown repeat semantics remain fail-closed.
-
-    The claim phase only stages indexed views intent atomically with primary authority.
-    Actual destructive execution remains post-publication and must pass the locked #287
-    gate / #286 lifecycle proof before the reserve-before-DELETE boundary can act.
-
-    Non-repeat rows retain the complete existing capability surface. The proof is taken
-    while the same mutable delivery rows are locked; the parent service then re-locks and
-    re-proves before authority commit, so drift cannot widen the profile between checks.
+    Views+forward, every time-autodelete key, dual delete modes, unknown runtime keys and
+    unknown repeat-rule semantics remain fail-closed. This phase stages only occurrence-
+    local views intent with primary authority; post-publication DELETE still needs the
+    separately gated lifecycle/destructive composition.
     """
 
     async def claim_supported(
@@ -118,6 +104,7 @@ class CanonicalPublicationRepeatCapabilityClaimService(
         allow_views_autodelete: bool = False,
         allow_repeat: bool = False,
         allow_repeat_views: bool = False,
+        allow_repeat_views_pin: bool = False,
     ) -> CanonicalPublicationDeliveryClaim | None:
         try:
             safe_publication_id = int(publication_id)
@@ -148,11 +135,15 @@ class CanonicalPublicationRepeatCapabilityClaimService(
                 if not _strict_fixed_delay_repeat(plan):
                     await self.session.rollback()
                     return None
+                repeat_views_enabled = bool(
+                    allow_repeat_views and allow_views_autodelete
+                )
                 if (
                     _strict_repeat_runtime_options(
                         plan,
-                        allow_repeat_views=bool(
-                            allow_repeat_views and allow_views_autodelete
+                        allow_repeat_views=repeat_views_enabled,
+                        allow_repeat_views_pin=bool(
+                            allow_repeat_views_pin and repeat_views_enabled
                         ),
                     )
                     is None
