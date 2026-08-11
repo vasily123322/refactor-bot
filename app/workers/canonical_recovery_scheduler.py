@@ -8,6 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.domain.models import PostTask
+from app.services.canonical_repeat_boot_recovery_shadow import (
+    CanonicalRepeatBootRecoveryShadowCoordinator,
+)
 from app.services.canonical_repeat_recovery_reservation import (
     CanonicalRepeatRecoveryReservationService,
 )
@@ -33,12 +36,11 @@ class CanonicalRepeatRecoveryCutoverError(RuntimeError):
 
 
 class Scheduler(CanonicalScheduler):
-    """Canonical scheduler with guarded per-occurrence overdue recovery migration.
+    """Canonical scheduler with guarded repeat recovery migration stages.
 
     Successful repeat transitions remain implemented by ``CanonicalScheduler``.
-    This wrapper owns only ``_skip_overdue_repeat_and_schedule_next``. Boot group
-    cleanup stays entirely on the inherited legacy-backed path until it has its own
-    canonical group proof.
+    Per-occurrence overdue recovery and one-time grouped boot cleanup have independent
+    default-off shadow/cutover controls so their rollout cannot silently couple.
     """
 
     def __init__(
@@ -46,6 +48,7 @@ class Scheduler(CanonicalScheduler):
         *args,
         repeat_overdue_recovery_shadow: bool | None = None,
         repeat_overdue_recovery_planning: bool | None = None,
+        repeat_boot_recovery_shadow: bool | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -58,6 +61,11 @@ class Scheduler(CanonicalScheduler):
             bool(settings.canonical_repeat_overdue_recovery_planning_enabled)
             if repeat_overdue_recovery_planning is None
             else bool(repeat_overdue_recovery_planning)
+        )
+        self._repeat_boot_recovery_shadow = (
+            bool(settings.canonical_repeat_boot_recovery_shadow_enabled)
+            if repeat_boot_recovery_shadow is None
+            else bool(repeat_boot_recovery_shadow)
         )
 
     async def _source_publication_id(
@@ -205,3 +213,29 @@ class Scheduler(CanonicalScheduler):
             legacy_recover=legacy_recover,
         )
         return bool(result.legacy_recovered)
+
+    async def _boot_cleanup_repeats(
+        self,
+        session: AsyncSession,
+        items: list[PostTask],
+    ) -> list[PostTask]:
+        parent_cleanup = super()._boot_cleanup_repeats
+        if (
+            not self._repeat_boot_recovery_shadow
+            or self._boot_cleanup_done
+            or self._boot_time is None
+            or not items
+        ):
+            return await parent_cleanup(session, items)
+
+        selected = list(items)
+
+        async def legacy_cleanup() -> list[PostTask]:
+            return await parent_cleanup(session, items)
+
+        result = await CanonicalRepeatBootRecoveryShadowCoordinator(session).run(
+            items=selected,
+            after=self._boot_time,
+            legacy_cleanup=legacy_cleanup,
+        )
+        return list(result.remaining)

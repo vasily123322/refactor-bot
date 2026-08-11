@@ -201,6 +201,6 @@ def test_disabled_runtime_shadow_preserves_direct_legacy_recovery_path(tmp_path)
     asyncio.run(run())
 
 
-def test_recovery_wrapper_does_not_override_boot_group_cleanup() -> None:
-    assert "_boot_cleanup_repeats" not in Scheduler.__dict__
-    assert Scheduler._boot_cleanup_repeats is CanonicalScheduler._boot_cleanup_repeats
+def test_recovery_wrapper_keeps_canonical_inheritance_with_boot_shadow_override() -> None:
+    assert "_boot_cleanup_repeats" in Scheduler.__dict__
+    assert issubclass(Scheduler, CanonicalScheduler)
