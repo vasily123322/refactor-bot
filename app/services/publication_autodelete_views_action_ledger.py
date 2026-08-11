@@ -394,6 +394,12 @@ class PublicationAutodeleteViewsActionLedger:
                 existing_state=state,
             )
 
+        # Partial completion is a strict ordered prefix. A caller bug must not be able
+        # to reserve message N+1 while message N has no durable terminal evidence.
+        if len(actions) >= len(ids) or int(ids[len(actions)]) != message_id:
+            await self.session.rollback()
+            return PublicationAutodeleteViewsActionReserveResult(outcome="conflict")
+
         reservation_token = uuid.uuid4().hex
         reservation = PublicationAutodeleteViewsActionReservation(
             publication_id=publication_id,
