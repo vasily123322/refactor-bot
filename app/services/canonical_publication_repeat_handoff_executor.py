@@ -40,12 +40,14 @@ class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHand
 
     Non-repeat behavior is inherited unchanged from the existing handoff executor. A
     linked repeat occurrence is routed to `CanonicalPublicationLinkedRepeatAtomicHandoffService`
-    and therefore currently admits only the first proven repeat profile
-    (empty/explicit-silent runtime). Repeat+pin/forward/delete remains fail-closed.
+    and must satisfy linked parity plus the same strict capability claim used by
+    canonical-only repeat delivery.
 
-    Repeat authority depends on the concrete executor's `allow_repeat` fact. No fallback
-    to config exists. Claim-unavailable outcomes reuse the same durable-state classifier
-    as the base atomic handoff path before deciding whether retry is safe.
+    Repeat authority depends on the concrete executor's `allow_repeat` fact. Views
+    availability and repeat+views composition authority are forwarded independently; no
+    config fallback or implicit composition exists. Claim-unavailable outcomes reuse the
+    same durable-state classifier as the base atomic handoff path before deciding whether
+    retry is safe.
     """
 
     async def execute(self, publication_id: int):
@@ -78,6 +80,12 @@ class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHand
             return await super().execute(safe_publication_id)
 
         allow_repeat = bool(getattr(self.executor, "allow_repeat", False))
+        allow_views_autodelete = bool(
+            getattr(self.executor, "allow_views_autodelete", False)
+        )
+        allow_repeat_views = bool(
+            getattr(self.executor, "allow_repeat_views", False)
+        )
         async with self.session_factory() as session:
             transfer = await CanonicalPublicationLinkedRepeatAtomicHandoffService(
                 session
@@ -86,6 +94,8 @@ class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHand
                 holder=str(self.executor.holder),
                 ttl_seconds=int(self.executor.lease_seconds),
                 allow_repeat=allow_repeat,
+                allow_views_autodelete=allow_views_autodelete,
+                allow_repeat_views=allow_repeat_views,
             )
 
         if transfer.outcome == "claim_unavailable":
