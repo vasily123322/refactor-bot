@@ -132,7 +132,15 @@ class DocumentPostingService(PostingService):
         document: PostDocument,
         *,
         asset_channel_id: int | None = None,
+        disable_notification: bool | None = None,
     ) -> list[int]:
+        """Send one canonical document with an optional runtime silent override.
+
+        ``None`` preserves each existing adapter path: classic keeps its historical
+        compatibility payload unchanged, while rich keeps the renderer's document-level
+        value. A boolean explicitly overrides delivery silence for either path so
+        canonical runtime intent can stay outside the immutable content document.
+        """
         render_document = await self._resolve_media_assets(
             document,
             asset_channel_id=asset_channel_id,
@@ -141,19 +149,27 @@ class DocumentPostingService(PostingService):
         if plan.kind == "classic":
             if plan.classic_payload is None:
                 raise TelegramRenderError("classic renderer returned no payload")
-            result = await self.send_now(int(chat_id), dict(plan.classic_payload))
+            payload = dict(plan.classic_payload)
+            if disable_notification is not None:
+                payload["silent"] = bool(disable_notification)
+            result = await self.send_now(int(chat_id), payload)
             if not result:
                 raise TelegramRenderError("classic document could not be delivered")
             return [int(value) for value in result]
 
         if plan.rich_message is None:
             raise TelegramRenderError("rich renderer returned no InputRichMessage")
+        effective_silent = (
+            plan.disable_notification
+            if disable_notification is None
+            else bool(disable_notification)
+        )
         message = await self._send_with_retry(
             self.bot.send_rich_message,
             chat_id=int(chat_id),
             rich_message=plan.rich_message,
             reply_markup=plan.reply_markup,
-            disable_notification=plan.disable_notification,
+            disable_notification=effective_silent,
             protect_content=plan.protect_content,
         )
         return [int(message.message_id)]
