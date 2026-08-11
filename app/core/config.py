@@ -66,6 +66,21 @@ class Settings(BaseSettings):
         alias="CANONICAL_REPEAT_BOOT_RECOVERY_PLANNING_ENABLED",
     )
 
+    # Default-off fail-closed runtime for expired canonical delivery leases. The worker
+    # never resends Telegram messages; it only marks ambiguous expired deliveries unknown.
+    canonical_publication_delivery_recovery_worker_enabled: bool = Field(
+        default=False,
+        alias="CANONICAL_PUBLICATION_DELIVERY_RECOVERY_WORKER_ENABLED",
+    )
+    canonical_publication_delivery_recovery_worker_interval_seconds: int = Field(
+        default=60,
+        alias="CANONICAL_PUBLICATION_DELIVERY_RECOVERY_WORKER_INTERVAL_SECONDS",
+    )
+    canonical_publication_delivery_recovery_worker_batch_size: int = Field(
+        default=100,
+        alias="CANONICAL_PUBLICATION_DELIVERY_RECOVERY_WORKER_BATCH_SIZE",
+    )
+
     # Opt-in cleanup for canonicalized unsuccessful legacy scheduler rows.
     post_task_retention_enabled: bool = Field(
         default=False, alias="POST_TASK_RETENTION_ENABLED"
