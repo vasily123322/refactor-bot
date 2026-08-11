@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.publishing.models import PublicationAttempt
+from app.services.canonical_publication_delivery_capability_claim import (
+    FORWARD_TARGET_SNAPSHOT_META_KEY,
+)
 from app.services.canonical_publication_delivery_live_auxiliary_planner import (
     CanonicalPublicationDeliveryLiveAuxiliaryPlanner,
 )
@@ -48,17 +54,46 @@ def _fingerprint(payload: dict) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _target_snapshot(value) -> tuple[tuple[int, int], ...] | None:
+    if not isinstance(value, list):
+        return None
+    result: list[tuple[int, int]] = []
+    channel_ids: set[int] = set()
+    telegram_ids: set[int] = set()
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            return None
+        if set(raw) != {"channel_id", "telegram_chat_id"}:
+            return None
+        try:
+            channel_id = int(raw["channel_id"])
+            telegram_chat_id = int(raw["telegram_chat_id"])
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if (
+            channel_id <= 0
+            or telegram_chat_id == 0
+            or channel_id in channel_ids
+            or telegram_chat_id in telegram_ids
+        ):
+            return None
+        channel_ids.add(channel_id)
+        telegram_ids.add(telegram_chat_id)
+        result.append((channel_id, telegram_chat_id))
+    return tuple(result)
+
+
 class CanonicalPublicationDeliveryLivePostActionPlanner:
     """Plan ordered pin/forward actions under the exact live delivery authority.
 
-    The existing live auxiliary planner is intentionally reused as the full immutable
-    intent/lease/lifecycle authorization proof. Only after that proof succeeds do we
-    parse the current supported runtime capability and resolve forward Channel IDs to
-    their current Telegram destinations.
+    Full live lease/intent authorization is reused from the owner/admin planner. For any
+    effectful pin/forward capability, attempt #1 must also contain the durable target
+    snapshot persisted before the primary provider call. Current Channel resolution must
+    still match that immutable snapshot exactly before an action can be reserved.
 
     The returned deterministic action keys are reservation identities, not retry tokens.
-    Their fingerprints include every provider-relevant destination/value so target drift
-    after a reservation becomes a ledger conflict rather than a second provider call.
+    Their fingerprints include every provider-relevant destination/value so drift after
+    reservation becomes suppression/conflict rather than a second provider call.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -70,8 +105,6 @@ class CanonicalPublicationDeliveryLivePostActionPlanner:
         *,
         at=None,
     ) -> CanonicalPublicationDeliveryLivePostActionPlan | None:
-        # Full exact lease + intent reauthorization, independent of whether owner/admin
-        # actions themselves are configured.
         authorized = await CanonicalPublicationDeliveryLiveAuxiliaryPlanner(
             self.session
         ).plan(context, at=at)
@@ -93,12 +126,46 @@ class CanonicalPublicationDeliveryLivePostActionPlanner:
         message_ids = normalize_telegram_message_ids(context.message_ids)
         if not message_ids:
             return None
+
+        effectful = bool(capability.pin_on or capability.forward_to)
+        if not effectful:
+            return CanonicalPublicationDeliveryLivePostActionPlan(
+                publication_id=publication_id,
+                actions=(),
+            )
+
+        attempt = (
+            await self.session.execute(
+                select(PublicationAttempt).where(
+                    PublicationAttempt.publication_id == publication_id,
+                    PublicationAttempt.attempt == 1,
+                    PublicationAttempt.status == "sending",
+                    PublicationAttempt.finished_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if attempt is None or not isinstance(attempt.meta, Mapping):
+            return None
+        attempt_meta = dict(attempt.meta)
+        if attempt_meta.get("canonical_delivery") is not True:
+            return None
+        snapshot = _target_snapshot(attempt_meta.get(FORWARD_TARGET_SNAPSHOT_META_KEY))
+        if snapshot is None:
+            return None
+
         targets = await resolve_canonical_publication_delivery_forward_targets(
             self.session,
             capability,
             lock=False,
         )
         if targets is None:
+            return None
+        current_targets = tuple(
+            (int(target.channel_id), int(target.telegram_chat_id)) for target in targets
+        )
+        if snapshot != current_targets:
+            return None
+        if tuple(channel_id for channel_id, _ in snapshot) != capability.forward_to:
             return None
 
         actions: list[CanonicalPublicationLivePostAction] = []
