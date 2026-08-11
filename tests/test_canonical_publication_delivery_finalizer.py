@@ -90,6 +90,12 @@ async def _claim_after_transport_retirement(
         return claim
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def test_success_finalization_is_canonical_only_and_releases_exact_lease(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
@@ -151,7 +157,8 @@ def test_success_finalization_is_canonical_only_and_releases_exact_lease(tmp_pat
                 assert attempt.status == "published"
                 assert attempt.telegram_message_ids == [501, 502]
                 assert attempt.error is None
-                assert attempt.finished_at == finished_at
+                assert attempt.finished_at is not None
+                assert _as_utc(attempt.finished_at) == finished_at
                 assert await CanonicalPublicationDeliveryClaimService(session).current(
                     publication_id
                 ) is None
