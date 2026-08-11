@@ -39,6 +39,7 @@ def test_dispatcher_starts_recovery_before_primary_and_passes_dependency_facts(
             assert kwargs["bot"] is dispatcher.bot
             assert kwargs["session_factory"] is dispatcher.AsyncSessionLocal
             assert kwargs["time_autodelete_executor_available"] is True
+            assert kwargs["views_autodelete_executor_available"] is True
             return primary
 
         async def unexpected_stop(**kwargs):
@@ -63,6 +64,7 @@ def test_dispatcher_starts_recovery_before_primary_and_passes_dependency_facts(
         result = await dispatcher._start_canonical_publication_delivery_workers(
             config,
             time_autodelete_executor_available=True,
+            views_autodelete_executor_available=True,
         )
 
         assert result == (primary, recovery)
@@ -84,6 +86,7 @@ def test_dispatcher_primary_start_failure_stops_started_recovery(monkeypatch) ->
         async def fail_primary(**kwargs):
             assert kwargs["recovery_worker"] is recovery
             assert kwargs["time_autodelete_executor_available"] is False
+            assert kwargs["views_autodelete_executor_available"] is False
             raise RuntimeError("primary startup failed")
 
         async def stop_workers(**kwargs):
@@ -114,6 +117,49 @@ def test_dispatcher_primary_start_failure_stops_started_recovery(monkeypatch) ->
                 "recovery_worker": recovery,
             }
         ]
+
+    asyncio.run(run())
+
+
+def test_dispatcher_views_worker_requires_userbot_and_reports_only_successful_start(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        from app.bot import dispatcher
+
+        monkeypatch.setattr(
+            dispatcher.settings,
+            "publication_autodelete_views_worker_enabled",
+            True,
+        )
+
+        class UnexpectedWorker:
+            def __init__(self, **kwargs) -> None:
+                raise AssertionError("views worker must not construct without userbot")
+
+        monkeypatch.setattr(dispatcher, "PublicationAutodeleteViewsWorker", UnexpectedWorker)
+        assert (
+            await dispatcher._start_publication_autodelete_views_worker_if_enabled(
+                userbot_available=False,
+            )
+            is None
+        )
+
+        events: list[str] = []
+
+        class StartedWorker:
+            def __init__(self, **kwargs) -> None:
+                events.append("construct")
+
+            async def start(self) -> None:
+                events.append("start")
+
+        monkeypatch.setattr(dispatcher, "PublicationAutodeleteViewsWorker", StartedWorker)
+        worker = await dispatcher._start_publication_autodelete_views_worker_if_enabled(
+            userbot_available=True,
+        )
+        assert isinstance(worker, StartedWorker)
+        assert events == ["construct", "start"]
 
     asyncio.run(run())
 
