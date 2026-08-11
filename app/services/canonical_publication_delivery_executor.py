@@ -230,6 +230,7 @@ class CanonicalPublicationDeliveryExecutor:
         async with self.session_factory() as session:
             finalized = await CanonicalPublicationDeliveryFinalizer(session).complete_success(
                 claim.lease,
+                plan=claim.plan,
                 message_ids=ids,
                 result_link=result_link,
                 finished_at=provider_finished_at,
