@@ -42,6 +42,7 @@ class _Delegate:
     holder = "atomic-handoff-unit"
     lease_seconds = 120
     allow_time_autodelete = False
+    allow_views_autodelete = False
 
     def __init__(self, events: list[str]) -> None:
         self.events = events
@@ -128,6 +129,7 @@ def test_handoff_executor_executes_only_committed_atomic_claim(monkeypatch) -> N
             "holder": "atomic-handoff-unit",
             "ttl_seconds": 120,
             "allow_time_autodelete": False,
+            "allow_views_autodelete": False,
         }
 
     asyncio.run(run())
