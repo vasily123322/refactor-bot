@@ -14,9 +14,6 @@ from app.domain.scheduler import SchedulerTaskLease
 from app.services.canonical_publication_delivery_atomic_handoff_claim import (
     CanonicalPublicationAtomicHandoffClaimResult,
 )
-from app.services.canonical_publication_delivery_capability_claim import (
-    CanonicalPublicationDeliveryCapabilityClaimService,
-)
 from app.services.canonical_publication_delivery_planner import CanonicalPublicationDeliveryPlanner
 from app.services.canonical_publication_legacy_transport_handoff import (
     CUTOVER_META_KEY,
@@ -24,6 +21,9 @@ from app.services.canonical_publication_legacy_transport_handoff import (
 )
 from app.services.canonical_publication_linked_repeat_parity import (
     CanonicalPublicationLinkedRepeatParityService,
+)
+from app.services.canonical_publication_repeat_capability_claim import (
+    CanonicalPublicationRepeatCapabilityClaimService,
 )
 from app.services.scheduling import as_utc
 
@@ -44,6 +44,11 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
     expose a transport-free queued occurrence: durable state is already canonical
     `sending + Attempt #1 + lease`. Repeat claim is allowed only when the caller proves a
     continuation worker is available to recover successor creation after terminal publish.
+
+    The final authority claim deliberately uses the strict repeat capability service, not
+    the generic delivery capability service. This keeps the atomic linked path behind the
+    same explicit repeat profile as canonical-only delivery when future effect parity is
+    widened.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -282,7 +287,7 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
             publication.legacy_post_task_id = None
             await self.session.delete(task)
 
-            claim = await CanonicalPublicationDeliveryCapabilityClaimService(
+            claim = await CanonicalPublicationRepeatCapabilityClaimService(
                 self.session
             ).claim_supported(
                 publication_id=safe_publication_id,
