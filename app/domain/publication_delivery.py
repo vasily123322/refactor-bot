@@ -56,7 +56,7 @@ class PublicationDeliveryAction(Base):
             name="ck_publication_delivery_action_type",
         ),
         CheckConstraint(
-            "state IN ('reserved', 'succeeded', 'unknown')",
+            "state IN ('reserved', 'succeeded', 'unknown', 'suppressed')",
             name="ck_publication_delivery_action_state",
         ),
     )
