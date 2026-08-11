@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -169,6 +170,45 @@ def test_malformed_provider_username_and_invite_never_enter_html() -> None:
     asyncio.run(run())
 
 
+def test_untrusted_manual_plan_links_and_negative_author_id_are_ignored() -> None:
+    async def run() -> None:
+        base = _plan()
+        assert base.admin_log is not None and base.owner_notice is not None
+        plan = replace(
+            base,
+            admin_log=replace(
+                base.admin_log,
+                result_link="https://evil.example/post",
+                author_username=None,
+                author_tg_user_id=-501,
+                author_full_name="<script>author</script>",
+            ),
+            owner_notice=replace(
+                base.owner_notice,
+                result_link="https://evil.example/post",
+            ),
+        )
+        bot = _Bot(
+            username=None,
+            invite_link="https://evil.example/+bad",
+        )
+        result = await CanonicalPublicationDeliveryLiveAuxiliaryExecutor(bot).execute(plan)
+        assert result.admin_sent == 1
+        assert result.owner_sent == 1
+
+        sends = _send_calls(bot)
+        admin_text = sends[0][2] or ""
+        owner_text = sends[1][2] or ""
+        assert "evil.example" not in admin_text
+        assert "evil.example" not in owner_text
+        assert "tg://user?id=-501" not in admin_text
+        assert "<script>author</script>" not in admin_text
+        # The invalid supplied post link is replaced by deterministic private evidence.
+        assert "https://t.me/c/123/77" in admin_text
+
+    asyncio.run(run())
+
+
 def test_cancellation_during_admin_send_stops_chain_before_owner_notice() -> None:
     async def run() -> None:
         bot = _Bot(cancel_chat_id=-9000)
@@ -184,11 +224,12 @@ def test_cancellation_during_admin_send_stops_chain_before_owner_notice() -> Non
 def test_mismatched_nested_plan_identity_is_never_executed() -> None:
     async def run() -> None:
         plan = _plan()
+        assert plan.admin_log is not None
         mismatched = CanonicalPublicationDeliveryLiveAuxiliaryPlan(
             publication_id=7,
             admin_log=CanonicalPublicationLiveAdminLogPlan(
                 publication_id=8,
-                log_chat_id=plan.admin_log.log_chat_id,  # type: ignore[union-attr]
+                log_chat_id=plan.admin_log.log_chat_id,
                 source_telegram_chat_id=-100123,
                 primary_message_id=77,
                 result_link=None,
