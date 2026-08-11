@@ -26,6 +26,7 @@ class CanonicalPublicationDeliveryExecutorLike(Protocol):
     holder: str
     lease_seconds: int
     allow_time_autodelete: bool
+    allow_views_autodelete: bool
 
     async def execute(self, publication_id: int): ...
 
@@ -52,11 +53,13 @@ def _publication_requests_forward(publication: Publication) -> bool:
 class CanonicalPublicationDeliveryHandoffExecutor:
     """Execute canonical-only rows directly and linked rows via atomic authority transfer.
 
-    Linked plain/silent/pin/time profiles use the established atomic handoff service.
-    Linked rows whose canonical queue-time intent contains `forward_to` are routed through
-    the dedicated forward coordinator. The same concrete time-autodelete availability
-    fact is passed to either coordinator, so any linked profile containing a requested
-    timer remains ineligible until its delete worker is actually available.
+    Linked plain/silent/pin/time/views profiles without forward intent use the general
+    atomic handoff service. Time and views availability are passed independently from the
+    concrete primary executor, so either delete capability remains legacy-owned when its
+    dependent worker did not start.
+
+    Linked rows containing `forward_to` remain routed through the dedicated forward
+    coordinator. Forward+views composition is intentionally not enabled by this stage.
 
     If capability claim returns no executable handle, durable state is classified before
     choosing the wrapper outcome: complete rollback is ordinary `claim_rejected`; every
@@ -97,6 +100,7 @@ class CanonicalPublicationDeliveryHandoffExecutor:
             return await self.executor.execute(safe_publication_id)
 
         allow_time_autodelete = bool(self.executor.allow_time_autodelete)
+        allow_views_autodelete = bool(self.executor.allow_views_autodelete)
         async with self.session_factory() as session:
             if forward_requested:
                 transfer = await CanonicalPublicationLinkedForwardAtomicHandoffService(
@@ -115,6 +119,7 @@ class CanonicalPublicationDeliveryHandoffExecutor:
                     holder=str(self.executor.holder),
                     ttl_seconds=int(self.executor.lease_seconds),
                     allow_time_autodelete=allow_time_autodelete,
+                    allow_views_autodelete=allow_views_autodelete,
                 )
 
         if transfer.outcome == "claim_unavailable":
