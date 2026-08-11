@@ -16,6 +16,9 @@ from app.services.canonical_repeat_plan_reservation import (
 from app.services.canonical_repeat_reservation_verifier import (
     CanonicalRepeatReservationVerifier,
 )
+from app.services.canonical_repeat_transport_adapter import (
+    CanonicalRepeatTransportAdapter,
+)
 from app.services.legacy_content_mirror import mirror_legacy_post_task
 from app.services.publication_bridge import LegacyPublicationBridge
 from app.services.scheduling import compute_next_repeat_time
@@ -74,12 +77,13 @@ def _due_at(post: PostTask, payload: Mapping[str, Any]) -> datetime | None:
 
 
 class Scheduler(PublicationScheduler):
-    """Publication-aware scheduler with guarded canonical migration shadows."""
+    """Publication-aware scheduler with guarded canonical repeat migration modes."""
 
     def __init__(
         self,
         *args,
         repeat_shadow_planning: bool | None = None,
+        repeat_successful_planning: bool | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -87,6 +91,11 @@ class Scheduler(PublicationScheduler):
             bool(settings.canonical_repeat_shadow_planning_enabled)
             if repeat_shadow_planning is None
             else bool(repeat_shadow_planning)
+        )
+        self._repeat_successful_planning = (
+            bool(settings.canonical_repeat_successful_planning_enabled)
+            if repeat_successful_planning is None
+            else bool(repeat_successful_planning)
         )
 
     @staticmethod
@@ -210,12 +219,95 @@ class Scheduler(PublicationScheduler):
                 type(exc).__name__,
             )
 
+    async def _successful_repeat_materialize(
+        self,
+        session: AsyncSession,
+        *,
+        source_publication_id: int,
+        post_id: int,
+    ) -> bool:
+        async def materialize_in(cutover_session: AsyncSession) -> bool:
+            result = await CanonicalRepeatTransportAdapter(cutover_session).materialize(
+                int(source_publication_id)
+            )
+            if result.outcome in {"created", "existing", "existing_transport"}:
+                logger.info(
+                    "Scheduler: canonical successful repeat planning handled "
+                    "source_publication_id={} post_id={} outcome={} "
+                    "successor_publication_id={} successor_post_id={}",
+                    int(source_publication_id),
+                    int(post_id),
+                    result.outcome,
+                    result.publication_id,
+                    result.legacy_post_task_id,
+                )
+                return True
+            logger.error(
+                "Scheduler: canonical successful repeat planning blocked "
+                "source_publication_id={} post_id={} outcome={}",
+                int(source_publication_id),
+                int(post_id),
+                result.outcome,
+            )
+            return False
+
+        try:
+            if self.session_factory is not None:
+                async with self.session_factory() as cutover_session:
+                    return await materialize_in(cutover_session)
+            return await materialize_in(session)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "Scheduler: canonical successful repeat planning failed "
+                "source_publication_id={} post_id={} type={}",
+                int(source_publication_id),
+                int(post_id),
+                type(exc).__name__,
+            )
+            return False
+
     async def _schedule_next_repeat_if_needed(
         self,
         session: AsyncSession,
         post: PostTask,
         pl: dict,
     ) -> None:
+        # This cutover covers only the normal transition after a successful publication.
+        # Overdue and boot recovery still use their dedicated legacy paths until the
+        # canonical recovery planner is proven in a separate migration stage.
+        if self._repeat_successful_planning:
+            expected_at = self._shadow_repeat_expected_at(post, pl)
+            if expected_at is None:
+                return
+            source_publication_id = await self._shadow_repeat_reserve(
+                session,
+                post=post,
+                expected_at=expected_at,
+            )
+            if source_publication_id is None:
+                logger.error(
+                    "Scheduler: canonical successful repeat planning could not reserve "
+                    "post_id={}",
+                    int(post.id),
+                )
+                return
+            handled = await self._successful_repeat_materialize(
+                session,
+                source_publication_id=source_publication_id,
+                post_id=int(post.id),
+            )
+            if handled:
+                await self._shadow_repeat_verify(
+                    session,
+                    source_publication_id=source_publication_id,
+                    post_id=int(post.id),
+                )
+            # Strict successful-transition cutover: never invoke the legacy creator
+            # after a canonical materialization attempt.
+            return
+
         if not self._repeat_shadow_planning:
             await super()._schedule_next_repeat_if_needed(session, post, pl)
             return

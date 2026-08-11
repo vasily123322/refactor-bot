@@ -36,6 +36,12 @@ class Settings(BaseSettings):
         default=False,
         alias="CANONICAL_REPEAT_SHADOW_PLANNING_ENABLED",
     )
+    # Default-off cutover for the normal post-success repeat transition only.
+    # Overdue/boot recovery remains legacy-backed until its own canonical planner lands.
+    canonical_repeat_successful_planning_enabled: bool = Field(
+        default=False,
+        alias="CANONICAL_REPEAT_SUCCESSFUL_PLANNING_ENABLED",
+    )
 
     # Opt-in cleanup for canonicalized unsuccessful legacy scheduler rows.
     post_task_retention_enabled: bool = Field(
