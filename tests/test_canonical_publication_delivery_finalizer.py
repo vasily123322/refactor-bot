@@ -91,6 +91,7 @@ async def _claim_after_transport_retirement(
 
 
 def _as_utc(value: datetime) -> datetime:
+    # SQLite may round-trip timezone-aware DateTime values as naive UTC.
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
@@ -107,7 +108,9 @@ def test_success_finalization_is_canonical_only_and_releases_exact_lease(tmp_pat
             Session = async_sessionmaker(engine, expire_on_commit=False)
             scheduled_at = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
             publication_id, task_id = await _seed_claimable_publication(
-                Session, seed=1, scheduled_at=scheduled_at
+                Session,
+                seed=1,
+                scheduled_at=scheduled_at,
             )
             claim = await _claim_after_transport_retirement(
                 Session,
@@ -138,7 +141,8 @@ def test_success_finalization_is_canonical_only_and_releases_exact_lease(tmp_pat
                 assert publication.legacy_post_task_id is None
 
                 schedule = await session.get(
-                    ScheduleEntry, int(publication.schedule_entry_id or 0)
+                    ScheduleEntry,
+                    int(publication.schedule_entry_id or 0),
                 )
                 assert schedule is not None
                 assert schedule.status == "completed"
@@ -166,6 +170,9 @@ def test_success_finalization_is_canonical_only_and_releases_exact_lease(tmp_pat
                     finished_at=finished_at + timedelta(seconds=1),
                 )
                 assert stale.outcome == "conflict"
+                publication = await session.get(Publication, publication_id)
+                assert publication is not None
+                assert publication.status == "published"
         finally:
             await engine.dispose()
 
@@ -183,7 +190,9 @@ def test_failure_finalization_redacts_untrusted_error_text(tmp_path) -> None:
             Session = async_sessionmaker(engine, expire_on_commit=False)
             scheduled_at = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
             publication_id, task_id = await _seed_claimable_publication(
-                Session, seed=2, scheduled_at=scheduled_at
+                Session,
+                seed=2,
+                scheduled_at=scheduled_at,
             )
             claim = await _claim_after_transport_retirement(
                 Session,
@@ -202,10 +211,36 @@ def test_failure_finalization_redacts_untrusted_error_text(tmp_path) -> None:
                     finished_at=scheduled_at + timedelta(minutes=2),
                 )
                 assert result.outcome == "failed"
+
                 publication = await session.get(Publication, publication_id)
                 assert publication is not None
+                assert publication.status == "failed"
+                assert publication.telegram_message_ids is None
+                assert publication.result_link is None
                 assert publication.last_error == GENERIC_SCHEDULER_ERROR
                 assert "SUPERSECRET" not in publication.last_error
+
+                schedule = await session.get(
+                    ScheduleEntry,
+                    int(publication.schedule_entry_id or 0),
+                )
+                assert schedule is not None
+                assert schedule.status == "failed"
+
+                attempt = (
+                    await session.execute(
+                        select(PublicationAttempt).where(
+                            PublicationAttempt.publication_id == publication_id,
+                            PublicationAttempt.attempt == 1,
+                        )
+                    )
+                ).scalar_one()
+                assert attempt.status == "failed"
+                assert attempt.error == GENERIC_SCHEDULER_ERROR
+                assert attempt.finished_at is not None
+                assert await CanonicalPublicationDeliveryClaimService(session).current(
+                    publication_id
+                ) is None
         finally:
             await engine.dispose()
 
@@ -223,7 +258,9 @@ def test_stale_lease_token_cannot_finalize_or_release_live_claim(tmp_path) -> No
             Session = async_sessionmaker(engine, expire_on_commit=False)
             scheduled_at = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
             publication_id, task_id = await _seed_claimable_publication(
-                Session, seed=3, scheduled_at=scheduled_at
+                Session,
+                seed=3,
+                scheduled_at=scheduled_at,
             )
             claim = await _claim_after_transport_retirement(
                 Session,
@@ -237,6 +274,7 @@ def test_stale_lease_token_cannot_finalize_or_release_live_claim(tmp_path) -> No
                 holder="stale-worker",
                 expires_at=claim.lease.expires_at,
             )
+
             async with Session() as session:
                 finalizer = CanonicalPublicationDeliveryFinalizer(session)
                 result = await finalizer.complete_success(
@@ -245,6 +283,16 @@ def test_stale_lease_token_cannot_finalize_or_release_live_claim(tmp_path) -> No
                     finished_at=scheduled_at + timedelta(minutes=2),
                 )
                 assert result.outcome == "conflict"
+                publication = await session.get(Publication, publication_id)
+                assert publication is not None
+                assert publication.status == "sending"
+                assert publication.attempt_count == 1
+                current = await CanonicalPublicationDeliveryClaimService(session).current(
+                    publication_id
+                )
+                assert current is not None
+                assert current.lease_token == claim.lease.lease_token
+
                 exact = await finalizer.complete_success(
                     claim.lease,
                     message_ids=[601],
@@ -268,7 +316,9 @@ def test_invalid_success_evidence_keeps_claim_open_for_explicit_resolution(tmp_p
             Session = async_sessionmaker(engine, expire_on_commit=False)
             scheduled_at = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
             publication_id, task_id = await _seed_claimable_publication(
-                Session, seed=4, scheduled_at=scheduled_at
+                Session,
+                seed=4,
+                scheduled_at=scheduled_at,
             )
             claim = await _claim_after_transport_retirement(
                 Session,
@@ -276,19 +326,38 @@ def test_invalid_success_evidence_keeps_claim_open_for_explicit_resolution(tmp_p
                 task_id=task_id,
                 now=scheduled_at + timedelta(minutes=1),
             )
+
             async with Session() as session:
                 finalizer = CanonicalPublicationDeliveryFinalizer(session)
-                empty = await finalizer.complete_success(claim.lease, message_ids=[])
+                empty = await finalizer.complete_success(
+                    claim.lease,
+                    message_ids=[],
+                )
                 assert empty.outcome == "invalid"
-                unsafe = await finalizer.complete_success(
+                unsafe_link = await finalizer.complete_success(
                     claim.lease,
                     message_ids=[701],
                     result_link="https://evil.example/secret/701",
                 )
-                assert unsafe.outcome == "invalid"
+                assert unsafe_link.outcome == "invalid"
+
                 publication = await session.get(Publication, publication_id)
                 assert publication is not None
                 assert publication.status == "sending"
+                assert publication.attempt_count == 1
+                attempt = (
+                    await session.execute(
+                        select(PublicationAttempt).where(
+                            PublicationAttempt.publication_id == publication_id,
+                            PublicationAttempt.attempt == 1,
+                        )
+                    )
+                ).scalar_one()
+                assert attempt.status == "sending"
+                assert attempt.finished_at is None
+                assert await CanonicalPublicationDeliveryClaimService(session).current(
+                    publication_id
+                ) is not None
         finally:
             await engine.dispose()
 
