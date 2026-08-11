@@ -54,16 +54,16 @@ class CanonicalPublicationDeliveryExecutionResult:
 
 
 class CanonicalPublicationDeliveryExecutor:
-    """Execute one supported canonical delivery slice with live-lease auxiliaries.
+    """Execute a committed exact-token canonical delivery claim.
 
-    Runtime execution requires physical legacy transport retirement inside the atomic
-    claim transaction. Optional time-autodelete authority is additionally gated by the
-    concrete runtime's proven delete-worker availability.
+    Canonical-only rows use `execute()`, which first obtains a capability claim. Linked
+    transport rows may instead use `execute_claim()` after the atomic handoff+claim
+    coordinator has committed transport retirement, `sending`, Attempt #1 and the exact
+    delivery lease in one transaction.
 
-    Once the primary provider returns message ids, requested timer materialization is a
-    required post-send semantic. A blocking post-send failure never finalizes success:
-    the exact `sending + lease` claim remains for expiry recovery, preventing both silent
-    timer loss and automatic primary resend after an ambiguous provider side effect.
+    Once primary Telegram returns message ids, required post-send semantics (currently
+    time-autodelete when enabled) can block terminal success. Such a block leaves the
+    durable sending claim for fail-closed recovery and never retries primary delivery.
     """
 
     def __init__(
@@ -221,28 +221,40 @@ class CanonicalPublicationDeliveryExecutor:
             )
             return True
 
-    async def execute(
-        self,
-        publication_id: int,
-        *,
-        now: datetime | None = None,
-    ) -> CanonicalPublicationDeliveryExecutionResult:
+    @staticmethod
+    def _claim_publication_id(
+        claim: CanonicalPublicationDeliveryClaim,
+    ) -> int | None:
+        if not isinstance(claim, CanonicalPublicationDeliveryClaim):
+            return None
         try:
-            safe_publication_id = int(publication_id)
+            plan_id = int(claim.plan.publication_id)
+            lease_id = int(claim.lease.publication_id)
         except (TypeError, ValueError, OverflowError):
-            safe_publication_id = 0
-        if safe_publication_id <= 0:
-            return CanonicalPublicationDeliveryExecutionResult(
-                safe_publication_id, "ineligible"
-            )
+            return None
+        if plan_id <= 0 or plan_id != lease_id or int(claim.attempt) != 1:
+            return None
+        if not str(claim.lease.lease_token):
+            return None
+        return plan_id
 
-        claim = await self._claim(safe_publication_id, now=now)
-        if claim is None:
-            return CanonicalPublicationDeliveryExecutionResult(
-                safe_publication_id, "ineligible"
-            )
+    async def execute_claim(
+        self,
+        claim: CanonicalPublicationDeliveryClaim,
+    ) -> CanonicalPublicationDeliveryExecutionResult:
+        """Execute provider work for an already committed exact canonical claim."""
 
-        runtime_options = claim.plan.runtime_options()
+        safe_publication_id = self._claim_publication_id(claim)
+        if safe_publication_id is None:
+            return CanonicalPublicationDeliveryExecutionResult(0, "ineligible")
+
+        try:
+            runtime_options = claim.plan.runtime_options()
+        except (TypeError, ValueError):
+            return CanonicalPublicationDeliveryExecutionResult(
+                safe_publication_id,
+                "lease_lost",
+            )
         silent_override = (
             runtime_options["silent"] if "silent" in runtime_options else None
         )
@@ -367,3 +379,25 @@ class CanonicalPublicationDeliveryExecutor:
             result_link=result_link,
             post_send_hook_failed=hook_failed,
         )
+
+    async def execute(
+        self,
+        publication_id: int,
+        *,
+        now: datetime | None = None,
+    ) -> CanonicalPublicationDeliveryExecutionResult:
+        try:
+            safe_publication_id = int(publication_id)
+        except (TypeError, ValueError, OverflowError):
+            safe_publication_id = 0
+        if safe_publication_id <= 0:
+            return CanonicalPublicationDeliveryExecutionResult(
+                safe_publication_id, "ineligible"
+            )
+
+        claim = await self._claim(safe_publication_id, now=now)
+        if claim is None:
+            return CanonicalPublicationDeliveryExecutionResult(
+                safe_publication_id, "ineligible"
+            )
+        return await self.execute_claim(claim)
