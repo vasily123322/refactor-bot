@@ -32,6 +32,47 @@ def _utc(value: datetime | None = None) -> datetime:
     return current.astimezone(timezone.utc)
 
 
+def _scheduled_at(value) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return _utc(parsed)
+
+
+def _existing_runtime_matches(
+    value,
+    *,
+    seconds: int,
+    earliest_due: datetime,
+) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    state = dict(value)
+    if set(state) != {"deleted", "effective_seconds", "scheduled_at"}:
+        return False
+    if state.get("deleted") is not False:
+        return False
+    raw_seconds = state.get("effective_seconds")
+    if isinstance(raw_seconds, bool):
+        return False
+    try:
+        existing_seconds = int(raw_seconds)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    due = _scheduled_at(state.get("scheduled_at"))
+    return bool(
+        existing_seconds == int(seconds)
+        and due is not None
+        and due >= _utc(earliest_due)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CanonicalPublicationDeliveryLiveAutodeleteResult:
     publication_id: int
@@ -41,13 +82,17 @@ class CanonicalPublicationDeliveryLiveAutodeleteResult:
 class CanonicalPublicationDeliveryLiveAutodeleteWriter:
     """Materialize requested time-autodelete while primary delivery ownership is live.
 
-    The generated runtime token is written after the primary Telegram send but before
-    terminal publication success. This preserves the historical scheduling boundary while
-    making timer survival a durable prerequisite for canonical terminal success.
+    Legacy non-repeat scheduling computes its timer after admin/result handling. This
+    writer occupies the same post-admin boundary and anchors a new timer to the current
+    materialization instant rather than to the earlier primary provider completion.
+
+    Existing runtime is accepted idempotently only when its effective duration matches
+    and its due time is no earlier than `primary_finished_at + seconds`. This keeps replay
+    stable while preventing an early-deletion token from being adopted.
 
     No Telegram method is called here. A crash after this write is safe: the Publication
-    remains `sending`, so the canonical autodelete worker cannot act until recovery or an
-    exact live owner later establishes terminal `published` state.
+    remains `sending`, so the canonical autodelete worker cannot act until exact terminal
+    `published` state exists.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -178,12 +223,7 @@ class CanonicalPublicationDeliveryLiveAutodeleteWriter:
                 outcome="ineligible",
             )
 
-        due_at = _utc(context.primary_finished_at) + timedelta(seconds=int(seconds))
-        desired = {
-            "deleted": False,
-            "effective_seconds": int(seconds),
-            "scheduled_at": due_at.isoformat(),
-        }
+        earliest_due = _utc(context.primary_finished_at) + timedelta(seconds=int(seconds))
 
         try:
             if not await self._lock_proof_rows(context, at=current):
@@ -193,9 +233,6 @@ class CanonicalPublicationDeliveryLiveAutodeleteWriter:
                     outcome="conflict",
                 )
 
-            # Re-run the complete live intent/lease proof while every mutable row used by
-            # it is locked. This catches source, document, runtime, repeat or lifecycle
-            # drift between the initial proof and the generated-runtime commit.
             reproved = await CanonicalPublicationDeliveryLiveAuxiliaryPlanner(
                 self.session
             ).plan(context, at=current)
@@ -216,7 +253,11 @@ class CanonicalPublicationDeliveryLiveAutodeleteWriter:
             meta = dict(publication.meta)
             existing_raw = meta.get(AUTODELETE_RUNTIME_META_KEY)
             if existing_raw is not None:
-                if not isinstance(existing_raw, Mapping) or dict(existing_raw) != desired:
+                if not _existing_runtime_matches(
+                    existing_raw,
+                    seconds=int(seconds),
+                    earliest_due=earliest_due,
+                ):
                     await self.session.rollback()
                     return CanonicalPublicationDeliveryLiveAutodeleteResult(
                         publication_id=publication_id,
@@ -228,6 +269,15 @@ class CanonicalPublicationDeliveryLiveAutodeleteWriter:
                     outcome="existing",
                 )
 
+            # `current` is the post-admin materialization boundary. The live hook invokes
+            # this writer after admin logging and before pin/forward, matching legacy
+            # non-repeat scheduling order without coupling due time to later auxiliaries.
+            due_at = current + timedelta(seconds=int(seconds))
+            desired = {
+                "deleted": False,
+                "effective_seconds": int(seconds),
+                "scheduled_at": due_at.isoformat(),
+            }
             publication.meta = {
                 **deepcopy(meta),
                 AUTODELETE_RUNTIME_META_KEY: deepcopy(desired),
