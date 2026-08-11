@@ -86,7 +86,7 @@ class _Sender:
         return [6501]
 
 
-def test_first_repeat_profile_accepts_only_plain_or_explicit_silent(tmp_path) -> None:
+def test_repeat_profile_accepts_plain_silent_and_pin_only(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'repeat-guard.db'}"
@@ -100,6 +100,9 @@ def test_first_repeat_profile_accepts_only_plain_or_explicit_silent(tmp_path) ->
                 (1, {}),
                 (2, {"silent": True}),
                 (3, {"silent": False}),
+                (4, {"pin_on": True}),
+                (5, {"silent": True, "pin_on": True}),
+                (6, {"pin_on": False}),
             ):
                 publication_id = await _seed_retired(
                     Session,
@@ -123,7 +126,7 @@ def test_first_repeat_profile_accepts_only_plain_or_explicit_silent(tmp_path) ->
     asyncio.run(run())
 
 
-def test_repeat_pin_forward_time_and_views_remain_fail_closed_even_when_dependencies_exist(
+def test_repeat_forward_time_and_views_remain_fail_closed_even_when_dependencies_exist(
     tmp_path,
 ) -> None:
     async def run() -> None:
@@ -135,11 +138,12 @@ def test_repeat_pin_forward_time_and_views_remain_fail_closed_even_when_dependen
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             cases = [
-                (10, {"pin_on": True}),
-                (11, {"__forward__": True}),
-                (12, {"autodelete_seconds": 60}),
-                (13, {"autodelete_views": 5}),
-                (14, {"silent": True, "pin_on": True}),
+                (10, {"__forward__": True}),
+                (11, {"autodelete_seconds": 60}),
+                (12, {"autodelete_views": 5}),
+                (13, {"pin_on": True, "__forward__": True}),
+                (14, {"pin_on": True, "autodelete_seconds": 60}),
+                (15, {"pin_on": True, "autodelete_views": 5}),
             ]
             for seed, options in cases:
                 publication_id = await _seed_retired(
