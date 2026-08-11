@@ -109,7 +109,7 @@ async def _successors(Session, source_publication_id: int):
         source = await session.get(Publication, source_publication_id)
         assert source is not None
         group_id = int(dict(source.meta or {})["repeat_group_id"])
-        rows = (
+        return (
             await session.execute(
                 select(Publication, ScheduleEntry)
                 .join(ScheduleEntry, ScheduleEntry.id == Publication.schedule_entry_id)
@@ -123,7 +123,6 @@ async def _successors(Session, source_publication_id: int):
                 .order_by(Publication.id.asc())
             )
         ).all()
-        return rows
 
 
 def test_terminal_canonical_repeat_source_materializes_exactly_one_successor(tmp_path) -> None:
@@ -164,17 +163,20 @@ def test_terminal_canonical_repeat_source_materializes_exactly_one_successor(tmp
             # First fixed-delay slot strictly after `now`: source 11:50 + 60s cadence
             # advances through missed slots to 12:01.
             assert as_utc(schedule.scheduled_at) == now + timedelta(minutes=1)
-            assert dict(successor.meta or {})["canonical_repeat_source_publication_id"] == source_id
-            task = await Session().get(PostTask, int(successor.legacy_post_task_id))
-            if task is not None:
-                await task.__class__  # pragma: no cover - never executed; keep type narrow
+            assert (
+                dict(successor.meta or {})[
+                    "canonical_repeat_source_publication_id"
+                ]
+                == source_id
+            )
 
             async with Session() as session:
                 task = await session.get(PostTask, int(successor.legacy_post_task_id))
                 assert task is not None
                 assert task.status == "pending"
                 assert task.dedupe_key == (
-                    f"canonical-repeat:{source_id}:{as_utc(schedule.scheduled_at).isoformat()}"
+                    f"canonical-repeat:{source_id}:"
+                    f"{as_utc(schedule.scheduled_at).isoformat()}"
                 )
 
             second = await worker.run_once(now=now + timedelta(seconds=1))
@@ -184,7 +186,9 @@ def test_terminal_canonical_repeat_source_materializes_exactly_one_successor(tmp
             assert len(await _successors(Session, source_id)) == 1
 
             async with Session() as session:
-                verification = await CanonicalRepeatReservationVerifier(session).verify(source_id)
+                verification = await CanonicalRepeatReservationVerifier(session).verify(
+                    source_id
+                )
                 assert verification.outcome == "matched"
         finally:
             await engine.dispose()
@@ -192,7 +196,9 @@ def test_terminal_canonical_repeat_source_materializes_exactly_one_successor(tmp
     asyncio.run(run())
 
 
-def test_pending_reservation_is_materialized_without_replanning_after_slot_passes(tmp_path) -> None:
+def test_pending_reservation_is_materialized_without_replanning_after_slot_passes(
+    tmp_path,
+) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'repeat-reservation-recovery.db'}"
@@ -210,7 +216,9 @@ def test_pending_reservation_is_materialized_without_replanning_after_slot_passe
             )
 
             async with Session() as session:
-                reservation = await CanonicalRepeatPlanReservationService(session).reserve_next(
+                reservation = await CanonicalRepeatPlanReservationService(
+                    session
+                ).reserve_next(
                     source_id,
                     after=reserve_at,
                 )
@@ -239,11 +247,12 @@ def test_pending_reservation_is_materialized_without_replanning_after_slot_passe
 
             async with Session() as session:
                 source = await session.get(Publication, source_id)
+                assert source is not None
                 source_schedule = await session.get(
                     ScheduleEntry,
                     int(source.schedule_entry_id),
                 )
-                assert source is not None and source_schedule is not None
+                assert source_schedule is not None
                 assert (
                     dict(source.meta or {})[CANONICAL_REPEAT_PLAN_RESERVATION_META_KEY]
                     == dict(source_schedule.meta or {})[
@@ -317,7 +326,12 @@ def test_keyset_cursor_does_not_skip_eligible_rows_when_batch_fills(tmp_path) ->
             assert first.eligible == 2
             assert second.eligible == 2
             assert first.cursor_reset is False
-            assert len([source_id for source_id in source_ids if (await _successors(Session, source_id))]) == 4
+
+            successor_count = 0
+            for source_id in source_ids:
+                if await _successors(Session, source_id):
+                    successor_count += 1
+            assert successor_count == 4
         finally:
             await engine.dispose()
 
