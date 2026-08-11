@@ -7,6 +7,9 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
+from app.services.canonical_publication_delivery_live_autodelete import (
+    CanonicalPublicationDeliveryLiveAutodeleteResult,
+)
 from app.services.canonical_publication_delivery_live_auxiliary_executor import (
     CanonicalPublicationDeliveryLiveAuxiliaryExecution,
 )
@@ -18,7 +21,11 @@ from app.services.canonical_publication_delivery_live_post_action_executor impor
     CanonicalPublicationDeliveryPostActionExecution,
 )
 from app.services.canonical_publication_delivery_post_send import (
+    CanonicalPublicationDeliveryPostSendBlockingError,
     CanonicalPublicationDeliveryPostSendContext,
+)
+from app.services.canonical_publication_delivery_runtime_capability import (
+    parse_canonical_publication_delivery_runtime_capability,
 )
 
 
@@ -36,28 +43,39 @@ class CanonicalPublicationDeliveryLivePostActionExecutorLike(Protocol):
     ) -> CanonicalPublicationDeliveryPostActionExecution: ...
 
 
+class CanonicalPublicationDeliveryLiveAutodeleteWriterLike(Protocol):
+    async def materialize(
+        self,
+        context: CanonicalPublicationDeliveryPostSendContext,
+    ) -> CanonicalPublicationDeliveryLiveAutodeleteResult: ...
+
+
 class CanonicalPublicationDeliveryLiveAuxiliaryHook:
-    """Coordinate current live admin, pin/forward, and owner auxiliaries.
+    """Coordinate live admin, timer materialization, pin/forward, and owner actions.
 
-    Proven runtime order is `admin -> pin/forward -> owner`. Each owner action is
-    re-authorized after the intervening provider side effects. The pin/forward executor
-    independently performs durable reservation plus fresh live reauthorization before
-    every provider call.
+    Historical non-repeat order is preserved as
+    `admin -> autodelete scheduling -> pin/forward -> owner`.
 
-    Autodelete remains intentionally outside this coordinator until its own canonical
-    runtime widening is connected. Generic pin/forward failures are best-effort and do
-    not suppress a later owner notice; cancellation is never swallowed.
+    Admin, pin/forward and owner provider effects remain best-effort under their existing
+    no-retry boundaries. Requested time-autodelete is different: the durable runtime
+    token is required execution semantics. If it cannot be established while exact
+    primary ownership is live, this hook raises a blocking error so the already-sent
+    primary delivery remains ambiguous for recovery instead of being finalized without
+    its requested deletion timer.
     """
 
     def __init__(
         self,
         *,
         executor: CanonicalPublicationDeliveryLiveAuxiliaryExecutorLike,
+        autodelete_writer: CanonicalPublicationDeliveryLiveAutodeleteWriterLike
+        | None = None,
         post_action_executor: CanonicalPublicationDeliveryLivePostActionExecutorLike
         | None = None,
         session_factory: async_sessionmaker[AsyncSession] = AsyncSessionLocal,
     ) -> None:
         self.executor = executor
+        self.autodelete_writer = autodelete_writer
         self.post_action_executor = post_action_executor
         self.session_factory = session_factory
 
@@ -68,6 +86,66 @@ class CanonicalPublicationDeliveryLiveAuxiliaryHook:
         async with self.session_factory() as session:
             return await CanonicalPublicationDeliveryLiveAuxiliaryPlanner(session).plan(
                 context
+            )
+
+    @staticmethod
+    def _time_autodelete_requested(
+        context: CanonicalPublicationDeliveryPostSendContext,
+    ) -> bool:
+        try:
+            capability = parse_canonical_publication_delivery_runtime_capability(
+                context.plan.runtime_options()
+            )
+        except (TypeError, ValueError):
+            capability = None
+        return bool(capability is not None and capability.time_autodelete_requested)
+
+    async def _materialize_autodelete(
+        self,
+        context: CanonicalPublicationDeliveryPostSendContext,
+    ) -> None:
+        requested = self._time_autodelete_requested(context)
+        if self.autodelete_writer is None:
+            if requested:
+                raise CanonicalPublicationDeliveryPostSendBlockingError(
+                    "canonical time-autodelete writer unavailable"
+                )
+            return
+
+        try:
+            result = await self.autodelete_writer.materialize(context)
+        except asyncio.CancelledError:
+            raise
+        except CanonicalPublicationDeliveryPostSendBlockingError:
+            raise
+        except Exception as exc:
+            if requested:
+                logger.warning(
+                    "Canonical live autodelete materialization failed "
+                    "publication_id={} error_type={}",
+                    int(context.publication_id),
+                    type(exc).__name__,
+                )
+                raise CanonicalPublicationDeliveryPostSendBlockingError(
+                    "canonical time-autodelete materialization failed"
+                ) from None
+            logger.warning(
+                "Canonical live autodelete no-op failed publication_id={} error_type={}",
+                int(context.publication_id),
+                type(exc).__name__,
+            )
+            return
+
+        if result.outcome in {"not_requested", "created", "existing"}:
+            return
+        if requested:
+            logger.warning(
+                "Canonical live autodelete not established publication_id={} outcome={}",
+                int(context.publication_id),
+                str(result.outcome),
+            )
+            raise CanonicalPublicationDeliveryPostSendBlockingError(
+                "canonical time-autodelete runtime not established"
             )
 
     async def execute(
@@ -99,6 +177,8 @@ class CanonicalPublicationDeliveryLiveAuxiliaryHook:
                     int(admin_result.admin_failed),
                     int(admin_result.invalid_plans),
                 )
+
+        await self._materialize_autodelete(context)
 
         if self.post_action_executor is not None:
             try:
