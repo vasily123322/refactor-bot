@@ -49,13 +49,6 @@ _EXPANDED_ALLOWED_RUNTIME_KEYS = frozenset(
         "autodelete_report",
     }
 )
-_TIMER_RUNTIME_KEYS = frozenset(
-    {
-        "autodelete_seconds",
-        "autodelete_views",
-        "autodelete_report",
-    }
-)
 _NEUTRAL_NUMBER_VALUES = (None, False, 0, "0", "")
 
 
@@ -78,14 +71,24 @@ class _AtomicHandoffRuntimeProfile:
     options: dict[str, Any]
     pin_on: bool = False
     time_autodelete_seconds: int | None = None
+    views_autodelete_threshold: int | None = None
+    autodelete_report: bool = False
 
     @property
     def timer_requested(self) -> bool:
         return self.time_autodelete_seconds is not None
 
     @property
+    def views_requested(self) -> bool:
+        return self.views_autodelete_threshold is not None
+
+    @property
+    def delete_requested(self) -> bool:
+        return self.timer_requested or self.views_requested
+
+    @property
     def expanded(self) -> bool:
-        return self.pin_on or self.timer_requested
+        return self.pin_on or self.delete_requested
 
 
 def _positive_int(value: Any) -> int | None:
@@ -98,10 +101,18 @@ def _positive_int(value: Any) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def _strict_optional_positive_int(value: Any) -> tuple[bool, int | None]:
+    if value in _NEUTRAL_NUMBER_VALUES:
+        return True, None
+    parsed = _positive_int(value)
+    return (parsed is not None), parsed
+
+
 def _atomic_runtime_profile(
     plan: CanonicalPublicationDeliveryPlan,
     *,
     allow_time_autodelete: bool,
+    allow_views_autodelete: bool,
 ) -> _AtomicHandoffRuntimeProfile | None:
     existing = _supported_runtime_options(plan)
     if existing is not None:
@@ -125,32 +136,36 @@ def _atomic_runtime_profile(
             return None
         pin_on = bool(options.get("pin_on"))
 
-    timer_fields_present = bool(set(options).intersection(_TIMER_RUNTIME_KEYS))
-    seconds: int | None = None
-    if timer_fields_present:
-        if not allow_time_autodelete:
-            return None
-        seconds = _positive_int(options.get("autodelete_seconds"))
-        if seconds is None:
-            return None
-        views = options.get("autodelete_views")
-        if views not in _NEUTRAL_NUMBER_VALUES:
-            return None
-        report = options.get("autodelete_report", False)
-        if type(report) is not bool:
-            return None
+    seconds_ok, seconds = _strict_optional_positive_int(
+        options.get("autodelete_seconds")
+    )
+    views_ok, views = _strict_optional_positive_int(options.get("autodelete_views"))
+    if not seconds_ok or not views_ok or (seconds is not None and views is not None):
+        return None
 
-    if not pin_on and seconds is None:
+    report = options.get("autodelete_report", False)
+    if type(report) is not bool:
+        return None
+    if report and seconds is None and views is None:
+        return None
+    if seconds is not None and not allow_time_autodelete:
+        return None
+    if views is not None and not allow_views_autodelete:
+        return None
+
+    if not pin_on and seconds is None and views is None:
         return None
 
     return _AtomicHandoffRuntimeProfile(
         options=deepcopy(options),
         pin_on=pin_on,
         time_autodelete_seconds=seconds,
+        views_autodelete_threshold=views,
+        autodelete_report=bool(report),
     )
 
 
-def _generated_timer_state_is_pristine(payload: Mapping[str, Any]) -> bool:
+def _generated_delete_state_is_pristine(payload: Mapping[str, Any]) -> bool:
     if payload.get("autodelete_effective_seconds") not in _NEUTRAL_NUMBER_VALUES:
         return False
     if payload.get("autodelete_at") not in (None, ""):
@@ -196,29 +211,57 @@ def _expanded_legacy_intent_matches(
     if profile.pin_on:
         if type(current.get("pin_on")) is not bool or current.get("pin_on") is not True:
             return False
+    elif current.get("pin_on") not in (None, False, 0):
+        return False
 
-    if profile.timer_requested:
-        if not _generated_timer_state_is_pristine(current):
+    if profile.delete_requested:
+        if not _generated_delete_state_is_pristine(current):
             return False
-        raw_seconds = profile.options.get("autodelete_seconds")
-        if (
-            "autodelete_seconds" not in current
-            or current.get("autodelete_seconds") != raw_seconds
-        ):
-            return False
+
+        if profile.timer_requested:
+            raw_seconds = profile.options.get("autodelete_seconds")
+            if (
+                "autodelete_seconds" not in current
+                or current.get("autodelete_seconds") != raw_seconds
+            ):
+                return False
+            if "autodelete_views" in profile.options:
+                if current.get("autodelete_views") != profile.options.get(
+                    "autodelete_views"
+                ):
+                    return False
+            elif current.get("autodelete_views") not in _NEUTRAL_NUMBER_VALUES:
+                return False
+
+        if profile.views_requested:
+            raw_views = profile.options.get("autodelete_views")
+            if (
+                "autodelete_views" not in current
+                or current.get("autodelete_views") != raw_views
+            ):
+                return False
+            if "autodelete_seconds" in profile.options:
+                if current.get("autodelete_seconds") != profile.options.get(
+                    "autodelete_seconds"
+                ):
+                    return False
+            elif current.get("autodelete_seconds") not in _NEUTRAL_NUMBER_VALUES:
+                return False
+
         if "autodelete_report" in profile.options:
             if (
                 type(current.get("autodelete_report")) is not bool
-                or current.get("autodelete_report")
-                is not profile.options.get("autodelete_report")
+                or current.get("autodelete_report") is not profile.autodelete_report
             ):
                 return False
         elif current.get("autodelete_report") not in (None, False):
             return False
-        if "autodelete_views" in profile.options:
-            if current.get("autodelete_views") != profile.options.get("autodelete_views"):
-                return False
-        elif current.get("autodelete_views") not in _NEUTRAL_NUMBER_VALUES:
+    else:
+        if current.get("autodelete_seconds") not in _NEUTRAL_NUMBER_VALUES:
+            return False
+        if current.get("autodelete_views") not in _NEUTRAL_NUMBER_VALUES:
+            return False
+        if current.get("autodelete_report") not in (None, False):
             return False
 
     current_for_base = deepcopy(current)
@@ -226,7 +269,7 @@ def _expanded_legacy_intent_matches(
         current_for_base.pop(key, None)
     if profile.pin_on:
         current_for_base.pop("pin_on", None)
-    if profile.timer_requested:
+    if profile.delete_requested:
         for key in (
             "autodelete_seconds",
             "autodelete_effective_seconds",
@@ -274,10 +317,9 @@ class CanonicalPublicationAtomicHandoffClaimService:
     """Transfer linked authority and claim canonical delivery in one commit.
 
     Empty/silent parity remains identical to the established handoff service. The atomic
-    path additionally supports exact ``pin_on=true`` and the pristine time-only timer
-    profile. Pin and timer may be composed because canonical live order matches legacy:
-    timer materialization happens before pin and pin targets the last primary message in
-    the source chat.
+    path additionally supports exact pin, pristine time-autodelete and pristine
+    views-autodelete. Time and views remain mutually exclusive. Each delete capability is
+    admitted only when its corresponding canonical worker is proven available.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -304,6 +346,7 @@ class CanonicalPublicationAtomicHandoffClaimService:
         ttl_seconds: int,
         at: datetime | None = None,
         allow_time_autodelete: bool = False,
+        allow_views_autodelete: bool = False,
     ) -> CanonicalPublicationAtomicHandoffClaimResult:
         try:
             safe_publication_id = int(publication_id)
@@ -429,6 +472,7 @@ class CanonicalPublicationAtomicHandoffClaimService:
                 _atomic_runtime_profile(
                     plan,
                     allow_time_autodelete=allow_time_autodelete,
+                    allow_views_autodelete=allow_views_autodelete,
                 )
                 if plan is not None
                 else None
@@ -482,6 +526,7 @@ class CanonicalPublicationAtomicHandoffClaimService:
                 "source_status": "pending",
                 "atomic_claim": True,
                 "time_autodelete": bool(profile.timer_requested),
+                "views_autodelete": bool(profile.views_requested),
                 "pin_on": bool(profile.pin_on),
             }
             schedule.meta = {
@@ -503,6 +548,7 @@ class CanonicalPublicationAtomicHandoffClaimService:
                 ttl_seconds=ttl_seconds,
                 now=current,
                 allow_time_autodelete=allow_time_autodelete,
+                allow_views_autodelete=allow_views_autodelete,
             )
             if claim is None:
                 await self.session.rollback()
