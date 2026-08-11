@@ -20,6 +20,9 @@ from app.services.canonical_publication_delivery_live_auxiliary_hook import (
 from app.services.canonical_publication_delivery_live_post_action_executor import (
     CanonicalPublicationDeliveryLivePostActionExecutor,
 )
+from app.services.canonical_publication_repeat_delivery_executor import (
+    CanonicalPublicationRepeatDeliveryExecutor,
+)
 from app.services.canonical_publication_result_link import (
     CanonicalPublicationResultLinkResolver,
 )
@@ -65,14 +68,13 @@ def build_canonical_publication_delivery_runtime(
     heartbeat_interval_seconds: float = 45.0,
     allow_time_autodelete: bool = False,
     allow_views_autodelete: bool = False,
+    allow_repeat: bool = False,
 ) -> CanonicalPublicationDeliveryRuntime:
     """Compose canonical delivery dependencies without starting provider-capable work.
 
-    Construction is side-effect free. The live timer writer is always composed so a
-    timer-capable runtime has the required durable boundary, but timer authority remains
-    separately controlled by `allow_time_autodelete` inside the locked primary claim.
-    Views authority is independently controlled by `allow_views_autodelete`; its indexed
-    threshold is staged inside the claim transaction rather than through this hook.
+    Construction is side-effect free. Delete and repeat authority are independent and
+    default off. Repeat affects claim eligibility only; successor continuation remains a
+    separate provider-free worker dependency.
     """
 
     sender = DocumentPostingService(bot, session_factory)
@@ -91,7 +93,7 @@ def build_canonical_publication_delivery_runtime(
         post_action_executor=post_action_executor,
         session_factory=session_factory,
     )
-    executor = CanonicalPublicationDeliveryExecutor(
+    executor = CanonicalPublicationRepeatDeliveryExecutor(
         session_factory,
         sender=sender,
         result_link_resolver=result_link_resolver,
@@ -101,6 +103,7 @@ def build_canonical_publication_delivery_runtime(
         heartbeat_interval_seconds=heartbeat_interval_seconds,
         allow_time_autodelete=allow_time_autodelete,
         allow_views_autodelete=allow_views_autodelete,
+        allow_repeat=allow_repeat,
     )
     return CanonicalPublicationDeliveryRuntime(
         executor=executor,
