@@ -163,6 +163,44 @@ def test_effectful_secondary_runtime_options_fail_closed(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_truthy_string_boolean_options_are_not_treated_as_neutral(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'canonical-primary-string-bool.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            due = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
+            publication_ids = []
+            for index, key in enumerate(
+                ("silent", "pin_on", "autodelete_report"),
+                start=40,
+            ):
+                publication_ids.append(
+                    await _seed_transport_retired(
+                        Session,
+                        seed=index,
+                        scheduled_at=due,
+                        runtime_options={key: "0"},
+                        repeat_rule={"enabled": False},
+                    )
+                )
+
+            async with Session() as session:
+                planner = CanonicalPublicationPrimaryDeliveryCapabilityPlanner(session)
+                for publication_id in publication_ids:
+                    assert await planner.plan(
+                        publication_id,
+                        at=due + timedelta(minutes=1),
+                    ) is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_enabled_repeat_is_not_primary_only_even_with_neutral_runtime(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
