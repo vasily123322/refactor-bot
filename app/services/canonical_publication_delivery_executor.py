@@ -60,9 +60,11 @@ class CanonicalPublicationDeliveryExecutor:
     but this concrete executor cannot compete with the still-authoritative legacy
     Scheduler while ``Publication.legacy_post_task_id`` is present.
 
-    Current runtime capability is intentionally narrow: non-repeat delivery with either
-    empty runtime options or exactly ``silent: bool``. The capability claim validates
-    that profile while holding the same mutable proof rows before authority transition.
+    The current canonical-only non-repeat capability accepts explicit ``silent``, pin,
+    and forward intent through the locked capability claim. Forward Channel destinations
+    are resolved and durably snapshotted before this executor receives an executable
+    lease; live post-send actions then require the same snapshot and durable no-retry
+    reservations before any secondary Telegram provider call.
     """
 
     def __init__(
