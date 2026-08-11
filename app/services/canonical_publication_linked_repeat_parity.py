@@ -15,12 +15,12 @@ from app.services.canonical_publication_legacy_transport_handoff import (
     _mapping,
     _silent_intent_matches,
     _strip_neutral_effect_fields,
-    _supported_runtime_options,
 )
 from app.services.scheduling import as_utc
 
 
 _NEUTRAL_NUMBER_VALUES = (None, False, 0, "0", "")
+_REPEAT_PIN_RUNTIME_KEYS = frozenset({"silent", "pin_on"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +30,7 @@ class CanonicalPublicationLinkedRepeatParityProof:
     repeat_group_id: int
     repeat_seconds: int
     root_occurrence: bool
+    pin_on: bool = False
 
 
 def _positive_int(value: Any) -> int | None:
@@ -57,6 +58,22 @@ def _repeat_rule(plan: CanonicalPublicationDeliveryPlan) -> tuple[int, dict[str,
     if not set(rule).issubset({"enabled", "seconds"}):
         return None
     return seconds, deepcopy(rule)
+
+
+def _repeat_pin_runtime_options(
+    plan: CanonicalPublicationDeliveryPlan,
+) -> dict[str, Any] | None:
+    try:
+        options = plan.runtime_options()
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(options, dict) or not set(options).issubset(_REPEAT_PIN_RUNTIME_KEYS):
+        return None
+    if "silent" in options and type(options.get("silent")) is not bool:
+        return None
+    if "pin_on" in options and type(options.get("pin_on")) is not bool:
+        return None
+    return deepcopy(options)
 
 
 def _canonical_group_id(
@@ -91,9 +108,10 @@ def _generated_state_is_pristine(payload: Mapping[str, Any]) -> bool:
 class CanonicalPublicationLinkedRepeatParityService:
     """Read-only proof for pristine fixed-delay linked repeat handoff.
 
-    This first repeat profile intentionally admits only the already-established
-    empty/explicit-silent runtime slice. Pin/forward/time/views composition can be widened
-    separately after fixed-delay lineage and successor recovery are proven in isolation.
+    The proven repeat surface now includes exact optional `pin_on: bool` in addition to
+    empty/explicit-silent runtime. This is parity only: the strict repeat capability claim
+    remains the independent authority barrier until a later PR explicitly widens it.
+    Forward/time/views composition remains outside this proof.
 
     Root bridge occurrences do not carry `repeat_group_id` in PostTask payload: the group
     becomes known only after the root PostTask is flushed and is stored in canonical
@@ -140,7 +158,7 @@ class CanonicalPublicationLinkedRepeatParityService:
         if dict(schedule_rule) != {"enabled": True, "seconds": repeat_seconds}:
             return None
 
-        runtime_options = _supported_runtime_options(plan)
+        runtime_options = _repeat_pin_runtime_options(plan)
         current = _mapping(task.payload)
         expected = _expected_transport_payload(plan)
         if runtime_options is None or current is None or expected is None:
@@ -152,6 +170,13 @@ class CanonicalPublicationLinkedRepeatParityService:
         if not _silent_intent_matches(current, expected, runtime_options):
             return None
         if not _generated_state_is_pristine(current):
+            return None
+
+        pin_on = bool(runtime_options.get("pin_on", False))
+        if pin_on:
+            if type(current.get("pin_on")) is not bool or current.get("pin_on") is not True:
+                return None
+        elif current.get("pin_on") not in (None, False, 0):
             return None
 
         if current.get("repeat_on") is not True:
@@ -172,13 +197,13 @@ class CanonicalPublicationLinkedRepeatParityService:
             if task_group is None or task_group != group_id:
                 return None
 
-        # Remove only the repeat fields whose exact parity was proven above, then reuse
-        # the established immutable transport comparison. Any hidden pin/forward/delete
-        # or unknown effect remains visible and causes fail-closed rejection.
+        # Remove only the repeat/pin fields whose exact parity was proven above, then
+        # reuse the established immutable transport comparison. Hidden forward/delete or
+        # unknown effects remain visible and cause fail-closed rejection.
         current_clean = deepcopy(current)
         for key in _IDENTITY_MARKERS:
             current_clean.pop(key, None)
-        for key in ("repeat_on", "repeat_seconds", "repeat_group_id"):
+        for key in ("repeat_on", "repeat_seconds", "repeat_group_id", "pin_on"):
             current_clean.pop(key, None)
         stripped_current = _strip_neutral_effect_fields(current_clean)
         stripped_expected = _strip_neutral_effect_fields(deepcopy(expected))
@@ -195,4 +220,5 @@ class CanonicalPublicationLinkedRepeatParityService:
             repeat_group_id=group_id,
             repeat_seconds=repeat_seconds,
             root_occurrence=root_occurrence,
+            pin_on=pin_on,
         )
