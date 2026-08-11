@@ -38,6 +38,9 @@ from app.services.canonical_publication_delivery_live_auxiliary_hook import (
 from app.services.canonical_publication_delivery_post_send import (
     CanonicalPublicationDeliveryPostSendContext,
 )
+from app.services.publication_autodelete_candidates import (
+    PublicationAutodeleteCandidateSelector,
+)
 from app.services.publication_bridge import LegacyPublicationBridge
 from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
 
@@ -166,7 +169,7 @@ def test_timer_claim_is_default_off_and_explicitly_enabled_only_with_executor() 
     asyncio.run(run())
 
 
-def test_live_timer_materialization_matches_terminal_runtime_planner() -> None:
+def test_live_timer_materialization_matches_terminal_runtime_and_is_not_prematurely_due() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         try:
@@ -228,6 +231,14 @@ def test_live_timer_materialization_matches_terminal_runtime_planner() -> None:
                 )
                 assert repeated.outcome == "existing"
 
+                # Generated runtime may exist while primary ownership is still live, but
+                # the mature destructive selector requires terminal `published` and must
+                # not expose this row to the delete worker yet.
+                before_terminal = await PublicationAutodeleteCandidateSelector(
+                    session
+                ).select_batch(limit=200)
+                assert publication_id not in before_terminal.publication_ids
+
             async with Session() as session:
                 finalized = await CanonicalPublicationDeliveryFinalizer(
                     session
@@ -248,6 +259,10 @@ def test_live_timer_materialization_matches_terminal_runtime_planner() -> None:
                 assert terminal_plan is not None
                 assert terminal_plan.existing is True
                 assert terminal_plan.scheduled_at == expected_due
+                after_terminal = await PublicationAutodeleteCandidateSelector(
+                    session
+                ).select_batch(limit=200)
+                assert publication_id in after_terminal.publication_ids
         finally:
             await engine.dispose()
 
