@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Protocol
 
 from loguru import logger
@@ -13,6 +14,9 @@ from app.services.canonical_publication_delivery_live_auxiliary_planner import (
     CanonicalPublicationDeliveryLiveAuxiliaryPlan,
     CanonicalPublicationDeliveryLiveAuxiliaryPlanner,
 )
+from app.services.canonical_publication_delivery_live_post_action_executor import (
+    CanonicalPublicationDeliveryPostActionExecution,
+)
 from app.services.canonical_publication_delivery_post_send import (
     CanonicalPublicationDeliveryPostSendContext,
 )
@@ -25,27 +29,36 @@ class CanonicalPublicationDeliveryLiveAuxiliaryExecutorLike(Protocol):
     ) -> CanonicalPublicationDeliveryLiveAuxiliaryExecution: ...
 
 
+class CanonicalPublicationDeliveryLivePostActionExecutorLike(Protocol):
+    async def execute(
+        self,
+        context: CanonicalPublicationDeliveryPostSendContext,
+    ) -> CanonicalPublicationDeliveryPostActionExecution: ...
+
+
 class CanonicalPublicationDeliveryLiveAuxiliaryHook:
-    """One-shot post-send coordinator for current canonical owner/admin parity.
+    """Coordinate current live admin, pin/forward, and owner auxiliaries.
 
-    Each non-idempotent provider action is preceded by a fresh planner pass in a fresh
-    short DB session. That rechecks exact live lease ownership and the full claimed intent
-    immediately before the action. Admin logging executes first, matching legacy order;
-    owner notification is independently re-authorized afterwards.
+    Proven runtime order is `admin -> pin/forward -> owner`. Each owner action is
+    re-authorized after the intervening provider side effects. The pin/forward executor
+    independently performs durable reservation plus fresh live reauthorization before
+    every provider call.
 
-    The hook never retries an action. If ownership or intent is lost between admin and
-    owner, the second planner returns no plan and owner notification is skipped. Generic
-    DB/provider failures may bubble to the outer best-effort post-send hook boundary;
-    cancellation is never swallowed.
+    Autodelete remains intentionally outside this coordinator until its own canonical
+    runtime widening is connected. Generic pin/forward failures are best-effort and do
+    not suppress a later owner notice; cancellation is never swallowed.
     """
 
     def __init__(
         self,
         *,
         executor: CanonicalPublicationDeliveryLiveAuxiliaryExecutorLike,
+        post_action_executor: CanonicalPublicationDeliveryLivePostActionExecutorLike
+        | None = None,
         session_factory: async_sessionmaker[AsyncSession] = AsyncSessionLocal,
     ) -> None:
         self.executor = executor
+        self.post_action_executor = post_action_executor
         self.session_factory = session_factory
 
     async def _plan(
@@ -78,16 +91,39 @@ class CanonicalPublicationDeliveryLiveAuxiliaryHook:
                     admin_log=first.admin_log,
                 )
             )
-            if (
-                admin_result.admin_failed
-                or admin_result.invalid_plans
-            ):
+            if admin_result.admin_failed or admin_result.invalid_plans:
                 logger.info(
                     "Canonical live admin auxiliary completed with issues "
                     "publication_id={} failed={} invalid={}",
                     int(context.publication_id),
                     int(admin_result.admin_failed),
                     int(admin_result.invalid_plans),
+                )
+
+        if self.post_action_executor is not None:
+            try:
+                action_result = await self.post_action_executor.execute(context)
+                if (
+                    action_result.unknown
+                    or action_result.suppressed
+                    or action_result.conflicts
+                ):
+                    logger.info(
+                        "Canonical live post actions completed with issues "
+                        "publication_id={} unknown={} suppressed={} conflicts={}",
+                        int(context.publication_id),
+                        int(action_result.unknown),
+                        int(action_result.suppressed),
+                        int(action_result.conflicts),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Canonical live post-action coordinator failed "
+                    "publication_id={} error_type={}",
+                    int(context.publication_id),
+                    type(exc).__name__,
                 )
 
         second = await self._plan(context)
@@ -107,10 +143,7 @@ class CanonicalPublicationDeliveryLiveAuxiliaryHook:
                     admin_log=None,
                 )
             )
-            if (
-                owner_result.owner_failed
-                or owner_result.invalid_plans
-            ):
+            if owner_result.owner_failed or owner_result.invalid_plans:
                 logger.info(
                     "Canonical live owner auxiliary completed with issues "
                     "publication_id={} failed={} invalid={}",
