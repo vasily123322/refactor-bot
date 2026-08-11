@@ -90,7 +90,7 @@ class _Sender:
         return [6501]
 
 
-def test_repeat_profile_accepts_plain_silent_pin_and_forward_slices(tmp_path) -> None:
+def test_repeat_profile_accepts_proven_pin_forward_composition(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'repeat-guard.db'}"
@@ -109,6 +109,9 @@ def test_repeat_profile_accepts_plain_silent_pin_and_forward_slices(tmp_path) ->
                 (6, {"pin_on": False}),
                 (7, {"__forward__": True}),
                 (8, {"silent": True, "__forward__": True}),
+                (9, {"pin_on": True, "__forward__": True}),
+                (10, {"silent": True, "pin_on": True, "__forward__": True}),
+                (11, {"pin_on": False, "__forward__": True}),
             ):
                 publication_id = await _seed_retired(
                     Session,
@@ -132,7 +135,7 @@ def test_repeat_profile_accepts_plain_silent_pin_and_forward_slices(tmp_path) ->
     asyncio.run(run())
 
 
-def test_repeat_unproven_compositions_and_delete_modes_remain_fail_closed(
+def test_repeat_delete_modes_and_malformed_forward_remain_fail_closed(
     tmp_path,
 ) -> None:
     async def run() -> None:
@@ -144,16 +147,14 @@ def test_repeat_unproven_compositions_and_delete_modes_remain_fail_closed(
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             cases = [
-                (10, {"autodelete_seconds": 60}),
-                (11, {"autodelete_views": 5}),
-                (12, {"pin_on": True, "__forward__": True}),
-                (13, {"pin_on": False, "__forward__": True}),
-                (14, {"pin_on": True, "autodelete_seconds": 60}),
-                (15, {"pin_on": True, "autodelete_views": 5}),
-                (16, {"forward_to": []}),
-                (17, {"__duplicate_forward__": True}),
-                (18, {"__invalid_forward__": True}),
-                (19, {"forward_to": "not-a-list"}),
+                (20, {"autodelete_seconds": 60}),
+                (21, {"autodelete_views": 5}),
+                (22, {"pin_on": True, "autodelete_seconds": 60}),
+                (23, {"pin_on": True, "autodelete_views": 5}),
+                (24, {"forward_to": []}),
+                (25, {"__duplicate_forward__": True}),
+                (26, {"__invalid_forward__": True}),
+                (27, {"forward_to": "not-a-list"}),
             ]
             for seed, options in cases:
                 publication_id = await _seed_retired(
@@ -196,7 +197,7 @@ def test_nonrepeat_effectful_delivery_keeps_full_existing_capability_surface(tmp
             Session = async_sessionmaker(engine, expire_on_commit=False)
             publication_id = await _seed_retired(
                 Session,
-                seed=20,
+                seed=30,
                 repeat=False,
                 runtime_options={"pin_on": True},
             )
