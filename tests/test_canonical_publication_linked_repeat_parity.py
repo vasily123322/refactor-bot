@@ -99,6 +99,7 @@ def test_bridge_root_repeat_proves_fixed_delay_lineage_without_payload_group_id(
             assert proof.repeat_seconds == 60
             assert proof.root_occurrence is True
             assert proof.pin_on is False
+            assert proof.forward_channel_ids == ()
         finally:
             await engine.dispose()
 
@@ -201,6 +202,7 @@ def test_repeat_pin_parity_requires_exact_legacy_pin_intent(tmp_path) -> None:
             assert proof is not None
             assert proof.pin_on is True
             assert proof.repeat_seconds == 60
+            assert proof.forward_channel_ids == ()
 
             async with Session() as session:
                 task = await session.get(PostTask, task_id)
@@ -216,7 +218,7 @@ def test_repeat_pin_parity_requires_exact_legacy_pin_intent(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_repeat_pin_parity_does_not_absorb_forward_or_delete_effects(tmp_path) -> None:
+def test_repeat_effect_scope_still_rejects_delete_and_pin_forward_composition(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'repeat-effect-scope.db'}"
@@ -226,7 +228,6 @@ def test_repeat_pin_parity_does_not_absorb_forward_or_delete_effects(tmp_path) -
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             cases = [
-                (5, {"forward_to": [1]}),
                 (6, {"autodelete_seconds": 60}),
                 (7, {"autodelete_views": 5}),
                 (8, {"pin_on": True, "forward_to": [1]}),

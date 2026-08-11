@@ -7,6 +7,9 @@ from typing import Any, Mapping
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.canonical_publication_delivery_planner import CanonicalPublicationDeliveryPlan
+from app.services.canonical_publication_delivery_runtime_capability import (
+    parse_canonical_publication_delivery_runtime_capability,
+)
 from app.services.canonical_publication_legacy_transport_handoff import (
     _FORBIDDEN_EPHEMERAL_KEYS,
     _IDENTITY_MARKERS,
@@ -20,7 +23,7 @@ from app.services.scheduling import as_utc
 
 
 _NEUTRAL_NUMBER_VALUES = (None, False, 0, "0", "")
-_REPEAT_PIN_RUNTIME_KEYS = frozenset({"silent", "pin_on"})
+_REPEAT_FORWARD_RUNTIME_KEYS = frozenset({"silent", "pin_on", "forward_to"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +34,7 @@ class CanonicalPublicationLinkedRepeatParityProof:
     repeat_seconds: int
     root_occurrence: bool
     pin_on: bool = False
+    forward_channel_ids: tuple[int, ...] = ()
 
 
 def _positive_int(value: Any) -> int | None:
@@ -53,27 +57,37 @@ def _repeat_rule(plan: CanonicalPublicationDeliveryPlan) -> tuple[int, dict[str,
     seconds = _positive_int(rule.get("seconds"))
     if seconds is None:
         return None
-    # Unknown future repeat semantics must not be silently absorbed into the fixed-delay
-    # authority profile.
     if not set(rule).issubset({"enabled", "seconds"}):
         return None
     return seconds, deepcopy(rule)
 
 
-def _repeat_pin_runtime_options(
+def _repeat_forward_runtime_options(
     plan: CanonicalPublicationDeliveryPlan,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any], tuple[int, ...]] | None:
     try:
         options = plan.runtime_options()
     except (TypeError, ValueError):
         return None
-    if not isinstance(options, dict) or not set(options).issubset(_REPEAT_PIN_RUNTIME_KEYS):
+    if not isinstance(options, dict) or not set(options).issubset(
+        _REPEAT_FORWARD_RUNTIME_KEYS
+    ):
         return None
     if "silent" in options and type(options.get("silent")) is not bool:
         return None
     if "pin_on" in options and type(options.get("pin_on")) is not bool:
         return None
-    return deepcopy(options)
+
+    capability = parse_canonical_publication_delivery_runtime_capability(options)
+    if capability is None:
+        return None
+    forward_ids = tuple(int(channel_id) for channel_id in capability.forward_to)
+
+    # repeat+pin and repeat+forward are intentionally separate migration slices. The
+    # composition remains fail-closed until its own authority/replay proof.
+    if bool(capability.pin_on) and forward_ids:
+        return None
+    return deepcopy(options), forward_ids
 
 
 def _canonical_group_id(
@@ -105,19 +119,33 @@ def _generated_state_is_pristine(payload: Mapping[str, Any]) -> bool:
     return True
 
 
+def _legacy_forward_ids(payload: Mapping[str, Any]) -> tuple[int, ...] | None:
+    raw = payload.get("forward_to")
+    if raw in (None, False):
+        return ()
+    if not isinstance(raw, list) or len(raw) > 100:
+        return None
+    normalized: list[int] = []
+    seen: set[int] = set()
+    for value in raw:
+        parsed = _positive_int(value)
+        if parsed is None or parsed in seen:
+            return None
+        seen.add(parsed)
+        normalized.append(parsed)
+    return tuple(normalized)
+
+
 class CanonicalPublicationLinkedRepeatParityService:
     """Read-only proof for pristine fixed-delay linked repeat handoff.
 
-    The proven repeat surface now includes exact optional `pin_on: bool` in addition to
-    empty/explicit-silent runtime. This is parity only: the strict repeat capability claim
-    remains the independent authority barrier until a later PR explicitly widens it.
-    Forward/time/views composition remains outside this proof.
+    Proven repeat effects are intentionally independent slices: optional pin OR ordered
+    forward intent, plus optional explicit silent. Forward target IDs are exact ordered
+    internal Channel IDs, matching the established non-repeat forward parity contract.
+    Pin+forward and both delete modes remain outside this proof.
 
-    Root bridge occurrences do not carry `repeat_group_id` in PostTask payload: the group
-    becomes known only after the root PostTask is flushed and is stored in canonical
-    Publication/Schedule metadata. Such absence is accepted only when canonical group id
-    equals the exact linked root PostTask id. Successor occurrences must carry an explicit
-    payload group id equal to canonical metadata.
+    This is still parity only. The strict repeat capability claim remains the independent
+    authority barrier until a later PR deliberately widens it to forward.
     """
 
     def prove(
@@ -158,11 +186,12 @@ class CanonicalPublicationLinkedRepeatParityService:
         if dict(schedule_rule) != {"enabled": True, "seconds": repeat_seconds}:
             return None
 
-        runtime_options = _repeat_pin_runtime_options(plan)
+        runtime_profile = _repeat_forward_runtime_options(plan)
         current = _mapping(task.payload)
         expected = _expected_transport_payload(plan)
-        if runtime_options is None or current is None or expected is None:
+        if runtime_profile is None or current is None or expected is None:
             return None
+        runtime_options, forward_ids = runtime_profile
         if any(key in current for key in _FORBIDDEN_EPHEMERAL_KEYS):
             return None
         if not _identity_markers_match(current, publication=publication, plan=plan):
@@ -177,6 +206,10 @@ class CanonicalPublicationLinkedRepeatParityService:
             if type(current.get("pin_on")) is not bool or current.get("pin_on") is not True:
                 return None
         elif current.get("pin_on") not in (None, False, 0):
+            return None
+
+        legacy_forward_ids = _legacy_forward_ids(current)
+        if legacy_forward_ids is None or legacy_forward_ids != forward_ids:
             return None
 
         if current.get("repeat_on") is not True:
@@ -197,13 +230,18 @@ class CanonicalPublicationLinkedRepeatParityService:
             if task_group is None or task_group != group_id:
                 return None
 
-        # Remove only the repeat/pin fields whose exact parity was proven above, then
-        # reuse the established immutable transport comparison. Hidden forward/delete or
-        # unknown effects remain visible and cause fail-closed rejection.
+        # Remove only effects whose exact parity was proven above. Hidden delete or
+        # unknown effects remain visible and fail the established immutable comparison.
         current_clean = deepcopy(current)
         for key in _IDENTITY_MARKERS:
             current_clean.pop(key, None)
-        for key in ("repeat_on", "repeat_seconds", "repeat_group_id", "pin_on"):
+        for key in (
+            "repeat_on",
+            "repeat_seconds",
+            "repeat_group_id",
+            "pin_on",
+            "forward_to",
+        ):
             current_clean.pop(key, None)
         stripped_current = _strip_neutral_effect_fields(current_clean)
         stripped_expected = _strip_neutral_effect_fields(deepcopy(expected))
@@ -221,4 +259,5 @@ class CanonicalPublicationLinkedRepeatParityService:
             repeat_seconds=repeat_seconds,
             root_occurrence=root_occurrence,
             pin_on=pin_on,
+            forward_channel_ids=forward_ids,
         )
