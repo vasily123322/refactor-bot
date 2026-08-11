@@ -15,6 +15,9 @@ from app.domain.content.models import ContentItem
 from app.domain.models import Channel, Client, PostTask
 from app.domain.publication_autodelete import PublicationAutodeleteViewState
 from app.domain.publishing.models import Publication, ScheduleEntry
+from app.services.canonical_repeat_views_lifecycle_authority import (
+    CanonicalRepeatViewsLifecycleAuthorityService,
+)
 from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
 from app.services.telegram_results import (
     normalize_telegram_message_ids,
@@ -187,6 +190,11 @@ class PublicationAutodeleteViewsService:
     existing Publication autodelete lease before calling it. Network calls are never
     made with a DB transaction held open. Report delivery is disabled by default and
     may be enabled only by a caller that has explicitly opted into the proven path.
+
+    Repeat views are independently default-off. An explicit test/runtime composition may
+    set `allow_repeat_views=True`, but every such occurrence must then pass the centralized
+    locked repeat-views lifecycle proof both during candidate admission and fresh
+    pre-delete/current-state revalidation. Existing production workers do not set it.
     """
 
     def __init__(
@@ -197,12 +205,14 @@ class PublicationAutodeleteViewsService:
         delete_provider: TelegramDeleteProvider,
         next_check_seconds: int = 60,
         allow_report: bool = False,
+        allow_repeat_views: bool = False,
     ) -> None:
         self.session = session
         self.view_source = view_source
         self.delete_provider = delete_provider
         self.next_check_seconds = max(15, min(int(next_check_seconds), 3600))
         self.allow_report = bool(allow_report)
+        self.allow_repeat_views = bool(allow_repeat_views)
 
     async def _authoritative_intent(
         self,
@@ -238,6 +248,33 @@ class PublicationAutodeleteViewsService:
         if options is None:
             return False, None, False
         return _view_intent(options, allow_report=self.allow_report)
+
+    async def _lifecycle_allowed(
+        self,
+        publication: Publication,
+        schedule: ScheduleEntry,
+        *,
+        telegram_message_ids: tuple[int, ...],
+        threshold: int,
+        report_enabled: bool,
+    ) -> bool:
+        if _safe_nonrepeat(schedule):
+            return True
+        if not self.allow_repeat_views:
+            return False
+
+        proof = await CanonicalRepeatViewsLifecycleAuthorityService(
+            self.session
+        ).lock_and_prove(int(publication.id))
+        if proof is None:
+            return False
+        return (
+            proof.publication_id == int(publication.id)
+            and proof.schedule_entry_id == int(schedule.id)
+            and proof.threshold == int(threshold)
+            and proof.autodelete_report is bool(report_enabled)
+            and proof.telegram_message_ids == telegram_message_ids
+        )
 
     async def _candidate(
         self,
@@ -315,11 +352,24 @@ class PublicationAutodeleteViewsService:
             )
         if (
             not runtime_safe
-            or not _safe_nonrepeat(schedule)
             or not ids
             or threshold is None
             or not intent_safe
             or authoritative_threshold != threshold
+        ):
+            await self.session.rollback()
+            return None, PublicationAutodeleteViewsResult(
+                publication_id=safe_publication_id,
+                outcome="ineligible",
+                threshold=threshold,
+                message_count=len(ids),
+            )
+        if not await self._lifecycle_allowed(
+            publication,
+            schedule,
+            telegram_message_ids=ids,
+            threshold=threshold,
+            report_enabled=report_enabled,
         ):
             await self.session.rollback()
             return None, PublicationAutodeleteViewsResult(
@@ -395,7 +445,6 @@ class PublicationAutodeleteViewsService:
             or int(schedule.channel_id) != candidate.channel_id
             or int(schedule.content_item_id) != candidate.content_item_id
             or int(schedule.content_revision) != candidate.content_revision
-            or not _safe_nonrepeat(schedule)
             or item is None
             or str(item.kind) != "post"
             or int(item.channel_id) != candidate.channel_id
@@ -446,6 +495,14 @@ class PublicationAutodeleteViewsService:
         if require_state and (state is None or int(state.threshold) != candidate.threshold):
             raise PublicationAutodeleteViewsSyncConflict()
         if state is not None and int(state.threshold) != candidate.threshold:
+            raise PublicationAutodeleteViewsSyncConflict()
+        if not await self._lifecycle_allowed(
+            publication,
+            schedule,
+            telegram_message_ids=ids,
+            threshold=candidate.threshold,
+            report_enabled=candidate.report_enabled,
+        ):
             raise PublicationAutodeleteViewsSyncConflict()
         return publication, state
 
