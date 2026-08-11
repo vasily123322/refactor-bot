@@ -10,7 +10,7 @@ import app.domain  # noqa: F401 register complete ORM metadata
 from app.core.db import Base
 from app.domain.content import PostDocument
 from app.domain.models import Channel, ChannelSettings, Client, PostTask
-from app.domain.publishing.models import Publication, PublicationAttempt
+from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.repositories.admin import AdminConfigRepo
 from app.repositories.content import ContentRepo
 from app.services.canonical_publication_delivery_claim import (
@@ -95,12 +95,14 @@ async def _seed_claim(
 
 
 def _context(claim, *, finished_at: datetime):
+    chat_id = str(int(claim.plan.telegram_chat_id))
+    assert chat_id.startswith("-100")
     return CanonicalPublicationDeliveryPostSendContext(
         publication_id=int(claim.plan.publication_id),
         lease=claim.lease,
         plan=claim.plan,
         message_ids=(1901, 1902),
-        result_link="https://t.me/c/136001/1902",
+        result_link=f"https://t.me/c/{chat_id[4:]}/1902",
         primary_finished_at=finished_at,
     )
 
@@ -301,6 +303,78 @@ def test_malformed_owner_settings_fail_closed_only_for_owner_notice(tmp_path) ->
     asyncio.run(run())
 
 
+def test_claimed_intent_drift_blocks_auxiliaries_before_provider_actions(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'live-aux-intent-drift.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            scheduled_at = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
+
+            runtime_claim, _channel_id, _owner_id = await _seed_claim(
+                Session,
+                seed=5,
+                scheduled_at=scheduled_at,
+            )
+            runtime_finished = scheduled_at + timedelta(seconds=2)
+            async with Session() as session:
+                publication = await session.get(
+                    Publication,
+                    int(runtime_claim.plan.publication_id),
+                )
+                assert publication is not None
+                schedule = await session.get(
+                    ScheduleEntry,
+                    int(publication.schedule_entry_id or 0),
+                )
+                assert schedule is not None
+                changed = {"runtime_options": {"silent": True}}
+                publication.meta = dict(changed)
+                schedule.meta = dict(changed)
+                await session.commit()
+            async with Session() as session:
+                assert await CanonicalPublicationDeliveryLiveAuxiliaryPlanner(
+                    session
+                ).plan(
+                    _context(runtime_claim, finished_at=runtime_finished),
+                    at=runtime_finished,
+                ) is None
+
+            repeat_claim, _channel_id, _owner_id = await _seed_claim(
+                Session,
+                seed=6,
+                scheduled_at=scheduled_at,
+            )
+            repeat_finished = scheduled_at + timedelta(seconds=2)
+            async with Session() as session:
+                publication = await session.get(
+                    Publication,
+                    int(repeat_claim.plan.publication_id),
+                )
+                assert publication is not None
+                schedule = await session.get(
+                    ScheduleEntry,
+                    int(publication.schedule_entry_id or 0),
+                )
+                assert schedule is not None
+                schedule.repeat_rule = {"enabled": True, "seconds": 3600}
+                await session.commit()
+            async with Session() as session:
+                assert await CanonicalPublicationDeliveryLiveAuxiliaryPlanner(
+                    session
+                ).plan(
+                    _context(repeat_claim, finished_at=repeat_finished),
+                    at=repeat_finished,
+                ) is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_source_destination_or_lease_drift_blocks_entire_auxiliary_plan(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
@@ -313,7 +387,7 @@ def test_source_destination_or_lease_drift_blocks_entire_auxiliary_plan(tmp_path
             scheduled_at = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
             claim, channel_id, _owner_id = await _seed_claim(
                 Session,
-                seed=5,
+                seed=7,
                 scheduled_at=scheduled_at,
             )
             finished_at = scheduled_at + timedelta(seconds=2)
