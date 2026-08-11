@@ -17,7 +17,7 @@ def _config() -> CanonicalPublicationDeliveryPrimarySettings:
     )
 
 
-def test_dispatcher_starts_recovery_before_primary_and_passes_started_instance(
+def test_dispatcher_starts_recovery_before_primary_and_passes_dependency_facts(
     monkeypatch,
 ) -> None:
     async def run() -> None:
@@ -38,6 +38,7 @@ def test_dispatcher_starts_recovery_before_primary_and_passes_started_instance(
             assert kwargs["recovery_worker"] is recovery
             assert kwargs["bot"] is dispatcher.bot
             assert kwargs["session_factory"] is dispatcher.AsyncSessionLocal
+            assert kwargs["time_autodelete_executor_available"] is True
             return primary
 
         async def unexpected_stop(**kwargs):
@@ -59,7 +60,10 @@ def test_dispatcher_starts_recovery_before_primary_and_passes_started_instance(
             unexpected_stop,
         )
 
-        result = await dispatcher._start_canonical_publication_delivery_workers(config)
+        result = await dispatcher._start_canonical_publication_delivery_workers(
+            config,
+            time_autodelete_executor_available=True,
+        )
 
         assert result == (primary, recovery)
         assert calls == ["recovery", "primary"]
@@ -79,6 +83,7 @@ def test_dispatcher_primary_start_failure_stops_started_recovery(monkeypatch) ->
 
         async def fail_primary(**kwargs):
             assert kwargs["recovery_worker"] is recovery
+            assert kwargs["time_autodelete_executor_available"] is False
             raise RuntimeError("primary startup failed")
 
         async def stop_workers(**kwargs):
