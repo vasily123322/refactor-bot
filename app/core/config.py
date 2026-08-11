@@ -36,11 +36,11 @@ class Settings(BaseSettings):
         default=False,
         alias="CANONICAL_REPEAT_SHADOW_PLANNING_ENABLED",
     )
-    # Default-off planning cutover. Canonical reservation becomes the authority while
-    # PostTask remains only the delivery adapter/executor for the materialized child.
-    canonical_repeat_transport_adapter_enabled: bool = Field(
+    # Default-off cutover for the normal post-success repeat transition only.
+    # Overdue/boot recovery remains legacy-backed until its own canonical planner lands.
+    canonical_repeat_successful_planning_enabled: bool = Field(
         default=False,
-        alias="CANONICAL_REPEAT_TRANSPORT_ADAPTER_ENABLED",
+        alias="CANONICAL_REPEAT_SUCCESSFUL_PLANNING_ENABLED",
     )
 
     # Opt-in cleanup for canonicalized unsuccessful legacy scheduler rows.
