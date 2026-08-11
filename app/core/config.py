@@ -30,6 +30,12 @@ class Settings(BaseSettings):
 
     # Scheduler settings
     repeat_overflow_limit: int = Field(default=2, alias="REPEAT_OVERFLOW_LIMIT")
+    # Default-off shadow comparison between canonical repeat planning and the
+    # still-authoritative legacy PostTask repeat scheduler.
+    canonical_repeat_shadow_planning_enabled: bool = Field(
+        default=False,
+        alias="CANONICAL_REPEAT_SHADOW_PLANNING_ENABLED",
+    )
 
     # Opt-in cleanup for canonicalized unsuccessful legacy scheduler rows.
     post_task_retention_enabled: bool = Field(
