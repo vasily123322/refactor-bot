@@ -21,6 +21,7 @@ def test_runtime_composition_wires_exact_delivery_dependencies_without_io() -> N
         lease_seconds=1,
         heartbeat_interval_seconds=120,
         allow_time_autodelete=True,
+        allow_views_autodelete=True,
     )
 
     assert runtime.sender.bot is bot
@@ -43,9 +44,10 @@ def test_runtime_composition_wires_exact_delivery_dependencies_without_io() -> N
     assert runtime.executor.lease_seconds == 30
     assert runtime.executor.heartbeat_interval_seconds == 15.0
     assert runtime.executor.allow_time_autodelete is True
+    assert runtime.executor.allow_views_autodelete is True
 
 
-def test_runtime_composition_defaults_timer_authority_off_and_does_not_share_objects() -> None:
+def test_runtime_composition_defaults_delete_authority_off_and_does_not_share_objects() -> None:
     bot = _Bot()
     session_factory = object()
 
@@ -60,6 +62,8 @@ def test_runtime_composition_defaults_timer_authority_off_and_does_not_share_obj
 
     assert first.executor.allow_time_autodelete is False
     assert second.executor.allow_time_autodelete is False
+    assert first.executor.allow_views_autodelete is False
+    assert second.executor.allow_views_autodelete is False
     assert first is not second
     assert first.executor is not second.executor
     assert first.sender is not second.sender
