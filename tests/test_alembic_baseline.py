@@ -72,6 +72,7 @@ def test_alembic_baseline_is_frozen_and_followup_revisions_are_idempotent(
         "scheduler_task_leases",
         "publication_autodelete_leases",
         "publication_autodelete_view_states",
+        "publication_delivery_leases",
     }
     assert followup_tables <= current_orm_tables
 
@@ -87,12 +88,12 @@ def test_alembic_baseline_is_frozen_and_followup_revisions_are_idempotent(
     head = _run_alembic(repo_root, database_path, "head")
     assert head.returncode == 0, head.stdout + head.stderr
     assert _table_names(database_path) == current_orm_tables | {"alembic_version"}
-    assert _version(database_path) == ("20260810_0004",)
+    assert _version(database_path) == ("20260811_0005",)
 
     repeated = _run_alembic(repo_root, database_path, "head")
     assert repeated.returncode == 0, repeated.stdout + repeated.stderr
     assert _table_names(database_path) == current_orm_tables | {"alembic_version"}
-    assert _version(database_path) == ("20260810_0004",)
+    assert _version(database_path) == ("20260811_0005",)
 
 
 def test_followup_revisions_adopt_tables_precreated_by_legacy_create_all(
@@ -107,6 +108,7 @@ def test_followup_revisions_adopt_tables_precreated_by_legacy_create_all(
         "scheduler_task_leases",
         "publication_autodelete_leases",
         "publication_autodelete_view_states",
+        "publication_delivery_leases",
     ):
         assert table_name not in _table_names(database_path)
 
@@ -116,6 +118,7 @@ def test_followup_revisions_adopt_tables_precreated_by_legacy_create_all(
             "scheduler_task_leases",
             "publication_autodelete_leases",
             "publication_autodelete_view_states",
+            "publication_delivery_leases",
         ):
             Base.metadata.tables[table_name].create(
                 bind=sync_engine,
@@ -127,11 +130,12 @@ def test_followup_revisions_adopt_tables_precreated_by_legacy_create_all(
         "scheduler_task_leases",
         "publication_autodelete_leases",
         "publication_autodelete_view_states",
+        "publication_delivery_leases",
     ):
         assert table_name in _table_names(database_path)
     assert _version(database_path) == ("20260809_0001",)
 
     adopted = _run_alembic(repo_root, database_path, "head")
     assert adopted.returncode == 0, adopted.stdout + adopted.stderr
-    assert _version(database_path) == ("20260810_0004",)
+    assert _version(database_path) == ("20260811_0005",)
     assert _table_names(database_path) == set(Base.metadata.tables) | {"alembic_version"}
