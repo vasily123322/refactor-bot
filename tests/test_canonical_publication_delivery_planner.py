@@ -113,7 +113,7 @@ def test_due_publication_plans_after_physical_post_task_retirement(tmp_path) -> 
                 assert plan.scheduled_at == scheduled_at
                 assert plan.runtime_options() == _RUNTIME_OPTIONS
                 document = plan.post_document()
-                assert document.blocks[0].text == "Canonical executor proof"
+                assert document.blocks[0]["text"] == "Canonical executor proof"
         finally:
             await engine.dispose()
 
