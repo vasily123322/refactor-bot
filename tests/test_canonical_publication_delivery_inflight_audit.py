@@ -17,6 +17,7 @@ from app.services.canonical_publication_delivery_inflight_audit import (
     DURABLE_DELIVERY_EVIDENCE,
     EXPIRED_LEASE,
     HEALTHY_LIVE_LEASE,
+    LEGACY_TRANSPORT_LINKED,
     LEGACY_TRANSPORT_RELINKED,
     MISSING_LEASE,
     SCHEDULE_MISMATCH,
@@ -33,6 +34,7 @@ async def _seed_sending(
     legacy_linked: bool = False,
     schedule_status: str = "pending",
     canonical_attempt: bool = True,
+    attempt_status: str = "sending",
     durable_evidence: bool = False,
 ) -> int:
     async with Session() as session:
@@ -113,7 +115,7 @@ async def _seed_sending(
             PublicationAttempt(
                 publication_id=publication_id,
                 attempt=1,
-                status="sending",
+                status=attempt_status,
                 telegram_message_ids=None,
                 error=None,
                 meta={"canonical_delivery": canonical_attempt},
@@ -237,6 +239,44 @@ def test_inflight_audit_reports_missing_lease_without_repair(tmp_path) -> None:
     asyncio.run(run())
 
 
+def test_inflight_audit_distinguishes_legacy_origin_from_canonical_relink(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'inflight-audit-legacy-origin.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            now = datetime(2026, 8, 11, 14, 0, tzinfo=timezone.utc)
+            await _seed_sending(
+                Session,
+                seed=4,
+                now=now,
+                lease_state="missing",
+                legacy_linked=True,
+                canonical_attempt=False,
+            )
+
+            async with Session() as session:
+                item = (
+                    await CanonicalPublicationDeliveryInflightAuditService(
+                        session
+                    ).scan_page(now=now)
+                ).items[0]
+                assert item.classification == LEGACY_TRANSPORT_LINKED
+                assert item.findings == (
+                    LEGACY_TRANSPORT_LINKED,
+                    ATTEMPT_MISMATCH,
+                    MISSING_LEASE,
+                )
+                assert LEGACY_TRANSPORT_RELINKED not in item.findings
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_inflight_audit_preserves_multiple_corrupt_findings(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
@@ -249,12 +289,13 @@ def test_inflight_audit_preserves_multiple_corrupt_findings(tmp_path) -> None:
             now = datetime(2026, 8, 11, 14, 0, tzinfo=timezone.utc)
             publication_id = await _seed_sending(
                 Session,
-                seed=4,
+                seed=5,
                 now=now,
                 lease_state="missing",
                 legacy_linked=True,
                 schedule_status="completed",
-                canonical_attempt=False,
+                canonical_attempt=True,
+                attempt_status="failed",
                 durable_evidence=True,
             )
 
@@ -289,8 +330,8 @@ def test_inflight_audit_uses_bounded_keyset_pagination(tmp_path) -> None:
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             now = datetime(2026, 8, 11, 14, 0, tzinfo=timezone.utc)
-            first_id = await _seed_sending(Session, seed=5, now=now)
-            second_id = await _seed_sending(Session, seed=6, now=now)
+            first_id = await _seed_sending(Session, seed=6, now=now)
+            second_id = await _seed_sending(Session, seed=7, now=now)
 
             async with Session() as session:
                 audit = CanonicalPublicationDeliveryInflightAuditService(session)
