@@ -26,7 +26,17 @@ _ALLOWED_OPTIONS = _NEUTRAL_BOOLEAN_OPTIONS | _NEUTRAL_INTEGER_OPTIONS | {"forwa
 
 
 def _neutral_boolean(value: Any) -> bool:
-    return value in (None, False, 0, "", "0")
+    """Match legacy ``bool(payload.get(key, False))`` without accepting odd truthy input."""
+
+    if value is None or value is False or value == "":
+        return True
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return value == 0
+    # In particular, the string "0" is truthy in the legacy scheduler and therefore
+    # effectful for silent/pin/report despite looking numerically false.
+    return False
 
 
 def _neutral_integer(value: Any) -> bool:
