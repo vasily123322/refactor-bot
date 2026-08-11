@@ -36,14 +36,14 @@ _CUTOVER_STATUS = "canonical_cutover"
 class CanonicalPublicationLinkedForwardAtomicHandoffService:
     """Atomically transfer a pristine linked forward occurrence to canonical delivery.
 
-    This coordinator owns only the authority-transfer seam. It reuses the standalone
-    linked forward parity proof, locks the exact target Channel rows, stages legacy
-    transport retirement without committing, then calls the existing capability claim
-    service in the same AsyncSession. The first authority commit therefore contains the
-    PostTask retirement and canonical `sending + Attempt + delivery lease` transition.
+    Forward may be composed with exact pin and pristine time-autodelete intent. Timer
+    authority is conditional on the caller proving the canonical delete worker is
+    available; otherwise the prepared legacy cutover is rolled back before any provider
+    authority commit.
 
-    Provider behavior, durable forward-target snapshotting and post-send execution remain
-    owned by the existing canonical delivery capability/runtime stack.
+    This coordinator owns only the authority-transfer seam. Provider behavior, durable
+    forward-target snapshotting, required live timer materialization, and post-actions
+    remain owned by the existing canonical capability/runtime stack.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -69,6 +69,7 @@ class CanonicalPublicationLinkedForwardAtomicHandoffService:
         holder: str,
         ttl_seconds: int,
         at: datetime | None = None,
+        allow_time_autodelete: bool = False,
     ) -> CanonicalPublicationAtomicHandoffClaimResult:
         try:
             safe_publication_id = int(publication_id)
@@ -222,7 +223,9 @@ class CanonicalPublicationLinkedForwardAtomicHandoffService:
                 publication=publication,
                 plan=plan,
             )
-            if parity is None:
+            if parity is None or (
+                parity.time_autodelete_requested and not allow_time_autodelete
+            ):
                 return await self._rollback_result(
                     safe_publication_id,
                     "ineligible",
@@ -305,6 +308,8 @@ class CanonicalPublicationLinkedForwardAtomicHandoffService:
                 "source_status": "pending",
                 "atomic_claim": True,
                 "forward_to": list(parity.forward_channel_ids),
+                "pin_on": bool(parity.pin_on),
+                "time_autodelete": bool(parity.time_autodelete_requested),
             }
             schedule.meta = {
                 **schedule_meta,
@@ -324,13 +329,9 @@ class CanonicalPublicationLinkedForwardAtomicHandoffService:
                 holder=holder,
                 ttl_seconds=ttl_seconds,
                 now=current,
-                allow_time_autodelete=False,
+                allow_time_autodelete=allow_time_autodelete,
             )
             if claim is None:
-                # Pre-commit rejection rolls the complete cutover back. If capability
-                # claim already committed `sending + lease` and failed later, rollback
-                # only closes the current transaction; the wrapper's durable classifier
-                # distinguishes that recovery-owned state from an exact rollback.
                 await self.session.rollback()
                 return CanonicalPublicationAtomicHandoffClaimResult(
                     publication_id=safe_publication_id,
