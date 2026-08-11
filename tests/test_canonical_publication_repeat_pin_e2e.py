@@ -152,8 +152,8 @@ def test_repeat_pin_atomic_publish_continuation_and_replay_are_single_effect(tmp
                     )
                 ).scalars().all()
                 assert len(actions) == 1
-                assert actions[0].action_kind == "pin"
-                assert actions[0].status == "succeeded"
+                assert actions[0].action_key == "pin:7202"
+                assert actions[0].state == "succeeded"
 
             continuation = CanonicalRepeatContinuationWorker(
                 session_factory=Session,
