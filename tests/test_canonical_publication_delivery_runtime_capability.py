@@ -12,6 +12,7 @@ def test_runtime_capability_accepts_plain_silent_pin_and_ordered_forwards() -> N
     assert plain.pin_on is False
     assert plain.forward_to == ()
     assert plain.time_autodelete_requested is False
+    assert plain.views_autodelete_requested is False
 
     full = parse_canonical_publication_delivery_runtime_capability(
         {
@@ -41,6 +42,7 @@ def test_runtime_capability_accepts_time_autodelete_with_legacy_effective_preced
     assert base is not None
     assert base.time_autodelete_seconds == 90
     assert base.time_autodelete_requested is True
+    assert base.views_autodelete_requested is False
     assert base.autodelete_report is True
 
     effective = parse_canonical_publication_delivery_runtime_capability(
@@ -56,6 +58,7 @@ def test_runtime_capability_accepts_time_autodelete_with_legacy_effective_preced
     )
     assert effective is not None
     assert effective.time_autodelete_seconds == 120
+    assert effective.views_autodelete_requested is False
     assert effective.autodelete_report is False
 
     neutral = parse_canonical_publication_delivery_runtime_capability(
@@ -68,9 +71,27 @@ def test_runtime_capability_accepts_time_autodelete_with_legacy_effective_preced
     )
     assert neutral is not None
     assert neutral.time_autodelete_requested is False
+    assert neutral.views_autodelete_requested is False
 
 
-def test_runtime_capability_rejects_unknown_malformed_views_and_report_without_timer() -> None:
+def test_runtime_capability_accepts_views_autodelete_and_report_without_time_timer() -> None:
+    views = parse_canonical_publication_delivery_runtime_capability(
+        {
+            "silent": True,
+            "pin_on": True,
+            "forward_to": [9],
+            "autodelete_views": 250,
+            "autodelete_report": True,
+        }
+    )
+    assert views is not None
+    assert views.views_autodelete_threshold == 250
+    assert views.views_autodelete_requested is True
+    assert views.time_autodelete_requested is False
+    assert views.autodelete_report is True
+
+
+def test_runtime_capability_rejects_unknown_malformed_dual_delete_and_report_without_trigger() -> None:
     invalid = [
         {"future_side_effect": True},
         {"silent": 1},
@@ -84,8 +105,10 @@ def test_runtime_capability_rejects_unknown_malformed_views_and_report_without_t
         {"autodelete_seconds": "later"},
         {"autodelete_seconds": -1},
         {"autodelete_effective_seconds": -1},
-        {"autodelete_views": 10},
         {"autodelete_views": "many"},
+        {"autodelete_views": -1},
+        {"autodelete_seconds": 60, "autodelete_views": 10},
+        {"autodelete_effective_seconds": 60, "autodelete_views": 10},
         {"autodelete_report": 1},
         {"autodelete_report": True},
     ]
