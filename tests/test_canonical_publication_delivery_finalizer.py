@@ -91,6 +91,7 @@ async def _claim_after_transport_retirement(
 
 
 def _as_utc(value: datetime) -> datetime:
+    # SQLite may round-trip timezone-aware DateTime values as naive UTC.
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
