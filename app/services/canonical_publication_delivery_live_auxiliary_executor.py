@@ -15,6 +15,7 @@ from app.services.canonical_publication_delivery_live_auxiliary_planner import (
     CanonicalPublicationLiveAdminLogPlan,
     CanonicalPublicationLiveOwnerNoticePlan,
 )
+from app.services.telegram_results import normalize_telegram_result_link
 
 
 _TELEGRAM_USERNAME = re.compile(r"^[A-Za-z0-9_]{1,64}$")
@@ -80,6 +81,16 @@ def _telegram_invite_link(value) -> str | None:
     return f"https://t.me{parsed.path}"
 
 
+def _positive_int(value) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 class CanonicalPublicationDeliveryLiveAuxiliaryExecutor:
     """Execute live owner/admin auxiliary plans once, without database access.
 
@@ -89,7 +100,8 @@ class CanonicalPublicationDeliveryLiveAuxiliaryExecutor:
     create duplicates; callers must leave the primary claim ambiguous for recovery.
 
     This executor is deliberately not a retry API. It accepts only the immutable plans
-    produced while the exact canonical delivery lease is live.
+    produced while the exact canonical delivery lease is live, while still validating
+    provider/plan-derived identities again at the side-effect boundary.
     """
 
     def __init__(self, bot: CanonicalPublicationLiveAuxiliaryBot) -> None:
@@ -116,7 +128,10 @@ class CanonicalPublicationDeliveryLiveAuxiliaryExecutor:
         owner_sent = 0
         owner_failed = 0
         if plan.owner_notice is not None:
-            if int(plan.owner_notice.publication_id) != publication_id:
+            if (
+                int(plan.owner_notice.publication_id) != publication_id
+                or _positive_int(plan.owner_notice.owner_tg_user_id) is None
+            ):
                 invalid_plans += 1
             else:
                 owner_attempted = 1
@@ -137,7 +152,7 @@ class CanonicalPublicationDeliveryLiveAuxiliaryExecutor:
         self,
         plan: CanonicalPublicationLiveAdminLogPlan,
     ) -> tuple[int, int]:
-        post_link = plan.result_link
+        post_link = normalize_telegram_result_link(plan.result_link)
         channel_link: str | None = None
         chat = None
         try:
@@ -190,16 +205,15 @@ class CanonicalPublicationDeliveryLiveAuxiliaryExecutor:
                 )
 
         author_username = _telegram_username(plan.author_username)
+        author_id = _positive_int(plan.author_tg_user_id)
         if author_username:
             escaped_username = html.escape(author_username)
             user_html = (
                 f'<a href="https://t.me/{author_username}">@{escaped_username}</a>'
             )
-        elif plan.author_tg_user_id:
-            label = html.escape(str(plan.author_full_name or int(plan.author_tg_user_id)))
-            user_html = (
-                f'<a href="tg://user?id={int(plan.author_tg_user_id)}">{label}</a>'
-            )
+        elif author_id is not None:
+            label = html.escape(str(plan.author_full_name or author_id))
+            user_html = f'<a href="tg://user?id={author_id}">{label}</a>'
         else:
             user_html = "пользователь"
 
@@ -235,6 +249,10 @@ class CanonicalPublicationDeliveryLiveAuxiliaryExecutor:
         self,
         plan: CanonicalPublicationLiveOwnerNoticePlan,
     ) -> tuple[int, int]:
+        owner_tg_user_id = _positive_int(plan.owner_tg_user_id)
+        if owner_tg_user_id is None:
+            return 0, 1
+
         channel_link: str | None = None
         try:
             chat = await self.bot.get_chat(int(plan.source_telegram_chat_id))
@@ -264,9 +282,10 @@ class CanonicalPublicationDeliveryLiveAuxiliaryExecutor:
         else:
             channel_line = f"Канал: {title} | Автор: {author}"
 
+        result_link = normalize_telegram_result_link(plan.result_link)
         link_part = (
-            f"\n🔗 Ссылка на пост {html.escape(plan.result_link)}"
-            if plan.result_link
+            f"\n🔗 Ссылка на пост {html.escape(result_link)}"
+            if result_link
             else ""
         )
         timezone_text = html.escape(str(plan.timezone_code))
@@ -292,7 +311,7 @@ class CanonicalPublicationDeliveryLiveAuxiliaryExecutor:
 
         try:
             await self.bot.send_message(
-                chat_id=int(plan.owner_tg_user_id),
+                chat_id=owner_tg_user_id,
                 text=text,
                 disable_web_page_preview=True,
                 reply_markup=keyboard,
