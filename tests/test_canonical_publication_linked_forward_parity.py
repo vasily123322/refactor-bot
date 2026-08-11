@@ -136,6 +136,7 @@ def test_exact_ordered_forward_parity_resolves_internal_channel_ids(tmp_path) ->
                     target_a_chat,
                 ]
                 assert proof.disable_notification is True
+                assert proof.pin_on is False
         finally:
             await engine.dispose()
 
@@ -226,7 +227,7 @@ def test_missing_forward_target_is_clean_parity_rejection(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_forward_parity_does_not_silently_absorb_pin_timer_or_execution_evidence(
+def test_forward_parity_allows_exact_pin_but_rejects_timer_and_execution_evidence(
     tmp_path,
 ) -> None:
     async def run() -> None:
@@ -238,36 +239,48 @@ def test_forward_parity_does_not_silently_absorb_pin_timer_or_execution_evidence
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
 
-            cases = [
-                (4, lambda a, b: {"forward_to": [int(a.id)], "pin_on": True}),
-                (
-                    5,
-                    lambda a, b: {
-                        "forward_to": [int(a.id)],
-                        "autodelete_seconds": 60,
-                    },
-                ),
-            ]
-            for seed, builder in cases:
-                publication_id, task_id, *_rest, plan = await _seed_linked(
-                    Session,
-                    seed=seed,
-                    runtime_builder=builder,
+            publication_id, task_id, *_rest, pin_plan = await _seed_linked(
+                Session,
+                seed=4,
+                runtime_builder=lambda a, b: {
+                    "forward_to": [int(a.id)],
+                    "pin_on": True,
+                },
+            )
+            async with Session() as session:
+                publication = await session.get(Publication, publication_id)
+                task = await session.get(PostTask, task_id)
+                assert publication is not None and task is not None
+                proof = await CanonicalPublicationLinkedForwardParityService(session).prove(
+                    task=task,
+                    publication=publication,
+                    plan=pin_plan,
                 )
-                async with Session() as session:
-                    publication = await session.get(Publication, publication_id)
-                    task = await session.get(PostTask, task_id)
-                    assert publication is not None and task is not None
-                    assert (
-                        await CanonicalPublicationLinkedForwardParityService(session).prove(
-                            task=task,
-                            publication=publication,
-                            plan=plan,
-                        )
-                        is None
-                    )
+                assert proof is not None
+                assert proof.pin_on is True
 
-            publication_id, task_id, *_rest, plan = await _seed_linked(
+            publication_id, task_id, *_rest, timer_plan = await _seed_linked(
+                Session,
+                seed=5,
+                runtime_builder=lambda a, b: {
+                    "forward_to": [int(a.id)],
+                    "autodelete_seconds": 60,
+                },
+            )
+            async with Session() as session:
+                publication = await session.get(Publication, publication_id)
+                task = await session.get(PostTask, task_id)
+                assert publication is not None and task is not None
+                assert (
+                    await CanonicalPublicationLinkedForwardParityService(session).prove(
+                        task=task,
+                        publication=publication,
+                        plan=timer_plan,
+                    )
+                    is None
+                )
+
+            publication_id, task_id, *_rest, evidence_plan = await _seed_linked(
                 Session,
                 seed=6,
                 runtime_builder=lambda a, b: {"forward_to": [int(a.id)]},
@@ -287,7 +300,7 @@ def test_forward_parity_does_not_silently_absorb_pin_timer_or_execution_evidence
                     await CanonicalPublicationLinkedForwardParityService(session).prove(
                         task=task,
                         publication=publication,
-                        plan=plan,
+                        plan=evidence_plan,
                     )
                     is None
                 )
