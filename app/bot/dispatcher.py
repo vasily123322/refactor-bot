@@ -118,6 +118,8 @@ async def _start_canonical_publication_delivery_recovery_worker_if_enabled():
 
 async def _start_canonical_publication_delivery_workers(
     primary_config: CanonicalPublicationDeliveryPrimarySettings,
+    *,
+    time_autodelete_executor_available: bool = False,
 ):
     recovery_worker = (
         await _start_canonical_publication_delivery_recovery_worker_if_enabled()
@@ -129,6 +131,9 @@ async def _start_canonical_publication_delivery_workers(
                 recovery_worker=recovery_worker,
                 bot=bot,
                 session_factory=AsyncSessionLocal,
+                time_autodelete_executor_available=(
+                    time_autodelete_executor_available
+                ),
             )
         )
     except BaseException:
@@ -272,15 +277,22 @@ async def run_bot() -> None:
         )
         await scheduler_recovery.start()
 
-        (
-            canonical_publication_delivery,
-            canonical_publication_delivery_recovery,
-        ) = await _start_canonical_publication_delivery_workers(primary_delivery_config)
-
         publication_reconciler = PublicationReconcilerWorker(interval_seconds=5)
         await publication_reconciler.start()
 
+        # A timer-capable primary delivery runtime may start only after its delete
+        # consumer has actually started. If the worker is disabled, primary still starts
+        # but its locked capability claim keeps timer intent ineligible.
         publication_autodelete = await _start_publication_autodelete_worker_if_enabled()
+
+        (
+            canonical_publication_delivery,
+            canonical_publication_delivery_recovery,
+        ) = await _start_canonical_publication_delivery_workers(
+            primary_delivery_config,
+            time_autodelete_executor_available=publication_autodelete is not None,
+        )
+
         publication_autodelete_views = (
             await _start_publication_autodelete_views_worker_if_enabled(
                 userbot_available=userbot_started,
@@ -365,14 +377,17 @@ async def run_bot() -> None:
                 "canonical views publication autodelete",
                 publication_autodelete_views.stop,
             )
-        if publication_autodelete is not None:
-            await _safe_stop("canonical publication autodelete", publication_autodelete.stop)
-        if publication_reconciler is not None:
-            await _safe_stop("publication reconciler", publication_reconciler.stop)
+
+        # Stop the producer before the consumer: after primary delivery stops, no new
+        # canonical timer runtime can be materialized while the time worker shuts down.
         await stop_canonical_publication_delivery_workers(
             primary_worker=canonical_publication_delivery,
             recovery_worker=canonical_publication_delivery_recovery,
         )
+        if publication_autodelete is not None:
+            await _safe_stop("canonical publication autodelete", publication_autodelete.stop)
+        if publication_reconciler is not None:
+            await _safe_stop("publication reconciler", publication_reconciler.stop)
         if scheduler_recovery is not None:
             await _safe_stop("scheduler recovery", scheduler_recovery.stop)
         if scheduler is not None:
