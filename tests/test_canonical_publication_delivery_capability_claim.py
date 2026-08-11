@@ -136,7 +136,7 @@ def test_capability_claim_accepts_empty_and_explicit_boolean_silent(tmp_path) ->
     asyncio.run(run())
 
 
-def test_capability_claim_rejects_nonboolean_silent_and_unknown_options_before_writes(
+def test_capability_claim_rejects_malformed_or_unknown_options_before_writes(
     tmp_path,
 ) -> None:
     async def run() -> None:
@@ -151,8 +151,9 @@ def test_capability_claim_rejects_nonboolean_silent_and_unknown_options_before_w
             unsupported = [
                 {"silent": 1},
                 {"silent": "true"},
-                {"pin_on": True},
-                {"silent": True, "pin_on": False},
+                {"pin_on": 1},
+                {"forward_to": "1,2"},
+                {"autodelete_seconds": 60},
             ]
             for index, runtime_options in enumerate(unsupported, start=10):
                 publication_id = await _seed(
