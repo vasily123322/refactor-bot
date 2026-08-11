@@ -18,6 +18,7 @@ from app.services.scheduling import as_utc, compute_next_repeat_time
 class CanonicalRepeatRecoveryPlan:
     source_publication_id: int
     source_schedule_entry_id: int
+    source_scheduled_at: datetime
     repeat_group_id: int
     channel_id: int
     content_item_id: int
@@ -239,6 +240,7 @@ class CanonicalRepeatRecoveryPlanner:
         return CanonicalRepeatRecoveryPlan(
             source_publication_id=int(publication.id),
             source_schedule_entry_id=int(schedule.id),
+            source_scheduled_at=source_scheduled_at,
             repeat_group_id=publication_group,
             channel_id=int(publication.channel_id),
             content_item_id=int(item.id),
