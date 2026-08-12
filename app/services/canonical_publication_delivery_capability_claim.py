@@ -25,18 +25,15 @@ FORWARD_TARGET_SNAPSHOT_META_KEY = "canonical_forward_targets"
 class CanonicalPublicationDeliveryCapabilityClaimService(
     CanonicalPublicationDeliveryClaimService
 ):
-    """Concrete claim profile for plain/silent/pin/forward canonical delivery.
+    """Concrete claim profile for the explicitly enabled canonical delivery capabilities.
 
-    Generic canonical claim remains capability agnostic. This layer locks the same
-    mutable delivery rows before authority transition, parses the exact supported
-    runtime profile, and resolves every forward target while the claim transaction is
-    still open. Unsupported intent or target drift therefore fails before
-    ``queued -> sending``, attempt creation, lease insertion, or provider execution.
+    Generic canonical claim remains capability agnostic. This layer locks the mutable
+    delivery proof rows before authority transition, parses the exact supported runtime
+    profile, and resolves forward targets while the claim transaction is open.
 
-    Resolved forward destinations are then persisted on canonical attempt #1 before the
-    provider may run. The delivery lease is re-proven live after that durable snapshot,
-    closing the commit-to-provider TTL window and giving post-send actions immutable
-    destination evidence that survives process restarts.
+    Time-based autodelete is additionally guarded by an explicit executor-availability
+    flag. The default is disabled so requested timer semantics can never be silently
+    accepted in a runtime where the canonical delete worker is unavailable.
     """
 
     async def claim_supported(
@@ -46,6 +43,7 @@ class CanonicalPublicationDeliveryCapabilityClaimService(
         holder: str,
         ttl_seconds: int,
         now: datetime | None = None,
+        allow_time_autodelete: bool = False,
     ) -> CanonicalPublicationDeliveryClaim | None:
         try:
             safe_publication_id = int(publication_id)
@@ -76,9 +74,10 @@ class CanonicalPublicationDeliveryCapabilityClaimService(
         if capability is None:
             await self.session.rollback()
             return None
+        if capability.time_autodelete_requested and not allow_time_autodelete:
+            await self.session.rollback()
+            return None
 
-        # Resolve and lock target rows before primary authority is committed. Missing
-        # targets or duplicate Telegram destinations must not become post-send surprises.
         targets = await resolve_canonical_publication_delivery_forward_targets(
             self.session,
             capability,
@@ -95,8 +94,6 @@ class CanonicalPublicationDeliveryCapabilityClaimService(
             for target in targets
         ]
 
-        # The underlying claim re-runs canonical planner proof and remaining lifecycle
-        # restrictions under the same still-open transaction/row locks before commit.
         claim = await super().claim(
             publication_id=safe_publication_id,
             holder=holder,
@@ -111,10 +108,9 @@ class CanonicalPublicationDeliveryCapabilityClaimService(
         if claim is None:
             return None
 
-        # Claim commit has already established `sending + attempt + lease`. Persist the
-        # resolved destination snapshot before any provider call. Failure here is
-        # intentionally fail-closed: the caller gets no executable claim, while the
-        # durable sending/lease state remains an explicit recovery barrier.
+        # Persist all resolved forward destinations before any provider call. Failure
+        # after the authority transition intentionally leaves `sending + lease` for
+        # recovery and returns no executable claim.
         try:
             attempt = (
                 await self.session.execute(
@@ -140,8 +136,9 @@ class CanonicalPublicationDeliveryCapabilityClaimService(
             await self.session.rollback()
             raise
 
-        # In production use a fresh wall-clock instant after the snapshot commit. Tests
-        # that explicitly supply `now` retain deterministic clock semantics.
+        # Re-prove the exact lease live after the snapshot commit before returning an
+        # executable claim. Production uses a fresh wall clock; explicit test clocks stay
+        # deterministic.
         renew_at = current if now is not None else None
         renewed = await super().renew(
             claim.lease,

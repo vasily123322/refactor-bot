@@ -12,6 +12,15 @@ from app.services.canonical_publication_delivery_planner import (
 )
 
 
+class CanonicalPublicationDeliveryPostSendBlockingError(RuntimeError):
+    """Required post-send semantics could not be durably established.
+
+    The primary provider may already have produced Telegram side effects. Callers must
+    therefore leave the delivery claim ambiguous for recovery rather than finalize
+    success or retry primary delivery automatically.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class CanonicalPublicationDeliveryPostSendContext:
     """Immutable evidence available after primary send and before terminal commit."""

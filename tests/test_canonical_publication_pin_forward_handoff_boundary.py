@@ -63,10 +63,12 @@ async def _seed_linked(Session, *, seed: int, runtime_options: dict) -> tuple[in
         return int(publication.id), int(publication.legacy_post_task_id)
 
 
-def test_linked_pin_and_forward_remain_legacy_owned_in_this_runtime_stage(tmp_path) -> None:
+def test_linked_effectful_runtime_remains_legacy_owned_until_separate_handoff_proof(
+    tmp_path,
+) -> None:
     async def run() -> None:
         engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'pin-forward-handoff-boundary.db'}"
+            f"sqlite+aiosqlite:///{tmp_path / 'effectful-handoff-boundary.db'}"
         )
         try:
             async with engine.begin() as connection:
@@ -77,6 +79,16 @@ def test_linked_pin_and_forward_remain_legacy_owned_in_this_runtime_stage(tmp_pa
                 (1, {"pin_on": True}),
                 (2, {"__use_target__": True}),
                 (3, {"pin_on": True, "__use_target__": True, "silent": True}),
+                (4, {"autodelete_seconds": 60}),
+                (5, {"autodelete_seconds": 60, "autodelete_report": True}),
+                (
+                    6,
+                    {
+                        "pin_on": True,
+                        "__use_target__": True,
+                        "autodelete_seconds": 60,
+                    },
+                ),
             ]
             for seed, options in cases:
                 publication_id, task_id = await _seed_linked(

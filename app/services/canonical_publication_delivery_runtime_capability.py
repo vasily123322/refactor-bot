@@ -10,7 +10,18 @@ from app.domain.models import Channel
 
 
 _MAX_FORWARD_TARGETS = 100
-_ALLOWED_RUNTIME_KEYS = frozenset({"silent", "pin_on", "forward_to"})
+_ALLOWED_RUNTIME_KEYS = frozenset(
+    {
+        "silent",
+        "pin_on",
+        "forward_to",
+        "autodelete_seconds",
+        "autodelete_effective_seconds",
+        "autodelete_views",
+        "autodelete_report",
+    }
+)
+_NEUTRAL_NUMBER_VALUES = (None, False, 0, "0", "")
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,16 +29,36 @@ class CanonicalPublicationDeliveryRuntimeCapability:
     silent: bool | None = None
     pin_on: bool = False
     forward_to: tuple[int, ...] = ()
+    time_autodelete_seconds: int | None = None
+    autodelete_report: bool = False
 
     @property
     def forward_silent(self) -> bool:
         return self.silent is True
+
+    @property
+    def time_autodelete_requested(self) -> bool:
+        return self.time_autodelete_seconds is not None
 
 
 @dataclass(frozen=True, slots=True)
 class CanonicalPublicationDeliveryForwardTarget:
     channel_id: int
     telegram_chat_id: int
+
+
+def _strict_optional_positive_int(value: Any) -> tuple[bool, int | None]:
+    if value in _NEUTRAL_NUMBER_VALUES:
+        return True, None
+    if isinstance(value, bool):
+        return False, None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return False, None
+    if parsed <= 0:
+        return False, None
+    return True, parsed
 
 
 def parse_canonical_publication_delivery_runtime_capability(
@@ -72,10 +103,36 @@ def parse_canonical_publication_delivery_runtime_capability(
             parsed.append(channel_id)
         forward_to = tuple(parsed)
 
+    views_ok, views = _strict_optional_positive_int(options.get("autodelete_views"))
+    if not views_ok or views is not None:
+        # Views-based deletion has a separate worker/authority path and is not part of
+        # canonical primary delivery widening in this capability profile.
+        return None
+
+    report = options.get("autodelete_report", False)
+    if type(report) is not bool:
+        return None
+
+    effective_ok, effective_seconds = _strict_optional_positive_int(
+        options.get("autodelete_effective_seconds")
+    )
+    base_ok, base_seconds = _strict_optional_positive_int(
+        options.get("autodelete_seconds")
+    )
+    if not effective_ok or not base_ok:
+        return None
+    time_autodelete_seconds = effective_seconds or base_seconds
+    if report and time_autodelete_seconds is None:
+        # A deletion report has no independent execution meaning. Reject it instead of
+        # silently dropping requested semantics when there is no actual timer.
+        return None
+
     return CanonicalPublicationDeliveryRuntimeCapability(
         silent=silent,
         pin_on=pin_on,
         forward_to=forward_to,
+        time_autodelete_seconds=time_autodelete_seconds,
+        autodelete_report=report,
     )
 
 

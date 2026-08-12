@@ -3,8 +3,13 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.canonical_publication_delivery_live_auxiliary_hook import (
     CanonicalPublicationDeliveryLiveAuxiliaryHook,
+)
+from app.services.canonical_publication_delivery_post_send import (
+    CanonicalPublicationDeliveryPostSendBlockingError,
 )
 
 
@@ -24,6 +29,16 @@ class _AuxExecutor:
         )
 
 
+class _AutodeleteWriter:
+    def __init__(self, events: list[str], *, outcome: str = "not_requested") -> None:
+        self.events = events
+        self.outcome = outcome
+
+    async def materialize(self, context):
+        self.events.append("timer")
+        return SimpleNamespace(outcome=self.outcome)
+
+
 class _PostActionExecutor:
     def __init__(self, events: list[str], *, fail: bool = False) -> None:
         self.events = events
@@ -37,9 +52,16 @@ class _PostActionExecutor:
 
 
 class _Hook(CanonicalPublicationDeliveryLiveAuxiliaryHook):
-    def __init__(self, *, events: list[str], post_fail: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        events: list[str],
+        post_fail: bool = False,
+        timer_outcome: str = "not_requested",
+    ) -> None:
         super().__init__(
             executor=_AuxExecutor(events),
+            autodelete_writer=_AutodeleteWriter(events, outcome=timer_outcome),
             post_action_executor=_PostActionExecutor(events, fail=post_fail),
             session_factory=object(),  # type: ignore[arg-type]
         )
@@ -62,12 +84,12 @@ class _Hook(CanonicalPublicationDeliveryLiveAuxiliaryHook):
         raise AssertionError("hook must perform exactly two auxiliary authorization passes")
 
 
-def test_live_hook_orders_admin_then_pin_forward_then_fresh_owner() -> None:
+def test_live_hook_orders_admin_then_timer_then_pin_forward_then_fresh_owner() -> None:
     async def run() -> None:
         events: list[str] = []
         hook = _Hook(events=events)
         await hook.execute(SimpleNamespace(publication_id=601))  # type: ignore[arg-type]
-        assert events == ["admin", "post-actions", "owner"]
+        assert events == ["admin", "timer", "post-actions", "owner"]
         assert hook._passes == 2
 
     asyncio.run(run())
@@ -78,7 +100,25 @@ def test_generic_post_action_coordinator_failure_still_reauthorizes_owner() -> N
         events: list[str] = []
         hook = _Hook(events=events, post_fail=True)
         await hook.execute(SimpleNamespace(publication_id=601))  # type: ignore[arg-type]
-        assert events == ["admin", "post-actions", "owner"]
+        assert events == ["admin", "timer", "post-actions", "owner"]
         assert hook._passes == 2
+
+    asyncio.run(run())
+
+
+def test_requested_timer_conflict_blocks_post_actions_and_owner() -> None:
+    async def run() -> None:
+        events: list[str] = []
+        hook = _Hook(events=events, timer_outcome="conflict")
+        context = SimpleNamespace(
+            publication_id=601,
+            plan=SimpleNamespace(
+                runtime_options=lambda: {"autodelete_seconds": 60}
+            ),
+        )
+        with pytest.raises(CanonicalPublicationDeliveryPostSendBlockingError):
+            await hook.execute(context)  # type: ignore[arg-type]
+        assert events == ["admin", "timer"]
+        assert hook._passes == 1
 
     asyncio.run(run())

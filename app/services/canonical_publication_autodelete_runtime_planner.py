@@ -10,38 +10,18 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
+from app.services.canonical_publication_delivery_runtime_capability import (
+    parse_canonical_publication_delivery_runtime_capability,
+)
 from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
 from app.services.scheduling import as_utc
 from app.services.telegram_results import normalize_telegram_message_ids
-
-
-_SUPPORTED_RUNTIME_KEYS = frozenset(
-    {
-        "silent",
-        "pin_on",
-        "forward_to",
-        "autodelete_seconds",
-        "autodelete_effective_seconds",
-        "autodelete_views",
-        "autodelete_report",
-    }
-)
 
 
 def _mapping(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
     return {str(key): item for key, item in value.items()}
-
-
-def _positive_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return parsed if parsed > 0 else None
 
 
 def _runtime_options(
@@ -58,8 +38,6 @@ def _runtime_options(
         return None
     if publication_options != schedule_options:
         return None
-    if not set(publication_options).issubset(_SUPPORTED_RUNTIME_KEYS):
-        return None
     return deepcopy(publication_options)
 
 
@@ -72,21 +50,16 @@ def _safe_nonrepeat(schedule: ScheduleEntry) -> bool:
     return enabled is None or enabled is False
 
 
-def _time_only_seconds(options: Mapping[str, Any]) -> int | None:
-    raw_views = options.get("autodelete_views")
-    parsed_views = _positive_int(raw_views)
-    if raw_views not in (None, False, 0, "0", "") and parsed_views is None:
+def _runtime_scheduled_at(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
         return None
-    if parsed_views is not None:
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return as_utc(datetime.fromisoformat(text))
+    except ValueError:
         return None
-
-    report = options.get("autodelete_report")
-    if report is not None and not isinstance(report, bool):
-        return None
-
-    effective = _positive_int(options.get("autodelete_effective_seconds"))
-    base = _positive_int(options.get("autodelete_seconds"))
-    return effective or base
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,13 +74,18 @@ class CanonicalPublicationAutodeleteRuntimePlan:
 class CanonicalPublicationAutodeleteRuntimePlanner:
     """Pure canonical-only non-repeat time-based autodelete runtime proof.
 
-    Runtime is derived only from a terminal delivery attempt that was itself produced by
-    canonical delivery authority. Physical PostTask retirement alone is not sufficient:
-    a legacy-origin attempt must never become canonical autodelete authority merely
-    because retention later clears ``legacy_post_task_id``.
+    Runtime is derived only from a terminal attempt produced by canonical delivery.
+    Physical PostTask retirement alone never transfers this authority.
 
-    The due instant matches historical non-repeat behavior by anchoring to the durable
-    primary provider completion time, ``PublicationAttempt.finished_at``.
+    Normal live delivery materializes its timer after admin handling, matching the legacy
+    scheduling boundary, so an existing durable due time may be later than primary
+    provider completion plus the configured duration. This terminal planner accepts such
+    runtime only when it is structurally exact, uses the same effective duration, and is
+    no earlier than that provider-completion floor.
+
+    If runtime is missing entirely, the planner exposes the conservative floor as a
+    reconciliation/backfill proposal; that fallback is not a claim of exact live legacy
+    scheduling time.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -175,16 +153,19 @@ class CanonicalPublicationAutodeleteRuntimePlanner:
         options = _runtime_options(publication_meta, schedule_meta)
         if options is None:
             return None
-        seconds = _time_only_seconds(options)
-        if seconds is None:
+        capability = parse_canonical_publication_delivery_runtime_capability(options)
+        if capability is None or not capability.time_autodelete_requested:
+            return None
+        seconds = int(capability.time_autodelete_seconds or 0)
+        if seconds <= 0:
             return None
 
         delivered_at = as_utc(attempt.finished_at)
-        due_at = delivered_at + timedelta(seconds=seconds)
-        desired_state: dict[str, Any] = {
+        earliest_due = delivered_at + timedelta(seconds=seconds)
+        fallback_state: dict[str, Any] = {
             "deleted": False,
             "effective_seconds": seconds,
-            "scheduled_at": due_at.isoformat(),
+            "scheduled_at": earliest_due.isoformat(),
         }
 
         existing_raw = publication_meta.get(AUTODELETE_RUNTIME_META_KEY)
@@ -192,17 +173,39 @@ class CanonicalPublicationAutodeleteRuntimePlanner:
             return CanonicalPublicationAutodeleteRuntimePlan(
                 publication_id=safe_publication_id,
                 effective_seconds=seconds,
-                scheduled_at=due_at,
-                state=desired_state,
+                scheduled_at=earliest_due,
+                state=fallback_state,
                 existing=False,
             )
+
         existing = _mapping(existing_raw)
-        if existing is None or existing != desired_state:
+        if existing is None or set(existing) != {
+            "deleted",
+            "effective_seconds",
+            "scheduled_at",
+        }:
             return None
+        if existing.get("deleted") is not False:
+            return None
+        raw_seconds = existing.get("effective_seconds")
+        if isinstance(raw_seconds, bool):
+            return None
+        try:
+            existing_seconds = int(raw_seconds)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        existing_due = _runtime_scheduled_at(existing.get("scheduled_at"))
+        if (
+            existing_seconds != seconds
+            or existing_due is None
+            or existing_due < earliest_due
+        ):
+            return None
+
         return CanonicalPublicationAutodeleteRuntimePlan(
             publication_id=safe_publication_id,
             effective_seconds=seconds,
-            scheduled_at=due_at,
-            state=deepcopy(desired_state),
+            scheduled_at=existing_due,
+            state=deepcopy(existing),
             existing=True,
         )
