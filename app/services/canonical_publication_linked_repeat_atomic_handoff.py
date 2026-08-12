@@ -43,6 +43,11 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
     expose a transport-free queued occurrence: durable state is already canonical
     `sending + Attempt #1 + lease`.
 
+    Plain repeat+time requires both the destructive time dependency and its dedicated
+    repeat+time composition fact. Neither is inferred from parity, configuration, nor a
+    generic repeat fact. Missing strict-claim authority rolls every prepared legacy
+    cutover mutation back atomically.
+
     Repeat+views requires concrete views availability plus its dedicated composition fact.
     Views+pin and views+ordered-forward each require an additional independent fact;
     parity success never substitutes for either. Any strict-claim rejection rolls the
@@ -73,6 +78,8 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
         ttl_seconds: int,
         at: datetime | None = None,
         allow_repeat: bool = False,
+        allow_time_autodelete: bool = False,
+        allow_repeat_time: bool = False,
         allow_views_autodelete: bool = False,
         allow_repeat_views: bool = False,
         allow_repeat_views_pin: bool = False,
@@ -298,6 +305,8 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
                 ttl_seconds=ttl_seconds,
                 now=current,
                 allow_repeat=True,
+                allow_time_autodelete=bool(allow_time_autodelete),
+                allow_repeat_time=bool(allow_repeat_time),
                 allow_views_autodelete=bool(allow_views_autodelete),
                 allow_repeat_views=bool(allow_repeat_views),
                 allow_repeat_views_pin=bool(allow_repeat_views_pin),
