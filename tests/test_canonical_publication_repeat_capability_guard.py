@@ -50,6 +50,10 @@ async def _seed_retired(
         options = dict(runtime_options or {})
         if options.pop("__forward__", False):
             options["forward_to"] = [int(target.id)]
+        if options.pop("__duplicate_forward__", False):
+            options["forward_to"] = [int(target.id), int(target.id)]
+        if options.pop("__invalid_forward__", False):
+            options["forward_to"] = [0]
         item = await ContentRepo(session).create(
             channel_id=int(source.id),
             document=PostDocument(
@@ -86,7 +90,7 @@ class _Sender:
         return [6501]
 
 
-def test_repeat_profile_accepts_plain_silent_and_pin_only(tmp_path) -> None:
+def test_repeat_profile_accepts_plain_silent_pin_and_forward_slices(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'repeat-guard.db'}"
@@ -103,6 +107,8 @@ def test_repeat_profile_accepts_plain_silent_and_pin_only(tmp_path) -> None:
                 (4, {"pin_on": True}),
                 (5, {"silent": True, "pin_on": True}),
                 (6, {"pin_on": False}),
+                (7, {"__forward__": True}),
+                (8, {"silent": True, "__forward__": True}),
             ):
                 publication_id = await _seed_retired(
                     Session,
@@ -126,7 +132,7 @@ def test_repeat_profile_accepts_plain_silent_and_pin_only(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_repeat_forward_time_and_views_remain_fail_closed_even_when_dependencies_exist(
+def test_repeat_unproven_compositions_and_delete_modes_remain_fail_closed(
     tmp_path,
 ) -> None:
     async def run() -> None:
@@ -138,12 +144,16 @@ def test_repeat_forward_time_and_views_remain_fail_closed_even_when_dependencies
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             cases = [
-                (10, {"__forward__": True}),
-                (11, {"autodelete_seconds": 60}),
-                (12, {"autodelete_views": 5}),
-                (13, {"pin_on": True, "__forward__": True}),
+                (10, {"autodelete_seconds": 60}),
+                (11, {"autodelete_views": 5}),
+                (12, {"pin_on": True, "__forward__": True}),
+                (13, {"pin_on": False, "__forward__": True}),
                 (14, {"pin_on": True, "autodelete_seconds": 60}),
                 (15, {"pin_on": True, "autodelete_views": 5}),
+                (16, {"forward_to": []}),
+                (17, {"__duplicate_forward__": True}),
+                (18, {"__invalid_forward__": True}),
+                (19, {"forward_to": "not-a-list"}),
             ]
             for seed, options in cases:
                 publication_id = await _seed_retired(

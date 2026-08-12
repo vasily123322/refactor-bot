@@ -23,7 +23,7 @@ from app.services.canonical_publication_linked_repeat_parity import (
 from app.services.publication_bridge import LegacyPublicationBridge
 
 
-async def _seed_repeat_forward(Session) -> tuple[int, int]:
+async def _seed_repeat_pin_forward(Session) -> tuple[int, int, int]:
     async with Session() as session:
         owner = Client(
             tg_user_id=209001,
@@ -50,7 +50,13 @@ async def _seed_repeat_forward(Session) -> tuple[int, int]:
         item = await ContentRepo(session).create(
             channel_id=int(source.id),
             document=PostDocument(
-                blocks=[{"id": "b1", "type": "text", "text": "repeat + forward"}]
+                blocks=[
+                    {
+                        "id": "b1",
+                        "type": "text",
+                        "text": "repeat + pin + forward",
+                    }
+                ]
             ),
             created_by_tg_user_id=int(owner.tg_user_id),
         )
@@ -58,13 +64,23 @@ async def _seed_repeat_forward(Session) -> tuple[int, int]:
             content_item_id=int(item.id),
             scheduled_at=datetime.now(timezone.utc) - timedelta(minutes=1),
             repeat_rule={"enabled": True, "seconds": 60},
-            runtime_options={"forward_to": [int(target.id)]},
+            runtime_options={
+                "pin_on": True,
+                "forward_to": [int(target.id)],
+            },
         )
         assert publication.legacy_post_task_id is not None
-        return int(publication.id), int(publication.legacy_post_task_id)
+        return (
+            int(publication.id),
+            int(publication.legacy_post_task_id),
+            int(target.id),
+        )
 
 
-def test_atomic_repeat_handoff_uses_strict_repeat_claim_after_parity(monkeypatch, tmp_path) -> None:
+def test_atomic_repeat_handoff_keeps_strict_barrier_after_forward_widening(
+    monkeypatch,
+    tmp_path,
+) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'repeat-atomic-strict-claim.db'}"
@@ -73,19 +89,21 @@ def test_atomic_repeat_handoff_uses_strict_repeat_claim_after_parity(monkeypatch
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
-            publication_id, task_id = await _seed_repeat_forward(Session)
+            publication_id, task_id, target_id = await _seed_repeat_pin_forward(Session)
 
             class PermissiveFutureParity:
                 def prove(self, *, task, publication, schedule, plan):
-                    # Simulate the next parity widening before repeat+forward authority is
-                    # intentionally widened. The strict repeat claim remains an
-                    # independent final barrier and must roll prepared cutover back.
+                    # Simulate a future pin+forward parity widening. The strict repeat
+                    # claim remains an independent final authority barrier and must roll
+                    # the prepared legacy cutover back until composition is explicit.
                     return CanonicalPublicationLinkedRepeatParityProof(
                         publication_id=int(publication.id),
                         legacy_post_task_id=int(task.id),
                         repeat_group_id=int(task.id),
                         repeat_seconds=60,
                         root_occurrence=True,
+                        pin_on=True,
+                        forward_channel_ids=(target_id,),
                     )
 
             monkeypatch.setattr(

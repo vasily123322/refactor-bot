@@ -9,9 +9,12 @@ from app.services.canonical_publication_delivery_capability_claim import (
 )
 from app.services.canonical_publication_delivery_claim import CanonicalPublicationDeliveryClaim
 from app.services.canonical_publication_delivery_planner import CanonicalPublicationDeliveryPlanner
+from app.services.canonical_publication_delivery_runtime_capability import (
+    parse_canonical_publication_delivery_runtime_capability,
+)
 
 
-_REPEAT_PIN_RUNTIME_KEYS = frozenset({"silent", "pin_on"})
+_REPEAT_RUNTIME_KEYS = frozenset({"silent", "pin_on", "forward_to"})
 
 
 def _positive_int(value: Any) -> int | None:
@@ -44,12 +47,20 @@ def _strict_repeat_runtime_options(plan) -> dict[str, Any] | None:
         options = plan.runtime_options()
     except (TypeError, ValueError):
         return None
-    if not isinstance(options, dict) or not set(options).issubset(_REPEAT_PIN_RUNTIME_KEYS):
+    if not isinstance(options, dict) or not set(options).issubset(_REPEAT_RUNTIME_KEYS):
         return None
-    if "silent" in options and type(options.get("silent")) is not bool:
+
+    capability = parse_canonical_publication_delivery_runtime_capability(options)
+    if capability is None:
         return None
-    if "pin_on" in options and type(options.get("pin_on")) is not bool:
-        return None
+
+    if "forward_to" in options:
+        # Forward is an independent repeat slice in this stage. Even an explicitly false
+        # pin key is kept outside the forward profile so pin+forward composition can only
+        # be opened by its own later proof.
+        if "pin_on" in options or not capability.forward_to:
+            return None
+
     return deepcopy(options)
 
 
@@ -59,13 +70,16 @@ class CanonicalPublicationRepeatCapabilityClaimService(
     """Keep repeat authority limited to explicitly proven runtime slices.
 
     `allow_repeat=True` never means "remove the nonrepeat barrier for every understood
-    side effect". The current repeat profile admits only:
-      * exact positive fixed-delay repeat;
-      * optional `silent: bool`;
-      * optional `pin_on: bool`.
+    side effect". The current repeat profile admits exact positive fixed-delay repeat with
+    optional `silent: bool` and exactly one already-proven effect slice:
 
-    Forward and both autodelete modes remain fail-closed until their repeat-specific
-    parity/lifecycle semantics are proven separately.
+      * optional `pin_on: bool` with no forward intent; or
+      * non-empty ordered `forward_to` with no pin key.
+
+    Pin+forward and both autodelete modes remain fail-closed until their repeat-specific
+    composition/lifecycle semantics are proven separately. Generic capability parsing and
+    the parent claim retain target locking, immutable forward snapshots and all dependent
+    executor gates.
 
     Non-repeat rows retain the complete existing capability surface. The proof is taken
     while the same mutable delivery rows are locked; the parent service then re-locks and
