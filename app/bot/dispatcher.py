@@ -120,6 +120,7 @@ async def _start_canonical_publication_delivery_workers(
     primary_config: CanonicalPublicationDeliveryPrimarySettings,
     *,
     time_autodelete_executor_available: bool = False,
+    views_autodelete_executor_available: bool = False,
 ):
     recovery_worker = (
         await _start_canonical_publication_delivery_recovery_worker_if_enabled()
@@ -133,6 +134,9 @@ async def _start_canonical_publication_delivery_workers(
                 session_factory=AsyncSessionLocal,
                 time_autodelete_executor_available=(
                     time_autodelete_executor_available
+                ),
+                views_autodelete_executor_available=(
+                    views_autodelete_executor_available
                 ),
             )
         )
@@ -280,8 +284,8 @@ async def run_bot() -> None:
         publication_reconciler = PublicationReconcilerWorker(interval_seconds=5)
         await publication_reconciler.start()
 
-        # Start optional destructive consumers before any timer-capable canonical primary
-        # loop. Availability below is based on successful start, never only on config.
+        # Start optional destructive consumers before any delete-capable canonical
+        # primary loop. Availability below is based on successful start, never config.
         publication_autodelete = await _start_publication_autodelete_worker_if_enabled()
         publication_autodelete_views = (
             await _start_publication_autodelete_views_worker_if_enabled(
@@ -305,6 +309,9 @@ async def run_bot() -> None:
         ) = await _start_canonical_publication_delivery_workers(
             primary_delivery_config,
             time_autodelete_executor_available=publication_autodelete is not None,
+            views_autodelete_executor_available=(
+                publication_autodelete_views is not None
+            ),
         )
 
         if settings.post_task_retention_enabled:
