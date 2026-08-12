@@ -26,6 +26,9 @@ _REPEAT_TIME_QUEUE_RUNTIME_KEYS = frozenset(
     {"silent", "autodelete_seconds", "autodelete_report"}
 )
 _REPEAT_TIME_PIN_RUNTIME_KEYS = _REPEAT_TIME_QUEUE_RUNTIME_KEYS | frozenset({"pin_on"})
+_REPEAT_TIME_FORWARD_RUNTIME_KEYS = _REPEAT_TIME_QUEUE_RUNTIME_KEYS | frozenset(
+    {"forward_to"}
+)
 
 
 def _positive_int(value: Any) -> int | None:
@@ -58,6 +61,7 @@ def _strict_repeat_runtime_options(
     *,
     allow_repeat_time: bool = False,
     allow_repeat_time_pin: bool = False,
+    allow_repeat_time_forward: bool = False,
     allow_repeat_views: bool = False,
     allow_repeat_views_pin: bool = False,
     allow_repeat_views_forward: bool = False,
@@ -83,20 +87,32 @@ def _strict_repeat_runtime_options(
             or "autodelete_seconds" not in options
             or capability.time_autodelete_seconds is None
             or capability.views_autodelete_requested
-            or capability.forward_to
         ):
             return None
 
         has_pin_key = "pin_on" in options
+        has_forward_key = "forward_to" in options
+        if has_pin_key and has_forward_key:
+            # Combined time+pin+forward is deliberately deferred to its own proof fact.
+            return None
         if has_pin_key:
             if (
                 not allow_repeat_time_pin
                 or capability.pin_on is not True
+                or capability.forward_to
                 or not set(options).issubset(_REPEAT_TIME_PIN_RUNTIME_KEYS)
             ):
                 return None
+        elif has_forward_key:
+            if (
+                not allow_repeat_time_forward
+                or capability.pin_on
+                or not capability.forward_to
+                or not set(options).issubset(_REPEAT_TIME_FORWARD_RUNTIME_KEYS)
+            ):
+                return None
         else:
-            if capability.pin_on:
+            if capability.pin_on or capability.forward_to:
                 return None
             if not set(options).issubset(_REPEAT_TIME_QUEUE_RUNTIME_KEYS):
                 return None
@@ -169,9 +185,10 @@ class CanonicalPublicationRepeatCapabilityClaimService(
     """Keep repeat authority limited to explicit independently proven compositions.
 
     Plain repeat+time requires generic destructive-time plus `allow_repeat_time`.
-    Repeat+time+pin is narrower again and additionally requires the independent
-    `allow_repeat_time_pin` fact; plain time authority cannot imply pin composition.
-    Generated timer state, forward, views and unknown effects remain closed.
+    Repeat+time+pin and repeat+time+ordered-forward each require an additional independent
+    composition fact. Neither narrower fact implies the other, and combined time+pin+
+    forward remains closed until its own proof stage. Generated timer state, views and
+    unknown effects remain closed.
 
     Plain repeat+views, views+pin and views+forward retain separate default-off facts.
     Views+pin+forward is narrower again and requires the complete underlying repeat/views,
@@ -191,6 +208,7 @@ class CanonicalPublicationRepeatCapabilityClaimService(
         allow_repeat: bool = False,
         allow_repeat_time: bool = False,
         allow_repeat_time_pin: bool = False,
+        allow_repeat_time_forward: bool = False,
         allow_repeat_views: bool = False,
         allow_repeat_views_pin: bool = False,
         allow_repeat_views_forward: bool = False,
@@ -231,6 +249,9 @@ class CanonicalPublicationRepeatCapabilityClaimService(
                 repeat_time_pin_enabled = bool(
                     allow_repeat_time_pin and repeat_time_enabled
                 )
+                repeat_time_forward_enabled = bool(
+                    allow_repeat_time_forward and repeat_time_enabled
+                )
                 repeat_views_enabled = bool(
                     allow_repeat_views and allow_views_autodelete
                 )
@@ -248,6 +269,7 @@ class CanonicalPublicationRepeatCapabilityClaimService(
                         plan,
                         allow_repeat_time=repeat_time_enabled,
                         allow_repeat_time_pin=repeat_time_pin_enabled,
+                        allow_repeat_time_forward=repeat_time_forward_enabled,
                         allow_repeat_views=repeat_views_enabled,
                         allow_repeat_views_pin=pin_enabled,
                         allow_repeat_views_forward=forward_enabled,
