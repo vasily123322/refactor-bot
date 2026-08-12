@@ -191,8 +191,16 @@ def test_claim_is_transport_independent_and_creates_one_attempt_and_lease(tmp_pa
                     renewed,
                     now=renewed.expires_at + timedelta(seconds=2),
                 ) is None
-                assert await service.release(recovery) is True
-                assert await service.current(publication_id) is None
+
+                # A recovery-owned lease still protects an ambiguous ``sending``
+                # delivery. It cannot be removed independently of terminal resolution.
+                assert await service.release(recovery) is False
+                current = await service.current(publication_id)
+                assert current is not None
+                assert current.lease_token == recovery.lease_token
+                publication = await session.get(Publication, publication_id)
+                assert publication is not None
+                assert publication.status == "sending"
         finally:
             await engine.dispose()
 
