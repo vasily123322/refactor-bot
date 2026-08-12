@@ -124,6 +124,7 @@ def test_success_finalization_is_canonical_only_and_releases_exact_lease(tmp_pat
                 finalizer = CanonicalPublicationDeliveryFinalizer(session)
                 result = await finalizer.complete_success(
                     claim.lease,
+                    plan=claim.plan,
                     message_ids=[501, 502],
                     result_link="https://t.me/c/12345/502",
                     finished_at=finished_at,
@@ -279,6 +280,7 @@ def test_stale_lease_token_cannot_finalize_or_release_live_claim(tmp_path) -> No
                 finalizer = CanonicalPublicationDeliveryFinalizer(session)
                 result = await finalizer.complete_success(
                     stale,
+                    plan=claim.plan,
                     message_ids=[601],
                     finished_at=scheduled_at + timedelta(minutes=2),
                 )
@@ -295,6 +297,7 @@ def test_stale_lease_token_cannot_finalize_or_release_live_claim(tmp_path) -> No
 
                 exact = await finalizer.complete_success(
                     claim.lease,
+                    plan=claim.plan,
                     message_ids=[601],
                     finished_at=scheduled_at + timedelta(minutes=2),
                 )
@@ -331,11 +334,13 @@ def test_invalid_success_evidence_keeps_claim_open_for_explicit_resolution(tmp_p
                 finalizer = CanonicalPublicationDeliveryFinalizer(session)
                 empty = await finalizer.complete_success(
                     claim.lease,
+                    plan=claim.plan,
                     message_ids=[],
                 )
                 assert empty.outcome == "invalid"
                 unsafe_link = await finalizer.complete_success(
                     claim.lease,
+                    plan=claim.plan,
                     message_ids=[701],
                     result_link="https://evil.example/secret/701",
                 )

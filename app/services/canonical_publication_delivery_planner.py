@@ -63,6 +63,7 @@ class CanonicalPublicationDeliveryPlan:
     timezone: str | None
     document_snapshot: str
     runtime_options_snapshot: str
+    repeat_rule_snapshot: str
 
     def post_document(self) -> PostDocument:
         raw = json.loads(self.document_snapshot)
@@ -74,6 +75,12 @@ class CanonicalPublicationDeliveryPlan:
         raw = json.loads(self.runtime_options_snapshot)
         if not isinstance(raw, dict):
             raise ValueError("canonical delivery runtime snapshot is not an object")
+        return raw
+
+    def repeat_rule(self) -> dict[str, Any]:
+        raw = json.loads(self.repeat_rule_snapshot)
+        if not isinstance(raw, dict):
+            raise ValueError("canonical delivery repeat snapshot is not an object")
         return raw
 
 
@@ -175,7 +182,8 @@ class CanonicalPublicationDeliveryPlanner:
 
         publication_meta = _mapping(publication.meta)
         schedule_meta = _mapping(schedule.meta)
-        if publication_meta is None or schedule_meta is None:
+        repeat_rule = _mapping(schedule.repeat_rule)
+        if publication_meta is None or schedule_meta is None or repeat_rule is None:
             return None
         runtime_options = _runtime_options(publication_meta, schedule_meta)
         if runtime_options is None:
@@ -187,7 +195,12 @@ class CanonicalPublicationDeliveryPlanner:
             return None
         document_snapshot = _json_snapshot(document.to_dict())
         runtime_snapshot = _json_snapshot(runtime_options)
-        if document_snapshot is None or runtime_snapshot is None:
+        repeat_snapshot = _json_snapshot(repeat_rule)
+        if (
+            document_snapshot is None
+            or runtime_snapshot is None
+            or repeat_snapshot is None
+        ):
             return None
 
         return CanonicalPublicationDeliveryPlan(
@@ -201,4 +214,5 @@ class CanonicalPublicationDeliveryPlanner:
             timezone=schedule.timezone,
             document_snapshot=document_snapshot,
             runtime_options_snapshot=runtime_snapshot,
+            repeat_rule_snapshot=repeat_snapshot,
         )
