@@ -326,7 +326,13 @@ def _authority_intent_matches(
         allow_time_autodelete=allow_time_autodelete,
         allow_views_autodelete=allow_views_autodelete,
     )
-    if profile is None or profile.autodelete_report:
+    if profile is None:
+        return False
+    if profile.autodelete_report and (
+        not profile.timer_requested
+        or profile.views_requested
+        or not allow_time_autodelete
+    ):
         return False
     if profile.pin_on:
         if profile.timer_requested:
@@ -362,7 +368,7 @@ async def _forward_authority_intent_matches(
     allow_time_autodelete: bool,
     allow_views_autodelete: bool,
 ) -> bool:
-    """Reuse exact forward parity with independently gated delete composition."""
+    """Reuse exact forward parity with independently gated delete/report composition."""
 
     from app.services.canonical_publication_linked_forward_parity import (
         CanonicalPublicationLinkedForwardParityService,
@@ -373,10 +379,16 @@ async def _forward_authority_intent_matches(
         publication=publication,
         plan=plan,
     )
-    if parity is None or parity.autodelete_report:
+    if parity is None:
+        return False
+    if parity.autodelete_report and (
+        not parity.time_autodelete_requested
+        or parity.views_autodelete_requested
+        or not allow_time_autodelete
+    ):
         return False
     if not parity.delete_requested:
-        return True
+        return not parity.autodelete_report
     if parity.pin_on:
         if parity.time_autodelete_requested:
             return bool(
@@ -416,8 +428,9 @@ class CanonicalPublicationLegacyTransportHandoffService:
     Baseline capability is non-repeat empty/silent/pin parity. Callers may additionally
     prove started canonical time or views autodelete dependencies and admit the proven
     pin/forward/delete compositions only when the corresponding dependency is live.
-    Report, mixed delete modes and repeat remain closed here. Hidden legacy effects are
-    never inferred.
+    Time-delete report intent is admitted only with the live time worker; views report,
+    mixed delete modes and repeat remain closed here. Hidden legacy effects are never
+    inferred.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -552,7 +565,7 @@ class CanonicalPublicationLegacyTransportHandoffService:
                 )
             ).scalar_one_or_none()
             if schedule is None or item is None or revision is None or channel is None:
-                return await self._result(_INELIGIBLE, safe_publication_id, task_id)
+                return await self._result(_INELIBLE, safe_publication_id, task_id)
 
             plan = await CanonicalPublicationDeliveryPlanner(self.session).plan(
                 safe_publication_id,
