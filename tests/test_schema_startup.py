@@ -22,6 +22,9 @@ from app.core.schema import (
 )
 
 
+HEAD = "20260812_0007"
+
+
 def _upgrade(repo_root: Path, database_path: Path, target: str) -> None:
     env = os.environ.copy()
     env.update(
@@ -60,7 +63,7 @@ def test_unmanaged_database_uses_legacy_initializer(tmp_path) -> None:
             )
             assert state.managed is False
             assert state.current_heads == ()
-            assert state.expected_heads == ("20260811_0006",)
+            assert state.expected_heads == (HEAD,)
             assert state.at_head is False
             assert calls == 1
 
@@ -136,7 +139,7 @@ def test_managed_database_at_head_skips_runtime_schema_initializer(tmp_path) -> 
             inspected = await inspect_alembic_schema(engine)
             assert inspected.managed is True
             assert inspected.at_head is True
-            assert inspected.current_heads == ("20260811_0006",)
+            assert inspected.current_heads == (HEAD,)
 
             state = await bootstrap_database_schema(
                 engine,
@@ -168,7 +171,7 @@ def test_managed_database_behind_head_fails_closed_before_initializer(tmp_path) 
         try:
             with pytest.raises(
                 DatabaseSchemaOutOfDate,
-                match=r"current=20260809_0001, expected=20260811_0006",
+                match=rf"current=20260809_0001, expected={HEAD}",
             ):
                 await bootstrap_database_schema(
                     engine,

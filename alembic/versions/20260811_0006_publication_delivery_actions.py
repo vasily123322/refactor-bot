@@ -59,4 +59,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Pin/forward rows are durable provider-call evidence. Removing a populated ledger
+    # would discard reserved/unknown no-replay barriers and could authorize a duplicate
+    # provider effect after a later upgrade. Only an empty ledger is safely reversible.
+    existing = op.get_bind().execute(
+        sa.text("SELECT 1 FROM publication_delivery_actions LIMIT 1")
+    ).first()
+    if existing is not None:
+        raise RuntimeError(
+            "refusing unsafe downgrade: publication_delivery_actions contains "
+            "durable no-replay evidence"
+        )
+
     op.drop_table("publication_delivery_actions", if_exists=True)
