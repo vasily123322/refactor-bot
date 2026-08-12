@@ -325,12 +325,15 @@ def _authority_intent_matches(
     )
     if profile is None:
         return False
-    if profile.autodelete_report and (
-        not profile.timer_requested
-        or profile.views_requested
-        or not allow_time_autodelete
-    ):
-        return False
+    if profile.autodelete_report:
+        if profile.timer_requested:
+            if profile.views_requested or not allow_time_autodelete:
+                return False
+        elif profile.views_requested:
+            if profile.timer_requested or not allow_views_autodelete:
+                return False
+        else:
+            return False
     if profile.pin_on:
         if profile.timer_requested:
             if not allow_time_autodelete or profile.views_requested:
@@ -378,12 +381,15 @@ async def _forward_authority_intent_matches(
     )
     if parity is None:
         return False
-    if parity.autodelete_report and (
-        not parity.time_autodelete_requested
-        or parity.views_autodelete_requested
-        or not allow_time_autodelete
-    ):
-        return False
+    if parity.autodelete_report:
+        if parity.time_autodelete_requested:
+            if parity.views_autodelete_requested or not allow_time_autodelete:
+                return False
+        elif parity.views_autodelete_requested:
+            if parity.time_autodelete_requested or not allow_views_autodelete:
+                return False
+        else:
+            return False
     if not parity.delete_requested:
         return not parity.autodelete_report
     if parity.pin_on:
@@ -424,10 +430,9 @@ class CanonicalPublicationLegacyTransportHandoffService:
 
     Baseline capability is non-repeat empty/silent/pin parity. Callers may additionally
     prove started canonical time or views autodelete dependencies and admit the proven
-    pin/forward/delete compositions only when the corresponding dependency is live.
-    Time-delete report intent is admitted only with the live time worker; views report,
-    mixed delete modes and repeat remain closed here. Hidden legacy effects are never
-    inferred.
+    pin/forward/delete/report compositions only when the corresponding delete worker is
+    live. Mixed delete modes and repeat remain closed here. Hidden legacy effects are
+    never inferred.
     """
 
     def __init__(self, session: AsyncSession) -> None:
