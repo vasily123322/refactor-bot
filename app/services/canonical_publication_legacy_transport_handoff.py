@@ -141,10 +141,11 @@ def _supported_runtime_options(
         return None
     if not options:
         return {}
-    if set(options) != {"silent"}:
+    if not set(options).issubset({"silent", "pin_on"}):
         return None
-    if type(options.get("silent")) is not bool:
-        return None
+    for key in ("silent", "pin_on"):
+        if key in options and type(options.get(key)) is not bool:
+            return None
     return options
 
 
@@ -250,6 +251,21 @@ def _silent_intent_matches(
     return current_effective is expected_effective
 
 
+def _pin_intent_matches(
+    current: Mapping[str, Any],
+    runtime_options: Mapping[str, Any],
+) -> bool:
+    if "pin_on" in runtime_options:
+        intended = runtime_options.get("pin_on")
+        if type(intended) is not bool:
+            return False
+        return type(current.get("pin_on")) is bool and current.get("pin_on") is intended
+
+    if "pin_on" in current and not _neutral_bool(current.get("pin_on")):
+        return False
+    return True
+
+
 def _legacy_intent_matches(
     *,
     task: PostTask,
@@ -274,8 +290,11 @@ def _legacy_intent_matches(
         return False
     if not _silent_intent_matches(current, expected, runtime_options):
         return False
+    if not _pin_intent_matches(current, runtime_options):
+        return False
     for key in _IDENTITY_MARKERS:
         current.pop(key, None)
+    current.pop("pin_on", None)
 
     current_clean = _strip_neutral_effect_fields(current)
     expected_clean = _strip_neutral_effect_fields(expected)
@@ -303,9 +322,9 @@ class CanonicalPublicationLegacyTransportHandoffService:
     handoff. This service never deletes or takes a scheduler lease and never calls a
     provider. Canonical delivery remains `queued` until a later exact canonical claim.
 
-    Current capability is non-repeat with empty runtime options or explicit `silent: bool`.
-    The legacy PostTask effective silent behavior must exactly match explicit canonical
-    silent intent; hidden legacy silent behavior is not inferred into canonical authority.
+    Current capability is non-repeat with empty runtime options plus explicit boolean
+    `silent` and `pin_on` intent. Legacy effective silence and explicit pin intent must
+    exactly match canonical runtime intent; hidden legacy effects are never inferred.
     """
 
     def __init__(self, session: AsyncSession) -> None:
