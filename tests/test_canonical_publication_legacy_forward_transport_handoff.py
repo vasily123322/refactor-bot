@@ -11,7 +11,7 @@ import app.domain  # noqa: F401 register complete ORM metadata
 from app.core.db import Base
 from app.domain.content import PostDocument
 from app.domain.models import Channel, Client, PostTask
-from app.domain.publishing.models import Publication, PublicationAttempt
+from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.repositories.content import ContentRepo
 from app.services.canonical_publication_delivery_authority import (
     set_canonical_publication_delivery_primary_worker,
@@ -313,7 +313,7 @@ def test_hidden_legacy_forward_silent_stays_legacy_owned(tmp_path) -> None:
 
 
 def test_forward_handoff_keeps_effect_compositions_closed(tmp_path) -> None:
-    async def assert_ineligible(*, seed: int, runtime_options: dict, suffix: str) -> None:
+    async def assert_ineligible(*, seed: int, extra_options: dict, suffix: str) -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / f'forward-{suffix}.db'}"
         )
@@ -323,7 +323,6 @@ def test_forward_handoff_keeps_effect_compositions_closed(tmp_path) -> None:
             Session = async_sessionmaker(engine, expire_on_commit=False)
             now = datetime(2026, 8, 13, 3, 0, tzinfo=timezone.utc)
 
-            # Build targets first so the requested list can be expressed using real IDs.
             publication_id, task_id, target_one, target_two = (
                 await _seed_forward_publication(Session, seed=seed, now=now)
             )
@@ -331,15 +330,25 @@ def test_forward_handoff_keeps_effect_compositions_closed(tmp_path) -> None:
                 publication = await rewrite_session.get(Publication, publication_id)
                 task = await rewrite_session.get(PostTask, task_id)
                 assert publication is not None and task is not None
-                options = dict(runtime_options)
-                options["forward_to"] = [target_one[0], target_two[0]]
                 schedule = await rewrite_session.get(
-                    type(publication).schedule_entry.property.mapper.class_,
+                    ScheduleEntry,
                     int(publication.schedule_entry_id),
                 )
                 assert schedule is not None
-                publication.meta = {**dict(publication.meta or {}), "runtime_options": options}
-                schedule.meta = {**dict(schedule.meta or {}), "runtime_options": options}
+
+                options = {
+                    "forward_to": [target_one[0], target_two[0]],
+                    "silent": True,
+                    **dict(extra_options),
+                }
+                publication.meta = {
+                    **dict(publication.meta or {}),
+                    "runtime_options": options,
+                }
+                schedule.meta = {
+                    **dict(schedule.meta or {}),
+                    "runtime_options": options,
+                }
                 payload = dict(task.payload or {})
                 for key in (
                     "pin_on",
@@ -375,17 +384,17 @@ def test_forward_handoff_keeps_effect_compositions_closed(tmp_path) -> None:
     async def run() -> None:
         await assert_ineligible(
             seed=5,
-            runtime_options={"pin_on": True},
+            extra_options={"pin_on": True},
             suffix="pin-closed",
         )
         await assert_ineligible(
             seed=6,
-            runtime_options={"autodelete_seconds": 60},
+            extra_options={"autodelete_seconds": 60},
             suffix="time-closed",
         )
         await assert_ineligible(
             seed=7,
-            runtime_options={"autodelete_views": 100},
+            extra_options={"autodelete_views": 100},
             suffix="views-closed",
         )
 
