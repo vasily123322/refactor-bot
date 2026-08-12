@@ -36,13 +36,22 @@ async def _seed_terminal(Session, seed: int) -> tuple[int, tuple[int, int]]:
         session.add(owner)
         await session.flush()
         source = Channel(
-            tg_chat_id=-(100255000 + seed), title="Source", owner_id=int(owner.id), is_active=True
+            tg_chat_id=-(100255000 + seed),
+            title="Source",
+            owner_id=int(owner.id),
+            is_active=True,
         )
         target_a = Channel(
-            tg_chat_id=-(100355000 + seed), title="A", owner_id=int(owner.id), is_active=True
+            tg_chat_id=-(100355000 + seed),
+            title="A",
+            owner_id=int(owner.id),
+            is_active=True,
         )
         target_b = Channel(
-            tg_chat_id=-(100455000 + seed), title="B", owner_id=int(owner.id), is_active=True
+            tg_chat_id=-(100455000 + seed),
+            title="B",
+            owner_id=int(owner.id),
+            is_active=True,
         )
         session.add_all([source, target_a, target_b])
         await session.commit()
@@ -100,7 +109,9 @@ async def _seed_terminal(Session, seed: int) -> tuple[int, tuple[int, int]]:
         return int(publication.id), targets
 
 
-def test_combined_lifecycle_is_default_off_and_not_inferred_from_narrower_proofs(tmp_path) -> None:
+def test_combined_lifecycle_is_default_off_and_not_inferred_from_narrower_proofs(
+    tmp_path,
+) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'combined-lifecycle.db'}"
