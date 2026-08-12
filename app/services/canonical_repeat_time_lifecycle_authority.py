@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.canonical_publication_delivery_runtime_capability import (
     parse_canonical_publication_delivery_runtime_capability,
@@ -66,7 +68,7 @@ class CanonicalRepeatTimeLifecycleAuthorityService:
     ledger before any provider authority can consume this proof.
     """
 
-    def __init__(self, session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
     async def lock_and_prove(
@@ -137,10 +139,7 @@ class CanonicalRepeatTimeLifecycleAuthorityService:
         due_at = _runtime_scheduled_at(runtime.get("scheduled_at"))
         if due_at is None or authority.attempt.finished_at is None:
             return None
-        earliest_due = as_utc(authority.attempt.finished_at)
-        from datetime import timedelta
-
-        earliest_due = earliest_due + timedelta(seconds=seconds)
+        earliest_due = as_utc(authority.attempt.finished_at) + timedelta(seconds=seconds)
         if due_at < earliest_due:
             return None
 
