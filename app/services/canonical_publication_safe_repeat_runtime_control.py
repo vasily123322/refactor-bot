@@ -25,14 +25,15 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
     time_autodelete_executor_available: bool = False,
     views_autodelete_executor_available: bool = False,
     repeat_continuation_available: bool = False,
+    repeat_views_executor_available: bool = False,
     repeat_owner_policy_enforced: bool = False,
 ) -> CanonicalPublicationDeliveryWorker | None:
     """Start a repeat-aware primary only after every authority dependency is explicit.
 
-    Recovery remains mandatory for the primary itself. Repeat is narrower: both the
-    continuation worker and the repeat-aware owner-notification hook must be proven before
-    the strict runtime receives `allow_repeat=True`. The two-factor gate avoids treating
-    an implementation prerequisite as equivalent to behavioral parity.
+    Recovery remains mandatory for the primary itself. Repeat requires both continuation
+    and enforced owner policy. Repeat+views has a third independent fact supplied only by
+    a successfully started repeat-capable views worker; this function never derives that
+    fact from config or from ordinary views availability.
     """
 
     if not config.enabled:
@@ -51,6 +52,7 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
         allow_time_autodelete=bool(time_autodelete_executor_available),
         allow_views_autodelete=bool(views_autodelete_executor_available),
         allow_repeat=bool(repeat_continuation_available),
+        allow_repeat_views=bool(repeat_views_executor_available),
         repeat_owner_policy_enforced=bool(repeat_owner_policy_enforced),
     )
     handoff_executor = CanonicalPublicationRepeatHandoffExecutor(

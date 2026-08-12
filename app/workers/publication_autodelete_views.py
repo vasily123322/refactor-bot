@@ -53,11 +53,11 @@ def _utc(value: datetime | None = None) -> datetime:
 class PublicationAutodeleteViewsWorker:
     """Bounded lease-backed orchestrator for views-based canonical deletion.
 
-    Selection, ownership, destructive evaluation, ambiguity backoff and lease release use
-    separate sessions. The service receives the exact acquired lease handle; a provider
-    DELETE can occur only after the service commits a per-message action reservation bound
-    to that exact token+holder. Cancellation still keeps the lease until expiry, while the
-    durable reserved/unknown action independently prevents automatic destructive replay.
+    Repeat evaluation is an explicit construction-time capability and is independently
+    default-off. `repeat_views_available` becomes true only after this exact worker has
+    successfully started; configuration or construction alone is never an availability
+    proof. Every destructive call still goes through the durable reserve-before-DELETE
+    service barrier with the exact acquired lease handle.
     """
 
     def __init__(
@@ -71,6 +71,7 @@ class PublicationAutodeleteViewsWorker:
         lease_ttl_seconds: int = DEFAULT_PUBLICATION_AUTODELETE_LEASE_SECONDS,
         next_check_seconds: int = 60,
         ineligible_backoff_seconds: int = 300,
+        allow_repeat_views: bool = False,
     ) -> None:
         self.view_source = view_source
         self.delete_provider = delete_provider
@@ -81,6 +82,8 @@ class PublicationAutodeleteViewsWorker:
         self.ineligible_backoff_seconds = max(
             30, min(int(ineligible_backoff_seconds), 3600)
         )
+        self.allow_repeat_views = bool(allow_repeat_views)
+        self._started = False
         self._holder = f"publication-autodelete-views-{uuid.uuid4().hex[:16]}"
         self._loop = PollingLoop(
             interval_seconds=max(30, int(interval_seconds)),
@@ -88,11 +91,19 @@ class PublicationAutodeleteViewsWorker:
             name="publication-autodelete-views",
         )
 
+    @property
+    def repeat_views_available(self) -> bool:
+        return bool(self._started and self.allow_repeat_views)
+
     async def start(self) -> None:
         await self._loop.start()
+        self._started = True
 
     async def stop(self) -> None:
-        await self._loop.stop()
+        try:
+            await self._loop.stop()
+        finally:
+            self._started = False
 
     async def _select(self, *, now: datetime):
         async with self.session_factory() as session:
@@ -192,6 +203,7 @@ class PublicationAutodeleteViewsWorker:
                         delete_provider=self.delete_provider,
                         next_check_seconds=self.next_check_seconds,
                         allow_report=True,
+                        allow_repeat_views=self.allow_repeat_views,
                         lease=handle,
                     ).evaluate_and_delete(int(publication_id), now=current)
 

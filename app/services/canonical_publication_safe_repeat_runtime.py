@@ -27,6 +27,7 @@ def build_canonical_publication_safe_repeat_runtime(
     allow_time_autodelete: bool = False,
     allow_views_autodelete: bool = False,
     allow_repeat: bool = False,
+    allow_repeat_views: bool = False,
     repeat_owner_policy_enforced: bool = False,
 ) -> CanonicalPublicationDeliveryRuntime:
     """Compose strict repeat delivery only from concrete dependency facts.
@@ -37,7 +38,9 @@ def build_canonical_publication_safe_repeat_runtime(
     the final owner provider boundary rather than a declarative boolean.
 
     Repeat authority requires both successor continuation availability and the enforced
-    owner policy. Non-repeat time/views capability facts remain independent.
+    owner policy. Repeat+views is an additional independent composition fact. It is
+    admitted into the executor only when repeat authority and ordinary views availability
+    are both true; production control still leaves this fact default-off in this stage.
     """
 
     runtime = build_canonical_publication_delivery_runtime(
@@ -59,6 +62,9 @@ def build_canonical_publication_safe_repeat_runtime(
         repeat_owner_policy_enforced=owner_policy_enforced,
     )
     repeat_enabled = bool(allow_repeat and owner_policy_enforced)
+    repeat_views_enabled = bool(
+        allow_repeat_views and repeat_enabled and allow_views_autodelete
+    )
     executor = CanonicalPublicationSafeRepeatDeliveryExecutor(
         session_factory,
         sender=runtime.sender,
@@ -70,6 +76,7 @@ def build_canonical_publication_safe_repeat_runtime(
         allow_time_autodelete=allow_time_autodelete,
         allow_views_autodelete=allow_views_autodelete,
         allow_repeat=repeat_enabled,
+        allow_repeat_views=repeat_views_enabled,
     )
     return replace(
         runtime,
