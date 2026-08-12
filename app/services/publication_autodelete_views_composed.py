@@ -11,24 +11,28 @@ from app.services.publication_autodelete_views import (
 
 
 class PublicationAutodeleteViewsComposedService(PublicationAutodeleteViewsService):
-    """Narrow views+pin composition over the current #300 destructive boundary.
+    """Narrow views effect compositions over the current #300 destructive boundary.
 
     The parent service remains the sole owner of candidate fingerprinting, exact live
     autodelete lease verification, durable per-message reservation, immutable provider
     target capture and reserved/unknown no-replay semantics. This adapter changes only the
-    provider-free repeat lifecycle proof: views+pin requires one additional explicit fact.
+    provider-free repeat lifecycle proof.
 
-    Production startup does not enable this narrower fact in this stage.
+    Views+pin and views+ordered-forward have independent default-off facts. Supplying both
+    independent facts never grants views+pin+forward authority because the lifecycle proof
+    keeps that combined profile closed until its own later explicit composition stage.
     """
 
     def __init__(
         self,
         *args,
         allow_repeat_views_pin: bool = False,
+        allow_repeat_views_forward: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.allow_repeat_views_pin = bool(allow_repeat_views_pin)
+        self.allow_repeat_views_forward = bool(allow_repeat_views_forward)
 
     async def _lifecycle_allowed(
         self,
@@ -49,6 +53,7 @@ class PublicationAutodeleteViewsComposedService(PublicationAutodeleteViewsServic
         ).lock_and_prove(
             int(publication.id),
             allow_pin=self.allow_repeat_views_pin,
+            allow_forward=self.allow_repeat_views_forward,
         )
         if proof is None:
             return False
