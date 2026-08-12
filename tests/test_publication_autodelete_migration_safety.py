@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 
 
-HEAD = "20260812_0006"
-PREVIOUS = "20260811_0005"
+HEAD = "20260812_0007"
+OTHER_PARENT = "20260811_0006"
 TABLE = "publication_autodelete_actions"
 
 
@@ -52,7 +52,7 @@ def _table_exists(database_path: Path, table_name: str) -> bool:
     return row is not None
 
 
-def test_empty_action_ledger_supports_downgrade_upgrade_round_trip(tmp_path) -> None:
+def test_empty_action_ledger_supports_branch_downgrade_upgrade_round_trip(tmp_path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     database_path = tmp_path / "empty-round-trip.db"
 
@@ -61,9 +61,11 @@ def test_empty_action_ledger_supports_downgrade_upgrade_round_trip(tmp_path) -> 
     assert _version(database_path) == HEAD
     assert _table_exists(database_path, TABLE)
 
-    downgraded = _run_alembic(repo_root, database_path, "downgrade", PREVIOUS)
+    # From the merge head, selecting the delivery-actions parent removes only the
+    # time-autodelete branch. This isolates the destructive guard under test.
+    downgraded = _run_alembic(repo_root, database_path, "downgrade", OTHER_PARENT)
     assert downgraded.returncode == 0, downgraded.stdout + downgraded.stderr
-    assert _version(database_path) == PREVIOUS
+    assert _version(database_path) == OTHER_PARENT
     assert not _table_exists(database_path, TABLE)
 
     reupgraded = _run_alembic(repo_root, database_path, "upgrade", "head")
@@ -72,7 +74,7 @@ def test_empty_action_ledger_supports_downgrade_upgrade_round_trip(tmp_path) -> 
     assert _table_exists(database_path, TABLE)
 
 
-def test_nonempty_action_ledger_refuses_unsafe_downgrade(tmp_path) -> None:
+def test_nonempty_action_ledger_refuses_unsafe_branch_downgrade(tmp_path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     database_path = tmp_path / "nonempty-downgrade.db"
 
@@ -108,7 +110,7 @@ def test_nonempty_action_ledger_refuses_unsafe_downgrade(tmp_path) -> None:
         )
         connection.commit()
 
-    downgraded = _run_alembic(repo_root, database_path, "downgrade", PREVIOUS)
+    downgraded = _run_alembic(repo_root, database_path, "downgrade", OTHER_PARENT)
     assert downgraded.returncode != 0
     output = downgraded.stdout + downgraded.stderr
     assert "refusing unsafe downgrade" in output
