@@ -50,6 +50,9 @@ from app.workers.canonical_repeat_continuation_scheduler import Scheduler
 from app.workers.canonical_repeat_time_autodelete import (
     CanonicalRepeatTimeAutodeleteWorker,
 )
+from app.workers.canonical_repeat_time_forward_autodelete import (
+    CanonicalRepeatTimeForwardAutodeleteWorker,
+)
 from app.workers.canonical_repeat_time_pin_autodelete import (
     CanonicalRepeatTimePinAutodeleteWorker,
 )
@@ -134,6 +137,7 @@ async def _start_canonical_publication_delivery_workers(
     repeat_continuation_executor_available: bool = False,
     repeat_time_executor_available: bool = False,
     repeat_time_pin_executor_available: bool = False,
+    repeat_time_forward_executor_available: bool = False,
     repeat_views_executor_available: bool = False,
     repeat_views_pin_executor_available: bool = False,
     repeat_views_forward_executor_available: bool = False,
@@ -161,6 +165,9 @@ async def _start_canonical_publication_delivery_workers(
                 repeat_time_executor_available=repeat_time_executor_available,
                 repeat_time_pin_executor_available=(
                     repeat_time_pin_executor_available
+                ),
+                repeat_time_forward_executor_available=(
+                    repeat_time_forward_executor_available
                 ),
                 repeat_views_executor_available=repeat_views_executor_available,
                 repeat_views_pin_executor_available=(
@@ -271,6 +278,43 @@ async def _start_canonical_repeat_time_pin_autodelete_worker_if_enabled(
     return worker
 
 
+async def _start_canonical_repeat_time_forward_autodelete_worker_if_enabled(
+    *,
+    repeat_continuation_available: bool,
+    repeat_time_available: bool,
+):
+    if not settings.publication_autodelete_worker_enabled:
+        logger.info(
+            "Boot: canonical repeat time forward autodelete worker disabled with time worker"
+        )
+        return None
+    if not repeat_continuation_available or not repeat_time_available:
+        logger.info(
+            "Boot: canonical repeat time forward autodelete worker disabled without exact dependencies"
+        )
+        return None
+
+    worker = CanonicalRepeatTimeForwardAutodeleteWorker(
+        provider=bot,
+        session_factory=AsyncSessionLocal,
+        interval_seconds=settings.publication_autodelete_worker_interval_seconds,
+        batch_size=settings.publication_autodelete_worker_batch_size,
+        lease_ttl_seconds=settings.publication_autodelete_worker_lease_ttl_seconds,
+        allow_repeat_time_forward=True,
+    )
+    try:
+        await worker.start()
+    except BaseException:
+        try:
+            await worker.stop()
+        except Exception:
+            logger.exception(
+                "Boot: failed to clean up canonical repeat time forward autodelete worker after startup failure"
+            )
+        raise
+    return worker
+
+
 async def _start_publication_autodelete_views_worker_if_enabled(
     *,
     userbot_available: bool,
@@ -332,8 +376,6 @@ async def run_bot() -> None:
         getattr(settings, "sqla_nullpool", False),
     )
 
-    # Ensure a relative SQLite directory can be opened before inspecting whether the
-    # database has adopted Alembic. This step never mutates schema.
     prepare_db_storage_sync()
     schema_state = await bootstrap_database_schema(
         engine,
@@ -363,6 +405,7 @@ async def run_bot() -> None:
     publication_autodelete = None
     canonical_repeat_time_autodelete = None
     canonical_repeat_time_pin_autodelete = None
+    canonical_repeat_time_forward_autodelete = None
     publication_autodelete_views = None
     post_task_retention = None
     source_ingestion = None
@@ -392,13 +435,7 @@ async def run_bot() -> None:
         if config_models is not None:
             logger.info("Boot: AI models config loaded: {} entries", len(config_models))
 
-        # Keep the historical monkeypatch seam name while the concrete implementation
-        # is the PostDocument-aware service used by rich and classic publications.
         posting = PostingService(bot, AsyncSessionLocal)
-
-        # This wrapper preserves the historical Scheduler behavior and, under the
-        # existing successful-repeat opt-in, starts the provider-free continuation
-        # recovery worker before canonical primary delivery can start.
         scheduler = Scheduler(AsyncSessionLocal, posting)
         await scheduler.start()
 
@@ -412,9 +449,6 @@ async def run_bot() -> None:
         publication_reconciler = PublicationReconcilerWorker(interval_seconds=5)
         await publication_reconciler.start()
 
-        # Start destructive consumers before any delete-capable canonical primary. Exact
-        # repeat/time compositions and views-family facts below come only from successfully
-        # started concrete workers, never from config/construction alone.
         publication_autodelete = await _start_publication_autodelete_worker_if_enabled()
         canonical_repeat_time_autodelete = (
             await _start_canonical_repeat_time_autodelete_worker_if_enabled(
@@ -423,15 +457,24 @@ async def run_bot() -> None:
                 ),
             )
         )
+        repeat_time_started = bool(
+            canonical_repeat_time_autodelete is not None
+            and canonical_repeat_time_autodelete.repeat_time_available
+        )
         canonical_repeat_time_pin_autodelete = (
             await _start_canonical_repeat_time_pin_autodelete_worker_if_enabled(
                 repeat_continuation_available=bool(
                     scheduler.repeat_continuation_available
                 ),
-                repeat_time_available=bool(
-                    canonical_repeat_time_autodelete is not None
-                    and canonical_repeat_time_autodelete.repeat_time_available
+                repeat_time_available=repeat_time_started,
+            )
+        )
+        canonical_repeat_time_forward_autodelete = (
+            await _start_canonical_repeat_time_forward_autodelete_worker_if_enabled(
+                repeat_continuation_available=bool(
+                    scheduler.repeat_continuation_available
                 ),
+                repeat_time_available=repeat_time_started,
             )
         )
         publication_autodelete_views = (
@@ -443,8 +486,6 @@ async def run_bot() -> None:
             )
         )
 
-        # Run all executor-availability interlocks before canonical primary delivery is
-        # allowed to execute provider side effects.
         validate_retention_executor_availability(
             settings,
             publication_autodelete_worker_started=publication_autodelete is not None,
@@ -453,13 +494,14 @@ async def run_bot() -> None:
             ),
         )
 
-        repeat_time_executor_available = bool(
-            canonical_repeat_time_autodelete is not None
-            and canonical_repeat_time_autodelete.repeat_time_available
-        )
+        repeat_time_executor_available = repeat_time_started
         repeat_time_pin_executor_available = bool(
             canonical_repeat_time_pin_autodelete is not None
             and canonical_repeat_time_pin_autodelete.repeat_time_pin_available
+        )
+        repeat_time_forward_executor_available = bool(
+            canonical_repeat_time_forward_autodelete is not None
+            and canonical_repeat_time_forward_autodelete.repeat_time_forward_available
         )
         repeat_views_executor_available = bool(
             publication_autodelete_views is not None
@@ -491,6 +533,9 @@ async def run_bot() -> None:
             ),
             repeat_time_executor_available=repeat_time_executor_available,
             repeat_time_pin_executor_available=repeat_time_pin_executor_available,
+            repeat_time_forward_executor_available=(
+                repeat_time_forward_executor_available
+            ),
             repeat_views_executor_available=repeat_views_executor_available,
             repeat_views_pin_executor_available=(
                 repeat_views_pin_executor_available
@@ -570,8 +615,6 @@ async def run_bot() -> None:
         if post_task_retention is not None:
             await _safe_stop("PostTask retention", post_task_retention.stop)
 
-        # Stop the canonical producer/recovery pair before dependent delete consumers and
-        # before the scheduler wrapper stops repeat continuation recovery.
         await stop_canonical_publication_delivery_workers(
             primary_worker=canonical_publication_delivery,
             recovery_worker=canonical_publication_delivery_recovery,
@@ -580,6 +623,11 @@ async def run_bot() -> None:
             await _safe_stop(
                 "canonical views publication autodelete",
                 publication_autodelete_views.stop,
+            )
+        if canonical_repeat_time_forward_autodelete is not None:
+            await _safe_stop(
+                "canonical repeat time forward publication autodelete",
+                canonical_repeat_time_forward_autodelete.stop,
             )
         if canonical_repeat_time_pin_autodelete is not None:
             await _safe_stop(
