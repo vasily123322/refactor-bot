@@ -42,11 +42,18 @@ class CanonicalPublicationDeliveryExecutionResult:
 _EXECUTOR_CLAIM_REQUIREMENTS = CanonicalPublicationDeliveryClaimRequirements(
     require_empty_runtime_options=True,
     require_nonrepeat=True,
+    require_transport_retired=True,
 )
 
 
 class CanonicalPublicationDeliveryExecutor:
-    """Execute one supported canonical delivery slice with live-lease auxiliaries."""
+    """Execute one supported canonical delivery slice with live-lease auxiliaries.
+
+    Runtime execution requires physical legacy transport retirement inside the atomic
+    claim transaction. Canonical planning/candidate discovery remain PostTask-independent,
+    but this concrete executor cannot compete with the still-authoritative legacy
+    Scheduler while ``Publication.legacy_post_task_id`` is present.
+    """
 
     def __init__(
         self,
