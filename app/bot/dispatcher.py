@@ -10,6 +10,10 @@ from app.bot.bot_instance import bot
 from app.bot.commands import register_bot_commands
 from app.bot.routers import main_router
 from app.core.bg_tasks import cancel_all as cancel_bg_tasks
+from app.core.canonical_publication_delivery_primary_config import (
+    CanonicalPublicationDeliveryPrimarySettings,
+    load_canonical_publication_delivery_primary_settings,
+)
 from app.core.channel_access import ChannelOwnerMiddleware, ChannelOwnerStateMiddleware
 from app.core.config import settings
 from app.core.db import (
@@ -27,6 +31,10 @@ from app.core.runtime_configuration import (
     validate_runtime_configuration,
 )
 from app.core.schema import bootstrap_database_schema
+from app.services.canonical_publication_delivery_runtime_control import (
+    start_canonical_publication_delivery_primary_if_enabled,
+    stop_canonical_publication_delivery_workers,
+)
 from app.services.document_posting import DocumentPostingService as PostingService
 from app.services.external_bots import ExternalBotsManager
 from app.services.llm.openrouter_client import OpenRouterClient
@@ -95,8 +103,41 @@ async def _start_canonical_publication_delivery_recovery_worker_if_enabled():
         ),
         batch_size=settings.canonical_publication_delivery_recovery_worker_batch_size,
     )
-    await worker.start()
+    try:
+        await worker.start()
+    except BaseException:
+        try:
+            await worker.stop()
+        except Exception:
+            logger.exception(
+                "Boot: failed to clean up canonical publication delivery recovery worker after startup failure"
+            )
+        raise
     return worker
+
+
+async def _start_canonical_publication_delivery_workers(
+    primary_config: CanonicalPublicationDeliveryPrimarySettings,
+):
+    recovery_worker = (
+        await _start_canonical_publication_delivery_recovery_worker_if_enabled()
+    )
+    try:
+        primary_worker = (
+            await start_canonical_publication_delivery_primary_if_enabled(
+                config=primary_config,
+                recovery_worker=recovery_worker,
+                bot=bot,
+                session_factory=AsyncSessionLocal,
+            )
+        )
+    except BaseException:
+        await stop_canonical_publication_delivery_workers(
+            primary_worker=None,
+            recovery_worker=recovery_worker,
+        )
+        raise
+    return primary_worker, recovery_worker
 
 
 async def _start_publication_autodelete_worker_if_enabled():
@@ -148,6 +189,7 @@ async def _start_publication_autodelete_views_worker_if_enabled(
 
 async def run_bot() -> None:
     setup_logging(settings.log_level)
+    primary_delivery_config = load_canonical_publication_delivery_primary_settings()
     validate_runtime_configuration(settings)
 
     pool_name = getattr(getattr(engine, "sync_engine", None), "pool", None)
@@ -183,6 +225,7 @@ async def run_bot() -> None:
     userbot_started = False
     scheduler = None
     scheduler_recovery = None
+    canonical_publication_delivery = None
     canonical_publication_delivery_recovery = None
     publication_reconciler = None
     publication_autodelete = None
@@ -229,9 +272,10 @@ async def run_bot() -> None:
         )
         await scheduler_recovery.start()
 
-        canonical_publication_delivery_recovery = (
-            await _start_canonical_publication_delivery_recovery_worker_if_enabled()
-        )
+        (
+            canonical_publication_delivery,
+            canonical_publication_delivery_recovery,
+        ) = await _start_canonical_publication_delivery_workers(primary_delivery_config)
 
         publication_reconciler = PublicationReconcilerWorker(interval_seconds=5)
         await publication_reconciler.start()
@@ -325,11 +369,10 @@ async def run_bot() -> None:
             await _safe_stop("canonical publication autodelete", publication_autodelete.stop)
         if publication_reconciler is not None:
             await _safe_stop("publication reconciler", publication_reconciler.stop)
-        if canonical_publication_delivery_recovery is not None:
-            await _safe_stop(
-                "canonical publication delivery recovery",
-                canonical_publication_delivery_recovery.stop,
-            )
+        await stop_canonical_publication_delivery_workers(
+            primary_worker=canonical_publication_delivery,
+            recovery_worker=canonical_publication_delivery_recovery,
+        )
         if scheduler_recovery is not None:
             await _safe_stop("scheduler recovery", scheduler_recovery.stop)
         if scheduler is not None:
