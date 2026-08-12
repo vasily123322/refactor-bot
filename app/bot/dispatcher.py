@@ -50,7 +50,7 @@ from app.workers.canonical_repeat_continuation_scheduler import Scheduler
 from app.workers.grab_poll import GrabPoller
 from app.workers.post_task_retention import PostTaskRetentionWorker
 from app.workers.publication_autodelete import PublicationAutodeleteWorker
-from app.workers.publication_autodelete_views import PublicationAutodeleteViewsWorker
+from app.workers.publication_autodelete_views_pin import PublicationAutodeleteViewsPinWorker
 from app.workers.publication_reconciler import PublicationReconcilerWorker
 from app.workers.scheduler_recovery import SchedulerRecoveryWorker
 from app.workers.source_ingestion import SourceIngestionWorker
@@ -125,6 +125,7 @@ async def _start_canonical_publication_delivery_workers(
     views_autodelete_executor_available: bool = False,
     repeat_continuation_executor_available: bool = False,
     repeat_views_executor_available: bool = False,
+    repeat_views_pin_executor_available: bool = False,
 ):
     recovery_worker = (
         await _start_canonical_publication_delivery_recovery_worker_if_enabled()
@@ -146,6 +147,9 @@ async def _start_canonical_publication_delivery_workers(
                     repeat_continuation_executor_available
                 ),
                 repeat_views_executor_available=repeat_views_executor_available,
+                repeat_views_pin_executor_available=(
+                    repeat_views_pin_executor_available
+                ),
                 repeat_owner_policy_enforced=True,
             )
         )
@@ -188,7 +192,10 @@ async def _start_publication_autodelete_views_worker_if_enabled(
         )
         return None
 
-    worker = PublicationAutodeleteViewsWorker(
+    # This concrete worker type is implementation-capable of the views+pin composition,
+    # but capability is not availability. The narrow started fact remains false until
+    # `start()` succeeds, and still depends on repeat continuation through plain views.
+    worker = PublicationAutodeleteViewsPinWorker(
         view_source=userbot,
         delete_provider=bot,
         session_factory=AsyncSessionLocal,
@@ -202,8 +209,18 @@ async def _start_publication_autodelete_views_worker_if_enabled(
             settings.publication_autodelete_views_worker_ineligible_backoff_seconds
         ),
         allow_repeat_views=bool(repeat_continuation_available),
+        allow_repeat_views_pin=True,
     )
-    await worker.start()
+    try:
+        await worker.start()
+    except BaseException:
+        try:
+            await worker.stop()
+        except Exception:
+            logger.exception(
+                "Boot: failed to clean up repeat views+pin autodelete worker after startup failure"
+            )
+        raise
     return worker
 
 
@@ -298,9 +315,9 @@ async def run_bot() -> None:
         publication_reconciler = PublicationReconcilerWorker(interval_seconds=5)
         await publication_reconciler.start()
 
-        # Start optional destructive consumers before any delete-capable canonical
-        # primary loop. Repeat views is enabled only from the already-started continuation
-        # dependency, never directly from configuration.
+        # Start destructive consumers before any delete-capable canonical primary. The
+        # exact repeat/views and repeat/views+pin facts below come from this successfully
+        # started concrete worker, never from config or construction alone.
         publication_autodelete = await _start_publication_autodelete_worker_if_enabled()
         publication_autodelete_views = (
             await _start_publication_autodelete_views_worker_if_enabled(
@@ -323,7 +340,11 @@ async def run_bot() -> None:
 
         repeat_views_executor_available = bool(
             publication_autodelete_views is not None
-            and publication_autodelete_views.allow_repeat_views
+            and publication_autodelete_views.repeat_views_available
+        )
+        repeat_views_pin_executor_available = bool(
+            publication_autodelete_views is not None
+            and publication_autodelete_views.repeat_views_pin_available
         )
         (
             canonical_publication_delivery,
@@ -338,6 +359,9 @@ async def run_bot() -> None:
                 scheduler.repeat_continuation_available
             ),
             repeat_views_executor_available=repeat_views_executor_available,
+            repeat_views_pin_executor_available=(
+                repeat_views_pin_executor_available
+            ),
         )
 
         if settings.post_task_retention_enabled:
