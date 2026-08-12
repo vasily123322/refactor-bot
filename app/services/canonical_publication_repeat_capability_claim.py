@@ -22,6 +22,9 @@ _REPEAT_RUNTIME_KEYS = _ESTABLISHED_REPEAT_RUNTIME_KEYS | _REPEAT_VIEWS_RUNTIME_
 _REPEAT_TIME_RUNTIME_KEYS = frozenset(
     {"autodelete_seconds", "autodelete_effective_seconds"}
 )
+_REPEAT_TIME_QUEUE_RUNTIME_KEYS = frozenset(
+    {"silent", "autodelete_seconds", "autodelete_report"}
+)
 
 
 def _positive_int(value: Any) -> int | None:
@@ -52,6 +55,7 @@ def _strict_fixed_delay_repeat(plan) -> bool:
 def _strict_repeat_runtime_options(
     plan,
     *,
+    allow_repeat_time: bool = False,
     allow_repeat_views: bool = False,
     allow_repeat_views_pin: bool = False,
     allow_repeat_views_forward: bool = False,
@@ -64,13 +68,28 @@ def _strict_repeat_runtime_options(
     if not isinstance(options, dict):
         return None
 
-    # Repeat+time destructive authority stays explicitly hard-closed until the current
-    # migration ancestry converges with the durable per-message time action ledger. The
-    # generic non-repeat `allow_time_autodelete` fact must never bypass this repeat gate.
-    # Keep both queue-time and generated/effective timer keys closed so future key-shape
-    # widening cannot accidentally enable an older retryable DELETE path.
-    if any(key in options for key in _REPEAT_TIME_RUNTIME_KEYS):
-        return None
+    has_repeat_time_key = any(key in options for key in _REPEAT_TIME_RUNTIME_KEYS)
+    if has_repeat_time_key:
+        # Queue-time repeat+time is intentionally its own narrow composition. Generated
+        # `autodelete_effective_seconds` is execution state, never caller intent, and must
+        # not be admitted by strict claim even when the repeat+time fact is present.
+        if "autodelete_effective_seconds" in options or not allow_repeat_time:
+            return None
+        if not set(options).issubset(_REPEAT_TIME_QUEUE_RUNTIME_KEYS):
+            return None
+
+        capability = parse_canonical_publication_delivery_runtime_capability(options)
+        if (
+            capability is None
+            or "autodelete_seconds" not in options
+            or capability.time_autodelete_seconds is None
+            or capability.views_autodelete_requested
+            or capability.pin_on
+            or capability.forward_to
+        ):
+            return None
+        return deepcopy(options)
+
     if not set(options).issubset(_REPEAT_RUNTIME_KEYS):
         return None
 
@@ -137,15 +156,15 @@ class CanonicalPublicationRepeatCapabilityClaimService(
 ):
     """Keep repeat authority limited to explicit independently proven compositions.
 
+    Plain repeat+time requires the generic destructive-time dependency plus the dedicated
+    `allow_repeat_time` composition fact. It accepts only exact queue-time seconds with
+    optional silent/report intent; generated timer state, views, pin, forward and unknown
+    effects remain closed.
+
     Plain repeat+views, views+pin and views+forward retain separate default-off facts.
     Views+pin+forward is narrower again and requires the complete underlying repeat/views,
     pin and forward fact set plus `allow_repeat_views_pin_forward`. Independent pin and
     forward facts can never implicitly compose into combined authority.
-
-    Repeat+time is intentionally hard-closed until its destructive ledger ancestry is
-    converged. Time+views, unknown effects and all unproven compositions remain closed.
-    Ordered target resolution and durable Telegram destination snapshot remain owned by
-    the parent capability claim.
     """
 
     async def claim_supported(
@@ -158,6 +177,7 @@ class CanonicalPublicationRepeatCapabilityClaimService(
         allow_time_autodelete: bool = False,
         allow_views_autodelete: bool = False,
         allow_repeat: bool = False,
+        allow_repeat_time: bool = False,
         allow_repeat_views: bool = False,
         allow_repeat_views_pin: bool = False,
         allow_repeat_views_forward: bool = False,
@@ -192,6 +212,9 @@ class CanonicalPublicationRepeatCapabilityClaimService(
                 if not _strict_fixed_delay_repeat(plan):
                     await self.session.rollback()
                     return None
+                repeat_time_enabled = bool(
+                    allow_repeat_time and allow_time_autodelete
+                )
                 repeat_views_enabled = bool(
                     allow_repeat_views and allow_views_autodelete
                 )
@@ -207,6 +230,7 @@ class CanonicalPublicationRepeatCapabilityClaimService(
                 if (
                     _strict_repeat_runtime_options(
                         plan,
+                        allow_repeat_time=repeat_time_enabled,
                         allow_repeat_views=repeat_views_enabled,
                         allow_repeat_views_pin=pin_enabled,
                         allow_repeat_views_forward=forward_enabled,
