@@ -21,12 +21,14 @@ class CanonicalPublicationSafeRepeatDeliveryExecutor(
         *args,
         allow_repeat_views: bool = False,
         allow_repeat_views_pin: bool = False,
+        allow_repeat_views_forward: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.allow_repeat_views = bool(allow_repeat_views)
-        # Narrower than plain repeat+views and never inferred from pin support alone.
         self.allow_repeat_views_pin = bool(allow_repeat_views_pin)
+        # Independent from both plain repeat+views and views+pin support.
+        self.allow_repeat_views_forward = bool(allow_repeat_views_forward)
 
     async def _claim(
         self,
@@ -47,4 +49,5 @@ class CanonicalPublicationSafeRepeatDeliveryExecutor(
                 allow_repeat=self.allow_repeat,
                 allow_repeat_views=self.allow_repeat_views,
                 allow_repeat_views_pin=self.allow_repeat_views_pin,
+                allow_repeat_views_forward=self.allow_repeat_views_forward,
             )
