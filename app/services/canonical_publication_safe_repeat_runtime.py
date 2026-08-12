@@ -30,18 +30,14 @@ def build_canonical_publication_safe_repeat_runtime(
     allow_repeat_time: bool = False,
     allow_repeat_time_pin: bool = False,
     allow_repeat_time_forward: bool = False,
+    allow_repeat_time_pin_forward: bool = False,
     allow_repeat_views: bool = False,
     allow_repeat_views_pin: bool = False,
     allow_repeat_views_forward: bool = False,
     allow_repeat_views_pin_forward: bool = False,
     repeat_owner_policy_enforced: bool = False,
 ) -> CanonicalPublicationDeliveryRuntime:
-    """Compose strict repeat delivery only from concrete dependency facts.
-
-    Repeat+time requires repeat authority, generic time deletion, its dedicated started
-    dependency, and owner policy. Time+pin and time+forward are independent narrower
-    slices, each requiring its own started fact over plain repeat+time.
-    """
+    """Compose strict repeat delivery only from concrete dependency facts."""
 
     runtime = build_canonical_publication_delivery_runtime(
         bot=bot,
@@ -63,15 +59,18 @@ def build_canonical_publication_safe_repeat_runtime(
     )
     repeat_enabled = bool(allow_repeat and owner_policy_enforced)
     repeat_time_enabled = bool(
-        allow_repeat_time
-        and repeat_enabled
-        and allow_time_autodelete
+        allow_repeat_time and repeat_enabled and allow_time_autodelete
     )
     repeat_time_pin_enabled = bool(
         allow_repeat_time_pin and repeat_time_enabled
     )
     repeat_time_forward_enabled = bool(
         allow_repeat_time_forward and repeat_time_enabled
+    )
+    repeat_time_pin_forward_enabled = bool(
+        allow_repeat_time_pin_forward
+        and repeat_time_pin_enabled
+        and repeat_time_forward_enabled
     )
     repeat_views_enabled = bool(
         allow_repeat_views and repeat_enabled and allow_views_autodelete
@@ -101,13 +100,10 @@ def build_canonical_publication_safe_repeat_runtime(
         allow_repeat_time=repeat_time_enabled,
         allow_repeat_time_pin=repeat_time_pin_enabled,
         allow_repeat_time_forward=repeat_time_forward_enabled,
+        allow_repeat_time_pin_forward=repeat_time_pin_forward_enabled,
         allow_repeat_views=repeat_views_enabled,
         allow_repeat_views_pin=repeat_views_pin_enabled,
         allow_repeat_views_forward=repeat_views_forward_enabled,
         allow_repeat_views_pin_forward=repeat_views_pin_forward_enabled,
     )
-    return replace(
-        runtime,
-        executor=executor,
-        post_send_hook=post_send_hook,
-    )
+    return replace(runtime, executor=executor, post_send_hook=post_send_hook)

@@ -36,11 +36,7 @@ def _repeat_enabled(schedule: ScheduleEntry | None) -> bool:
 
 
 class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHandoffExecutor):
-    """Route linked fixed-delay repeat through its dedicated atomic authority seam.
-
-    Every repeat/effect composition fact is forwarded independently. Plain repeat+time,
-    time+pin and ordered time+forward therefore carry distinct explicit bits.
-    """
+    """Route linked fixed-delay repeat through independently gated atomic seams."""
 
     async def execute(self, publication_id: int):
         try:
@@ -82,6 +78,9 @@ class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHand
         allow_repeat_time_forward = bool(
             getattr(self.executor, "allow_repeat_time_forward", False)
         )
+        allow_repeat_time_pin_forward = bool(
+            getattr(self.executor, "allow_repeat_time_pin_forward", False)
+        )
         allow_views_autodelete = bool(
             getattr(self.executor, "allow_views_autodelete", False)
         )
@@ -109,6 +108,7 @@ class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHand
                 allow_repeat_time=allow_repeat_time,
                 allow_repeat_time_pin=allow_repeat_time_pin,
                 allow_repeat_time_forward=allow_repeat_time_forward,
+                allow_repeat_time_pin_forward=allow_repeat_time_pin_forward,
                 allow_views_autodelete=allow_views_autodelete,
                 allow_repeat_views=allow_repeat_views,
                 allow_repeat_views_pin=allow_repeat_views_pin,
