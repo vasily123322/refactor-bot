@@ -74,6 +74,16 @@ def _neutral_int(value: Any) -> bool:
     return value in (None, False, 0, "0", "")
 
 
+def _positive_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def _neutral_payload_effects(payload: Mapping[str, Any]) -> bool:
     if payload.get("repeat_on") not in (None, False, 0):
         return False
@@ -134,6 +144,8 @@ def _nonrepeat(plan: CanonicalPublicationDeliveryPlan) -> bool:
 
 def _supported_runtime_options(
     plan: CanonicalPublicationDeliveryPlan,
+    *,
+    allow_time_autodelete: bool = False,
 ) -> dict[str, Any] | None:
     try:
         options = plan.runtime_options()
@@ -141,6 +153,18 @@ def _supported_runtime_options(
         return None
     if not options:
         return {}
+
+    if "autodelete_seconds" in options:
+        if not allow_time_autodelete:
+            return None
+        if not set(options).issubset({"silent", "autodelete_seconds"}):
+            return None
+        if _positive_int(options.get("autodelete_seconds")) is None:
+            return None
+        if "silent" in options and type(options.get("silent")) is not bool:
+            return None
+        return options
+
     if not set(options).issubset({"silent", "pin_on"}):
         return None
     for key in ("silent", "pin_on"):
@@ -234,17 +258,10 @@ def _silent_intent_matches(
         intended = runtime_options.get("silent")
         if type(intended) is not bool:
             return False
-        # The explicit canonical runtime bit must also be durably represented in the
-        # legacy PostTask, and legacy's *effective* provider behavior must already equal
-        # that value. This is especially important for rich_document, where historical
-        # legacy dispatch ignores the top-level `silent` key and re-renders post_document.
         if type(current.get("silent")) is not bool or current.get("silent") is not intended:
             return False
         return current_effective is intended
 
-    # Without explicit runtime silent, do not infer a top-level legacy effect into
-    # canonical authority. Immutable rich-document Telegram settings are allowed only
-    # when both transport representations have the same effective behavior.
     for payload in (current, expected):
         if "silent" in payload and not _neutral_bool(payload.get("silent")):
             return False
@@ -266,11 +283,36 @@ def _pin_intent_matches(
     return True
 
 
+def _time_intent_matches(
+    current: Mapping[str, Any],
+    runtime_options: Mapping[str, Any],
+) -> bool:
+    if "autodelete_seconds" in runtime_options:
+        intended = _positive_int(runtime_options.get("autodelete_seconds"))
+        current_seconds = _positive_int(current.get("autodelete_seconds"))
+        if intended is None or current_seconds != intended:
+            return False
+        if not _neutral_int(current.get("autodelete_effective_seconds")):
+            return False
+        if not _neutral_bool(current.get("autodelete_report")):
+            return False
+        return True
+
+    if not _neutral_int(current.get("autodelete_seconds")):
+        return False
+    if not _neutral_int(current.get("autodelete_effective_seconds")):
+        return False
+    if not _neutral_bool(current.get("autodelete_report")):
+        return False
+    return True
+
+
 def _legacy_intent_matches(
     *,
     task: PostTask,
     publication: Publication,
     plan: CanonicalPublicationDeliveryPlan,
+    allow_time_autodelete: bool = False,
 ) -> bool:
     if int(task.channel_id) != int(plan.channel_id):
         return False
@@ -279,7 +321,10 @@ def _legacy_intent_matches(
     if task.error not in (None, ""):
         return False
 
-    runtime_options = _supported_runtime_options(plan)
+    runtime_options = _supported_runtime_options(
+        plan,
+        allow_time_autodelete=allow_time_autodelete,
+    )
     current = _mapping(task.payload)
     expected = _expected_transport_payload(plan)
     if runtime_options is None or current is None or expected is None:
@@ -292,9 +337,13 @@ def _legacy_intent_matches(
         return False
     if not _pin_intent_matches(current, runtime_options):
         return False
+    if not _time_intent_matches(current, runtime_options):
+        return False
     for key in _IDENTITY_MARKERS:
         current.pop(key, None)
     current.pop("pin_on", None)
+    if "autodelete_seconds" in runtime_options:
+        current.pop("autodelete_seconds", None)
 
     current_clean = _strip_neutral_effect_fields(current)
     expected_clean = _strip_neutral_effect_fields(expected)
@@ -322,9 +371,10 @@ class CanonicalPublicationLegacyTransportHandoffService:
     handoff. This service never deletes or takes a scheduler lease and never calls a
     provider. Canonical delivery remains `queued` until a later exact canonical claim.
 
-    Current capability is non-repeat with empty runtime options plus explicit boolean
-    `silent` and `pin_on` intent. Legacy effective silence and explicit pin intent must
-    exactly match canonical runtime intent; hidden legacy effects are never inferred.
+    Baseline capability is non-repeat with empty runtime options plus explicit boolean
+    `silent` and `pin_on` intent. A caller may additionally prove a started canonical
+    time-autodelete dependency; only then an exact positive `autodelete_seconds` profile
+    without report/pin/forward/views is admitted. Hidden legacy effects are never inferred.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -348,6 +398,7 @@ class CanonicalPublicationLegacyTransportHandoffService:
         publication_id: int,
         *,
         at: datetime | None = None,
+        allow_time_autodelete: bool = False,
     ) -> CanonicalPublicationLegacyTransportHandoffResult:
         try:
             safe_publication_id = int(publication_id)
@@ -468,12 +519,17 @@ class CanonicalPublicationLegacyTransportHandoffService:
                 or int(plan.content_item_id) != int(item.id)
                 or int(plan.content_revision) != int(revision.revision)
                 or int(plan.channel_id) != int(channel.id)
-                or _supported_runtime_options(plan) is None
+                or _supported_runtime_options(
+                    plan,
+                    allow_time_autodelete=allow_time_autodelete,
+                )
+                is None
                 or not _nonrepeat(plan)
                 or not _legacy_intent_matches(
                     task=task,
                     publication=publication,
                     plan=plan,
+                    allow_time_autodelete=allow_time_autodelete,
                 )
             ):
                 return await self._result(_INELIGIBLE, safe_publication_id, task_id)
