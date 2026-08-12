@@ -107,6 +107,8 @@ def test_generic_time_executor_fact_cannot_authorize_repeat_time(tmp_path) -> No
                     ttl_seconds=180,
                     allow_time_autodelete=True,
                     allow_repeat=True,
+                    # Even unrelated already-proven views-family facts cannot weaken
+                    # the explicit repeat+time convergence lock.
                     allow_views_autodelete=True,
                     allow_repeat_views=True,
                     allow_repeat_views_pin=True,
@@ -137,6 +139,9 @@ def test_generated_effective_timer_key_is_also_hard_closed_for_repeat(tmp_path) 
                 options={"autodelete_seconds": 90},
             )
 
+            # `autodelete_effective_seconds` is intentionally reserved by the bridge and
+            # cannot be queued as caller intent. Model generated/drifted canonical state
+            # directly so this regression reaches the strict repeat claim boundary.
             async with Session() as session:
                 publication = await session.get(Publication, publication_id)
                 assert publication is not None
