@@ -12,6 +12,7 @@ from app.domain.models import PostTask
 from app.domain.publishing.models import Publication
 from app.services.canonical_publication_delivery_authority import (
     canonical_publication_delivery_primary_started,
+    canonical_publication_delivery_time_autodelete_started,
 )
 from app.services.canonical_publication_legacy_transport_handoff import (
     CanonicalPublicationLegacyTransportHandoffService,
@@ -61,13 +62,13 @@ class Scheduler(RecoveryScheduler):
         factory = getattr(self, "session_factory", None)
         return factory if factory is not None else None
 
-    async def _retire_plain_transport_for_canonical_primary(
+    async def _retire_transport_for_canonical_primary(
         self,
         session: AsyncSession,
         *,
         task_id: int,
     ) -> bool:
-        """Atomically hand exact-parity plain transport to a started canonical primary."""
+        """Atomically hand an exact started-capability transport to canonical primary."""
 
         if not canonical_publication_delivery_primary_started():
             return False
@@ -86,12 +87,17 @@ class Scheduler(RecoveryScheduler):
 
         result = await CanonicalPublicationLegacyTransportHandoffService(
             session
-        ).retire_for_canonical_delivery(int(publication_ids[0]))
+        ).retire_for_canonical_delivery(
+            int(publication_ids[0]),
+            allow_time_autodelete=(
+                canonical_publication_delivery_time_autodelete_started()
+            ),
+        )
         if result.outcome != "retired":
             return False
 
         logger.info(
-            "Scheduler: retired legacy plain transport for canonical primary post_id={} publication_id={}",
+            "Scheduler: retired legacy transport for canonical primary post_id={} publication_id={}",
             int(task_id),
             int(publication_ids[0]),
         )
@@ -102,7 +108,7 @@ class Scheduler(RecoveryScheduler):
         session: AsyncSession,
         items: list[PostTask],
     ) -> None:
-        """Retire exact canonical plain work before inherited legacy lease claim."""
+        """Retire exact canonical work before inherited legacy lease claim."""
 
         if not items or not canonical_publication_delivery_primary_started():
             await super()._mark_processing(session, items)
@@ -112,7 +118,7 @@ class Scheduler(RecoveryScheduler):
         legacy_candidates: list[PostTask] = []
         for task_id in selected_ids:
             try:
-                retired = await self._retire_plain_transport_for_canonical_primary(
+                retired = await self._retire_transport_for_canonical_primary(
                     session,
                     task_id=task_id,
                 )
@@ -121,7 +127,7 @@ class Scheduler(RecoveryScheduler):
             except Exception as exc:
                 await session.rollback()
                 logger.warning(
-                    "Scheduler: canonical plain transport retirement failed post_id={} type={}",
+                    "Scheduler: canonical transport retirement failed post_id={} type={}",
                     task_id,
                     type(exc).__name__,
                 )
