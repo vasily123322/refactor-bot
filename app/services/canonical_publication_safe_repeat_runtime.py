@@ -29,6 +29,7 @@ def build_canonical_publication_safe_repeat_runtime(
     allow_repeat: bool = False,
     allow_repeat_time: bool = False,
     allow_repeat_time_pin: bool = False,
+    allow_repeat_time_forward: bool = False,
     allow_repeat_views: bool = False,
     allow_repeat_views_pin: bool = False,
     allow_repeat_views_forward: bool = False,
@@ -37,10 +38,9 @@ def build_canonical_publication_safe_repeat_runtime(
 ) -> CanonicalPublicationDeliveryRuntime:
     """Compose strict repeat delivery only from concrete dependency facts.
 
-    Repeat+time is a distinct composition and requires repeat authority, the ordinary
-    time destructive dependency, its dedicated started dependency, and owner policy.
-    Repeat+time+pin is narrower again and additionally requires its own started fact.
-    Views+pin and views+forward remain independent narrower slices over repeat+views.
+    Repeat+time requires repeat authority, generic time deletion, its dedicated started
+    dependency, and owner policy. Time+pin and time+forward are independent narrower
+    slices, each requiring its own started fact over plain repeat+time.
     """
 
     runtime = build_canonical_publication_delivery_runtime(
@@ -68,8 +68,10 @@ def build_canonical_publication_safe_repeat_runtime(
         and allow_time_autodelete
     )
     repeat_time_pin_enabled = bool(
-        allow_repeat_time_pin
-        and repeat_time_enabled
+        allow_repeat_time_pin and repeat_time_enabled
+    )
+    repeat_time_forward_enabled = bool(
+        allow_repeat_time_forward and repeat_time_enabled
     )
     repeat_views_enabled = bool(
         allow_repeat_views and repeat_enabled and allow_views_autodelete
@@ -98,6 +100,7 @@ def build_canonical_publication_safe_repeat_runtime(
         allow_repeat=repeat_enabled,
         allow_repeat_time=repeat_time_enabled,
         allow_repeat_time_pin=repeat_time_pin_enabled,
+        allow_repeat_time_forward=repeat_time_forward_enabled,
         allow_repeat_views=repeat_views_enabled,
         allow_repeat_views_pin=repeat_views_pin_enabled,
         allow_repeat_views_forward=repeat_views_forward_enabled,
