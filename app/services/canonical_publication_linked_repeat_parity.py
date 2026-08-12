@@ -88,10 +88,9 @@ def _repeat_runtime_options(
     report = bool(capability.autodelete_report)
 
     if views_threshold is not None:
-        # Exact pin intent already has linked parity and provider-order proof. This stage
-        # widens only read-only legacy parity to let views compose with pin. Ordered
-        # forward remains outside the views slice until its own dedicated parity stage.
-        if forward_ids:
+        # Views+pin and views+forward each have an independent read-only parity slice.
+        # Their combined pin+forward composition remains closed until its own proof.
+        if bool(capability.pin_on) and forward_ids:
             return None
     elif "autodelete_report" in options:
         # The generic parser already rejects report-without-trigger. Keep this explicit
@@ -182,14 +181,15 @@ def _legacy_views_intent_matches(
 class CanonicalPublicationLinkedRepeatParityService:
     """Read-only proof for pristine fixed-delay linked repeat handoff.
 
-    Already-proven pin and ordered-forward intents may compose with each other. Views
-    autodelete now has exact linked parity for plain/silent repeat and for the independent
-    views+pin slice, including threshold/report parity and pristine generated state.
-    Views+forward and all time-autodelete semantics remain outside this proof.
+    Already-proven pin and ordered-forward intents may compose with each other outside the
+    views family. Views autodelete has exact linked parity for plain/silent repeat and for
+    two independent effect slices: views+pin and views+ordered-forward. Each includes exact
+    threshold/report parity and pristine generated state. Views+pin+forward and all
+    time-autodelete semantics remain outside this proof.
 
-    This remains parity only. The strict repeat capability claim and post-publication
-    views lifecycle proof still reject views+pin, so no new primary or DELETE authority is
-    created by this stage.
+    This remains parity only. Strict repeat claim/lifecycle/destructive gates retain their
+    independent default-closed facts, so no primary, forward or DELETE authority is created
+    merely because read-only legacy parity succeeds.
     """
 
     def prove(
