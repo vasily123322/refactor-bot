@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,15 +47,20 @@ class CanonicalPublicationLinkedForwardParityProof:
     disable_notification: bool
     pin_on: bool = False
     time_autodelete_seconds: int | None = None
+    views_autodelete_threshold: int | None = None
     autodelete_report: bool = False
 
     @property
     def time_autodelete_requested(self) -> bool:
         return self.time_autodelete_seconds is not None
 
+    @property
+    def views_autodelete_requested(self) -> bool:
+        return self.views_autodelete_threshold is not None
 
-def _neutral_number(value: Any) -> bool:
-    return value in _NEUTRAL_NUMBER_VALUES
+    @property
+    def delete_requested(self) -> bool:
+        return self.time_autodelete_requested or self.views_autodelete_requested
 
 
 def _strict_optional_positive_int(value: Any) -> tuple[bool, int | None]:
@@ -74,29 +79,32 @@ def _strict_optional_positive_int(value: Any) -> tuple[bool, int | None]:
 
 def _forward_profile(
     options: dict[str, Any],
-) -> tuple[tuple[int, ...], bool, bool, int | None, bool] | None:
+) -> tuple[tuple[int, ...], bool, bool, int | None, int | None, bool] | None:
     capability = parse_canonical_publication_delivery_runtime_capability(options)
     if capability is None or not capability.forward_to:
         return None
-    if options.get("autodelete_views") not in _NEUTRAL_NUMBER_VALUES:
-        return None
 
-    # `autodelete_effective_seconds` is generated legacy runtime, not bridge queue-time
-    # intent. Never transfer a linked occurrence that already carries it as authority.
+    # Generated effective seconds are never valid bridge queue-time authority for a
+    # linked occurrence. Time intent must come from exact base seconds only.
     if options.get("autodelete_effective_seconds") not in _NEUTRAL_NUMBER_VALUES:
         return None
     base_ok, base_seconds = _strict_optional_positive_int(
         options.get("autodelete_seconds")
     )
-    if not base_ok:
+    views_ok, views_threshold = _strict_optional_positive_int(
+        options.get("autodelete_views")
+    )
+    if not base_ok or not views_ok:
         return None
     if capability.time_autodelete_seconds != base_seconds:
+        return None
+    if capability.views_autodelete_threshold != views_threshold:
         return None
 
     report = options.get("autodelete_report", False)
     if type(report) is not bool:
         return None
-    if report and base_seconds is None:
+    if report and base_seconds is None and views_threshold is None:
         return None
 
     return (
@@ -104,6 +112,7 @@ def _forward_profile(
         capability.forward_silent,
         bool(capability.pin_on),
         base_seconds,
+        views_threshold,
         bool(report),
     )
 
@@ -116,6 +125,7 @@ def _legacy_forward_intent_matches(
     forward_ids: tuple[int, ...],
     pin_on: bool,
     time_autodelete_seconds: int | None,
+    views_autodelete_threshold: int | None,
     autodelete_report: bool,
 ) -> bool:
     if int(task.channel_id) != int(plan.channel_id):
@@ -142,19 +152,16 @@ def _legacy_forward_intent_matches(
         return False
 
     raw_forward = current.get("forward_to")
-    if not isinstance(raw_forward, list):
-        return False
-    if len(raw_forward) != len(forward_ids):
+    if not isinstance(raw_forward, list) or len(raw_forward) != len(forward_ids):
         return False
     normalized: list[int] = []
     for raw in raw_forward:
         if isinstance(raw, bool):
             return False
         try:
-            channel_id = int(raw)
+            normalized.append(int(raw))
         except (TypeError, ValueError, OverflowError):
             return False
-        normalized.append(channel_id)
     if tuple(normalized) != forward_ids:
         return False
 
@@ -164,8 +171,8 @@ def _legacy_forward_intent_matches(
     elif current.get("pin_on") not in (None, False, 0):
         return False
 
-    # Any execution evidence means the legacy occurrence may already have performed the
-    # primary or generated timer state and is no longer safe to transfer.
+    # Any execution/generated delete evidence means the legacy occurrence may already
+    # have progressed and is no longer safe to transfer.
     if current.get("result_ids") not in (None, []):
         return False
     if current.get("result_link") not in (None, ""):
@@ -186,26 +193,41 @@ def _legacy_forward_intent_matches(
             or current.get("autodelete_seconds") != raw_seconds
         ):
             return False
-        if "autodelete_report" in runtime_options:
-            if (
-                type(current.get("autodelete_report")) is not bool
-                or current.get("autodelete_report") is not autodelete_report
-            ):
-                return False
-        elif current.get("autodelete_report") not in (None, False):
-            return False
         if "autodelete_views" in runtime_options:
             if current.get("autodelete_views") != runtime_options.get("autodelete_views"):
                 return False
         elif current.get("autodelete_views") not in _NEUTRAL_NUMBER_VALUES:
             return False
-    else:
-        if not _neutral_number(current.get("autodelete_seconds")):
+
+    if views_autodelete_threshold is not None:
+        raw_views = runtime_options.get("autodelete_views")
+        if (
+            "autodelete_views" not in current
+            or current.get("autodelete_views") != raw_views
+        ):
             return False
-        if not _neutral_number(current.get("autodelete_views")):
+        if "autodelete_seconds" in runtime_options:
+            if current.get("autodelete_seconds") != runtime_options.get(
+                "autodelete_seconds"
+            ):
+                return False
+        elif current.get("autodelete_seconds") not in _NEUTRAL_NUMBER_VALUES:
             return False
-        if current.get("autodelete_report") not in (None, False):
+
+    if time_autodelete_seconds is None and views_autodelete_threshold is None:
+        if current.get("autodelete_seconds") not in _NEUTRAL_NUMBER_VALUES:
             return False
+        if current.get("autodelete_views") not in _NEUTRAL_NUMBER_VALUES:
+            return False
+
+    if "autodelete_report" in runtime_options:
+        if (
+            type(current.get("autodelete_report")) is not bool
+            or current.get("autodelete_report") is not autodelete_report
+        ):
+            return False
+    elif current.get("autodelete_report") not in (None, False):
+        return False
 
     current_clean = deepcopy(current)
     for key in _IDENTITY_MARKERS:
@@ -213,7 +235,7 @@ def _legacy_forward_intent_matches(
     current_clean.pop("forward_to", None)
     if pin_on:
         current_clean.pop("pin_on", None)
-    if time_autodelete_seconds is not None:
+    if time_autodelete_seconds is not None or views_autodelete_threshold is not None:
         for key in (
             "autodelete_seconds",
             "autodelete_effective_seconds",
@@ -240,13 +262,13 @@ def _legacy_forward_intent_matches(
 
 
 class CanonicalPublicationLinkedForwardParityService:
-    """Read-only linked parity proof for forward, optional pin, and pristine time timer.
+    """Read-only parity for forward, optional pin, and one pristine delete trigger.
 
     Forward targets remain ordered internal Channel IDs. Exact pin parity is compatible
-    because both runtimes pin the last primary message before forwarding. A time-based
-    autodelete timer is accepted only from exact bridge queue-time base seconds/report
-    intent with no generated effective/due/result state. Executor availability is not a
-    read-only parity fact and is enforced later by the atomic authority coordinator.
+    because both runtimes pin the last primary message before forwarding. Time and views
+    deletion are mutually exclusive and are accepted only from exact bridge queue-time
+    base intent with no generated/result evidence. Executor availability is enforced by
+    the later atomic coordinator, not this read-only proof.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -273,6 +295,7 @@ class CanonicalPublicationLinkedForwardParityService:
             forward_silent,
             pin_on,
             time_autodelete_seconds,
+            views_autodelete_threshold,
             autodelete_report,
         ) = profile
         if not _legacy_forward_intent_matches(
@@ -282,12 +305,16 @@ class CanonicalPublicationLinkedForwardParityService:
             forward_ids=forward_ids,
             pin_on=pin_on,
             time_autodelete_seconds=time_autodelete_seconds,
+            views_autodelete_threshold=views_autodelete_threshold,
             autodelete_report=autodelete_report,
         ):
             return None
 
-        statement = select(Channel).where(Channel.id.in_(list(forward_ids)))
-        rows = (await self.session.execute(statement)).scalars().all()
+        rows = (
+            await self.session.execute(
+                select(Channel).where(Channel.id.in_(list(forward_ids)))
+            )
+        ).scalars().all()
         by_id = {int(channel.id): channel for channel in rows}
         if len(by_id) != len(forward_ids):
             return None
@@ -321,5 +348,6 @@ class CanonicalPublicationLinkedForwardParityService:
             disable_notification=bool(forward_silent),
             pin_on=pin_on,
             time_autodelete_seconds=time_autodelete_seconds,
+            views_autodelete_threshold=views_autodelete_threshold,
             autodelete_report=autodelete_report,
         )

@@ -36,14 +36,12 @@ _CUTOVER_STATUS = "canonical_cutover"
 class CanonicalPublicationLinkedForwardAtomicHandoffService:
     """Atomically transfer a pristine linked forward occurrence to canonical delivery.
 
-    Forward may be composed with exact pin and pristine time-autodelete intent. Timer
-    authority is conditional on the caller proving the canonical delete worker is
-    available; otherwise the prepared legacy cutover is rolled back before any provider
-    authority commit.
+    Forward may compose with exact pin and one pristine delete trigger. Time and views
+    availability are independent facts from their successfully-started workers. A missing
+    dependency rolls the prepared legacy CAS back before any provider authority commit.
 
-    This coordinator owns only the authority-transfer seam. Provider behavior, durable
-    forward-target snapshotting, required live timer materialization, and post-actions
-    remain owned by the existing canonical capability/runtime stack.
+    Provider behavior, ordered target snapshotting, required live time-timer semantics,
+    indexed views state and post-actions remain owned by the existing canonical stack.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -70,6 +68,7 @@ class CanonicalPublicationLinkedForwardAtomicHandoffService:
         ttl_seconds: int,
         at: datetime | None = None,
         allow_time_autodelete: bool = False,
+        allow_views_autodelete: bool = False,
     ) -> CanonicalPublicationAtomicHandoffClaimResult:
         try:
             safe_publication_id = int(publication_id)
@@ -223,9 +222,19 @@ class CanonicalPublicationLinkedForwardAtomicHandoffService:
                 publication=publication,
                 plan=plan,
             )
-            if parity is None or (
-                parity.time_autodelete_requested and not allow_time_autodelete
-            ):
+            if parity is None:
+                return await self._rollback_result(
+                    safe_publication_id,
+                    "ineligible",
+                    task_id,
+                )
+            if parity.time_autodelete_requested and not allow_time_autodelete:
+                return await self._rollback_result(
+                    safe_publication_id,
+                    "ineligible",
+                    task_id,
+                )
+            if parity.views_autodelete_requested and not allow_views_autodelete:
                 return await self._rollback_result(
                     safe_publication_id,
                     "ineligible",
@@ -310,6 +319,7 @@ class CanonicalPublicationLinkedForwardAtomicHandoffService:
                 "forward_to": list(parity.forward_channel_ids),
                 "pin_on": bool(parity.pin_on),
                 "time_autodelete": bool(parity.time_autodelete_requested),
+                "views_autodelete": bool(parity.views_autodelete_requested),
             }
             schedule.meta = {
                 **schedule_meta,
@@ -330,6 +340,7 @@ class CanonicalPublicationLinkedForwardAtomicHandoffService:
                 ttl_seconds=ttl_seconds,
                 now=current,
                 allow_time_autodelete=allow_time_autodelete,
+                allow_views_autodelete=allow_views_autodelete,
             )
             if claim is None:
                 await self.session.rollback()

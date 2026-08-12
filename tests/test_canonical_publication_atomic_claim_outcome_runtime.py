@@ -42,6 +42,7 @@ class _Delegate:
     holder = "outcome-runtime"
     lease_seconds = 120
     allow_time_autodelete = False
+    allow_views_autodelete = False
 
     def __init__(self) -> None:
         self.id_calls = 0

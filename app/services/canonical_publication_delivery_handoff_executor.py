@@ -53,13 +53,9 @@ def _publication_requests_forward(publication: Publication) -> bool:
 class CanonicalPublicationDeliveryHandoffExecutor:
     """Execute canonical-only rows directly and linked rows via atomic authority transfer.
 
-    Linked plain/silent/pin/time/views profiles without forward intent use the general
-    atomic handoff service. Time and views availability are passed independently from the
-    concrete primary executor, so either delete capability remains legacy-owned when its
-    dependent worker did not start.
-
-    Linked rows containing `forward_to` remain routed through the dedicated forward
-    coordinator. Forward+views composition is intentionally not enabled by this stage.
+    The general and forward-specific coordinators receive the same concrete time/views
+    executor availability facts. A linked delete capability therefore cannot transfer
+    authority unless its dependent canonical consumer actually started.
 
     If capability claim returns no executable handle, durable state is classified before
     choosing the wrapper outcome: complete rollback is ordinary `claim_rejected`; every
@@ -110,6 +106,7 @@ class CanonicalPublicationDeliveryHandoffExecutor:
                     holder=str(self.executor.holder),
                     ttl_seconds=int(self.executor.lease_seconds),
                     allow_time_autodelete=allow_time_autodelete,
+                    allow_views_autodelete=allow_views_autodelete,
                 )
             else:
                 transfer = await CanonicalPublicationAtomicHandoffClaimService(
