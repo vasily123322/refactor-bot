@@ -33,6 +33,9 @@ from app.services.llm.openrouter_client import OpenRouterClient
 from app.userbot.client import app as userbot
 from app.workers.ai_auto_tasks import AIAutoTasksWorker
 from app.workers.candidate_enrichment import LocalCandidateEnrichmentWorker
+from app.workers.canonical_publication_delivery_recovery import (
+    CanonicalPublicationDeliveryRecoveryWorker,
+)
 from app.workers.canonical_recovery_scheduler import Scheduler
 from app.workers.grab_poll import GrabPoller
 from app.workers.post_task_retention import PostTaskRetentionWorker
@@ -78,6 +81,22 @@ async def _legacy_schema_bootstrap() -> None:
     init_db_if_needed_sync()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+async def _start_canonical_publication_delivery_recovery_worker_if_enabled():
+    if not settings.canonical_publication_delivery_recovery_worker_enabled:
+        logger.info("Boot: canonical publication delivery recovery worker disabled")
+        return None
+
+    worker = CanonicalPublicationDeliveryRecoveryWorker(
+        session_factory=AsyncSessionLocal,
+        interval_seconds=(
+            settings.canonical_publication_delivery_recovery_worker_interval_seconds
+        ),
+        batch_size=settings.canonical_publication_delivery_recovery_worker_batch_size,
+    )
+    await worker.start()
+    return worker
 
 
 async def _start_publication_autodelete_worker_if_enabled():
@@ -164,6 +183,7 @@ async def run_bot() -> None:
     userbot_started = False
     scheduler = None
     scheduler_recovery = None
+    canonical_publication_delivery_recovery = None
     publication_reconciler = None
     publication_autodelete = None
     publication_autodelete_views = None
@@ -208,6 +228,10 @@ async def run_bot() -> None:
             batch_size=100,
         )
         await scheduler_recovery.start()
+
+        canonical_publication_delivery_recovery = (
+            await _start_canonical_publication_delivery_recovery_worker_if_enabled()
+        )
 
         publication_reconciler = PublicationReconcilerWorker(interval_seconds=5)
         await publication_reconciler.start()
@@ -301,6 +325,11 @@ async def run_bot() -> None:
             await _safe_stop("canonical publication autodelete", publication_autodelete.stop)
         if publication_reconciler is not None:
             await _safe_stop("publication reconciler", publication_reconciler.stop)
+        if canonical_publication_delivery_recovery is not None:
+            await _safe_stop(
+                "canonical publication delivery recovery",
+                canonical_publication_delivery_recovery.stop,
+            )
         if scheduler_recovery is not None:
             await _safe_stop("scheduler recovery", scheduler_recovery.stop)
         if scheduler is not None:
