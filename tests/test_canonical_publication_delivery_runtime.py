@@ -10,7 +10,7 @@ class _Bot:
         raise AssertionError(f"runtime composition must not call bot method {name}")
 
 
-def test_runtime_composition_wires_exact_plain_delivery_dependencies_without_io() -> None:
+def test_runtime_composition_wires_exact_delivery_dependencies_without_io() -> None:
     bot = _Bot()
     session_factory = object()
 
@@ -26,7 +26,10 @@ def test_runtime_composition_wires_exact_plain_delivery_dependencies_without_io(
     assert runtime.sender.session_factory is session_factory
     assert runtime.result_link_resolver.bot is bot
     assert runtime.auxiliary_executor.bot is bot
+    assert runtime.post_action_executor.bot is bot
+    assert runtime.post_action_executor.session_factory is session_factory
     assert runtime.post_send_hook.executor is runtime.auxiliary_executor
+    assert runtime.post_send_hook.post_action_executor is runtime.post_action_executor
     assert runtime.post_send_hook.session_factory is session_factory
 
     assert runtime.executor.session_factory is session_factory
@@ -56,4 +59,5 @@ def test_runtime_composition_does_not_share_mutable_execution_objects() -> None:
     assert first.sender is not second.sender
     assert first.result_link_resolver is not second.result_link_resolver
     assert first.auxiliary_executor is not second.auxiliary_executor
+    assert first.post_action_executor is not second.post_action_executor
     assert first.post_send_hook is not second.post_send_hook

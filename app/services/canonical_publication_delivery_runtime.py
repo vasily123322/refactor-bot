@@ -14,6 +14,9 @@ from app.services.canonical_publication_delivery_live_auxiliary_executor import 
 from app.services.canonical_publication_delivery_live_auxiliary_hook import (
     CanonicalPublicationDeliveryLiveAuxiliaryHook,
 )
+from app.services.canonical_publication_delivery_live_post_action_executor import (
+    CanonicalPublicationDeliveryLivePostActionExecutor,
+)
 from app.services.canonical_publication_result_link import (
     CanonicalPublicationResultLinkResolver,
 )
@@ -28,6 +31,7 @@ class CanonicalPublicationDeliveryRuntime:
     sender: DocumentPostingService
     result_link_resolver: CanonicalPublicationResultLinkResolver
     auxiliary_executor: CanonicalPublicationDeliveryLiveAuxiliaryExecutor
+    post_action_executor: CanonicalPublicationDeliveryLivePostActionExecutor
     post_send_hook: CanonicalPublicationDeliveryLiveAuxiliaryHook
 
 
@@ -39,19 +43,24 @@ def build_canonical_publication_delivery_runtime(
     lease_seconds: int = 180,
     heartbeat_interval_seconds: float = 45.0,
 ) -> CanonicalPublicationDeliveryRuntime:
-    """Compose the current plain canonical delivery slice without starting work.
+    """Compose the current canonical delivery slice without starting work.
 
     Construction is side-effect free: no database session is opened and no Telegram
-    method is called. The returned executor still enforces #185 capability restrictions
-    (empty runtime options and non-repeat), while result-link and live owner/admin parity
-    are wired through the exact post-send lease lifecycle from #199/#207-#209.
+    method is called. Capability authority remains inside the locked claim/handoff path;
+    live owner/admin and durable no-retry pin/forward actions run only inside the exact
+    post-send delivery lease lifecycle.
     """
 
     sender = DocumentPostingService(bot, session_factory)
     result_link_resolver = CanonicalPublicationResultLinkResolver(bot)
     auxiliary_executor = CanonicalPublicationDeliveryLiveAuxiliaryExecutor(bot)
+    post_action_executor = CanonicalPublicationDeliveryLivePostActionExecutor(
+        bot=bot,
+        session_factory=session_factory,
+    )
     post_send_hook = CanonicalPublicationDeliveryLiveAuxiliaryHook(
         executor=auxiliary_executor,
+        post_action_executor=post_action_executor,
         session_factory=session_factory,
     )
     executor = CanonicalPublicationDeliveryExecutor(
@@ -68,5 +77,6 @@ def build_canonical_publication_delivery_runtime(
         sender=sender,
         result_link_resolver=result_link_resolver,
         auxiliary_executor=auxiliary_executor,
+        post_action_executor=post_action_executor,
         post_send_hook=post_send_hook,
     )

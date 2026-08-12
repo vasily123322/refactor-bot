@@ -158,7 +158,7 @@ def test_executor_unknown_runtime_option_is_ineligible_before_sender_or_claim_wr
             publication_id, _channel_id, _tg_chat_id = await _seed_retired(
                 Session,
                 seed=3,
-                runtime_options={"silent": True, "pin_on": False},
+                runtime_options={"silent": True, "autodelete_seconds": 60},
             )
             sender = _NoCallSender()
             result = await CanonicalPublicationDeliveryExecutor(
