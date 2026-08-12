@@ -19,6 +19,7 @@ _REPEAT_VIEWS_RUNTIME_KEYS = frozenset(
     {"silent", "autodelete_views", "autodelete_report"}
 )
 _REPEAT_VIEWS_PIN_RUNTIME_KEYS = _REPEAT_VIEWS_RUNTIME_KEYS | frozenset({"pin_on"})
+_REPEAT_VIEWS_FORWARD_RUNTIME_KEYS = _REPEAT_VIEWS_RUNTIME_KEYS | frozenset({"forward_to"})
 _REPEAT_RUNTIME_KEYS = _ESTABLISHED_REPEAT_RUNTIME_KEYS | _REPEAT_VIEWS_RUNTIME_KEYS
 
 
@@ -52,6 +53,7 @@ def _strict_repeat_runtime_options(
     *,
     allow_repeat_views: bool = False,
     allow_repeat_views_pin: bool = False,
+    allow_repeat_views_forward: bool = False,
 ) -> dict[str, Any] | None:
     try:
         options = plan.runtime_options()
@@ -65,22 +67,38 @@ def _strict_repeat_runtime_options(
         return None
 
     if capability.views_autodelete_requested:
-        # Keep the stronger #301 key-shape barrier. A views profile may contain pin_on
-        # only after the narrower composition fact is explicit; forward/time stay closed.
-        allowed_views_keys = (
-            _REPEAT_VIEWS_PIN_RUNTIME_KEYS
-            if allow_repeat_views_pin
-            else _REPEAT_VIEWS_RUNTIME_KEYS
-        )
+        if not allow_repeat_views:
+            return None
+
+        has_pin_key = "pin_on" in options
+        has_forward_key = "forward_to" in options
+        if has_pin_key and has_forward_key:
+            # Independent pin/forward facts never imply their combined views composition,
+            # including neutral keys such as pin_on=false or forward_to=[].
+            return None
+
+        allowed_views_keys = _REPEAT_VIEWS_RUNTIME_KEYS
+        if allow_repeat_views_pin:
+            allowed_views_keys = allowed_views_keys | frozenset({"pin_on"})
+        if allow_repeat_views_forward:
+            allowed_views_keys = allowed_views_keys | frozenset({"forward_to"})
+
         if (
-            not allow_repeat_views
-            or not set(options).issubset(allowed_views_keys)
+            not set(options).issubset(allowed_views_keys)
             or "autodelete_views" not in options
             or capability.views_autodelete_threshold is None
-            or capability.forward_to
             or capability.time_autodelete_requested
-            or (capability.pin_on and not allow_repeat_views_pin)
         ):
+            return None
+        if has_pin_key and not allow_repeat_views_pin:
+            return None
+        if capability.pin_on and not allow_repeat_views_pin:
+            return None
+        if has_forward_key:
+            # Explicit forward intent is meaningful only as a non-empty ordered target set.
+            if not allow_repeat_views_forward or not capability.forward_to:
+                return None
+        elif capability.forward_to:
             return None
     else:
         if not set(options).issubset(_ESTABLISHED_REPEAT_RUNTIME_KEYS):
@@ -96,16 +114,15 @@ class CanonicalPublicationRepeatCapabilityClaimService(
 ):
     """Keep repeat authority limited to explicitly proven runtime slices.
 
-    Established repeat and plain repeat+views preserve their existing independent gates.
-    Views+pin is narrower again: it requires the ordinary repeat fact, concrete views
-    executor availability, the dedicated repeat+views fact, and a separate default-off
-    repeat+views+pin composition fact. Neutral pin keys are not admitted into the views
-    slice unless that narrower fact is present.
+    Base repeat, plain repeat+views, views+pin and views+ordered-forward all keep separate
+    default-off facts. Views+forward requires repeat continuation authority, concrete views
+    availability, explicit repeat+views authority and its own repeat+views+forward fact.
+    Neither pin support nor the independent views+pin fact can substitute for it.
 
-    Views+forward, every time-autodelete key, dual-delete, unknown runtime keys and unknown
-    repeat semantics remain fail-closed. This phase only stages occurrence-local indexed
-    views intent with primary authority; post-publication DELETE still requires the locked
-    lifecycle and reserve-before-provider destructive proof.
+    Views+pin+forward, every time-autodelete key, dual delete modes, malformed/empty forward
+    intent, unknown runtime keys and unknown repeat semantics remain fail-closed. The parent
+    capability claim remains the single owner of row-locked ordered forward-target
+    resolution and durable Telegram destination snapshot before provider work.
     """
 
     async def claim_supported(
@@ -120,6 +137,7 @@ class CanonicalPublicationRepeatCapabilityClaimService(
         allow_repeat: bool = False,
         allow_repeat_views: bool = False,
         allow_repeat_views_pin: bool = False,
+        allow_repeat_views_forward: bool = False,
     ) -> CanonicalPublicationDeliveryClaim | None:
         try:
             safe_publication_id = int(publication_id)
@@ -159,6 +177,9 @@ class CanonicalPublicationRepeatCapabilityClaimService(
                         allow_repeat_views=repeat_views_enabled,
                         allow_repeat_views_pin=bool(
                             allow_repeat_views_pin and repeat_views_enabled
+                        ),
+                        allow_repeat_views_forward=bool(
+                            allow_repeat_views_forward and repeat_views_enabled
                         ),
                     )
                     is None

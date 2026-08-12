@@ -29,14 +29,15 @@ def build_canonical_publication_safe_repeat_runtime(
     allow_repeat: bool = False,
     allow_repeat_views: bool = False,
     allow_repeat_views_pin: bool = False,
+    allow_repeat_views_forward: bool = False,
     repeat_owner_policy_enforced: bool = False,
 ) -> CanonicalPublicationDeliveryRuntime:
     """Compose strict repeat delivery only from concrete dependency facts.
 
     Repeat requires continuation plus enforced owner policy. Repeat+views additionally
     requires ordinary views availability and its independent composition fact. Views+pin
-    is narrower again and is carried only by a separate default-off fact; this builder
-    never derives it merely from ordinary pin or repeat+views support.
+    and views+ordered-forward are narrower independent facts; neither is inferred from the
+    other or from ordinary pin/forward support.
     """
 
     runtime = build_canonical_publication_delivery_runtime(
@@ -64,6 +65,9 @@ def build_canonical_publication_safe_repeat_runtime(
     repeat_views_pin_enabled = bool(
         allow_repeat_views_pin and repeat_views_enabled
     )
+    repeat_views_forward_enabled = bool(
+        allow_repeat_views_forward and repeat_views_enabled
+    )
     executor = CanonicalPublicationSafeRepeatDeliveryExecutor(
         session_factory,
         sender=runtime.sender,
@@ -77,6 +81,7 @@ def build_canonical_publication_safe_repeat_runtime(
         allow_repeat=repeat_enabled,
         allow_repeat_views=repeat_views_enabled,
         allow_repeat_views_pin=repeat_views_pin_enabled,
+        allow_repeat_views_forward=repeat_views_forward_enabled,
     )
     return replace(
         runtime,
