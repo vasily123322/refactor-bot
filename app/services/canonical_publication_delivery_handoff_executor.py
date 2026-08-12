@@ -7,6 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.domain.publishing.models import Publication
+from app.services.canonical_publication_atomic_claim_outcome import (
+    CanonicalPublicationAtomicClaimFailureClassifier,
+)
 from app.services.canonical_publication_delivery_atomic_handoff_claim import (
     CanonicalPublicationAtomicHandoffClaimService,
 )
@@ -38,12 +41,14 @@ class CanonicalPublicationDeliveryHandoffExecutor:
     """Execute canonical-only rows directly and linked rows via atomic authority transfer.
 
     For a linked row, legacy transport retirement and the canonical `sending + attempt +
-    delivery lease` claim now share one database transaction. There is no committed
+    delivery lease` claim share one database transaction. There is no committed
     transport-free `queued` window between handoff and claim.
 
-    Only the resulting committed exact claim is passed to provider execution. Any
-    pre-claim rejection restores the pending PostTask; any post-commit claim-unavailable
-    result is treated as lease-lost/recovery-owned and never causes a second claim/send.
+    Only the resulting committed exact claim is passed to provider execution. If the
+    capability claim returns no executable handle, durable state is classified before
+    choosing the wrapper outcome: a complete rollback is ordinary `claim_rejected`,
+    while every partial/already-committed state is `claim_unavailable` and remains
+    recovery-owned/non-retryable.
     """
 
     def __init__(
@@ -89,10 +94,29 @@ class CanonicalPublicationDeliveryHandoffExecutor:
             )
 
         if transfer.outcome == "claim_unavailable":
+            task_id = transfer.legacy_post_task_id
+            if task_id is None:
+                return CanonicalPublicationDeliveryHandoffExecutionResult(
+                    outcome="lease_lost",
+                    handoff_outcome="claim_unavailable",
+                )
+            async with self.session_factory() as session:
+                classification = await CanonicalPublicationAtomicClaimFailureClassifier(
+                    session
+                ).classify(
+                    publication_id=safe_publication_id,
+                    legacy_post_task_id=int(task_id),
+                )
+            if classification.outcome == "claim_rejected":
+                return CanonicalPublicationDeliveryHandoffExecutionResult(
+                    outcome="ineligible",
+                    handoff_outcome="claim_rejected",
+                )
             return CanonicalPublicationDeliveryHandoffExecutionResult(
                 outcome="lease_lost",
                 handoff_outcome="claim_unavailable",
             )
+
         if transfer.outcome != "claimed" or transfer.claim is None:
             return CanonicalPublicationDeliveryHandoffExecutionResult(
                 outcome="ineligible",
