@@ -103,6 +103,27 @@ class PublicationAutodeleteWorker:
         async with self.session_factory() as session:
             return await PublicationAutodeleteLeaseService(session).release(handle)
 
+    async def _delete_with_operation_session(
+        self,
+        operation_session: AsyncSession,
+        *,
+        publication_id: int,
+        handle: PublicationAutodeleteLeaseHandle,
+    ):
+        """Execute one leased delete through the worker's exact service profile.
+
+        Subclasses may narrow admission while reusing selection/lease/cancellation
+        semantics. The default remains the historical non-repeat time-autodelete service.
+        """
+        return await PublicationAutodeleteService(
+            operation_session,
+            provider=self.provider,
+            allow_report=True,
+        ).delete_if_due(
+            int(publication_id),
+            lease=handle,
+        )
+
     async def run_once(self) -> PublicationAutodeleteWorkerTick:
         batch = await self._select()
         next_cursor = 0 if batch.done else int(batch.next_cursor)
@@ -142,13 +163,10 @@ class PublicationAutodeleteWorker:
 
             try:
                 async with self.session_factory() as operation_session:
-                    result = await PublicationAutodeleteService(
+                    result = await self._delete_with_operation_session(
                         operation_session,
-                        provider=self.provider,
-                        allow_report=True,
-                    ).delete_if_due(
-                        int(publication_id),
-                        lease=handle,
+                        publication_id=int(publication_id),
+                        handle=handle,
                     )
                 if result.outcome == "deleted":
                     deleted += 1
