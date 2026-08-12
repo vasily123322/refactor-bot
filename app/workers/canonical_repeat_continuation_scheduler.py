@@ -13,6 +13,7 @@ from app.domain.publishing.models import Publication
 from app.services.canonical_publication_delivery_authority import (
     canonical_publication_delivery_primary_started,
     canonical_publication_delivery_time_autodelete_started,
+    canonical_publication_delivery_views_autodelete_started,
 )
 from app.services.canonical_publication_legacy_transport_handoff import (
     CanonicalPublicationLegacyTransportHandoffService,
@@ -91,6 +92,9 @@ class Scheduler(RecoveryScheduler):
             int(publication_ids[0]),
             allow_time_autodelete=(
                 canonical_publication_delivery_time_autodelete_started()
+            ),
+            allow_views_autodelete=(
+                canonical_publication_delivery_views_autodelete_started()
             ),
         )
         if result.outcome != "retired":
