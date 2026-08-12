@@ -50,6 +50,9 @@ from app.workers.canonical_repeat_continuation_scheduler import Scheduler
 from app.workers.canonical_repeat_time_autodelete import (
     CanonicalRepeatTimeAutodeleteWorker,
 )
+from app.workers.canonical_repeat_time_pin_autodelete import (
+    CanonicalRepeatTimePinAutodeleteWorker,
+)
 from app.workers.grab_poll import GrabPoller
 from app.workers.post_task_retention import PostTaskRetentionWorker
 from app.workers.publication_autodelete import PublicationAutodeleteWorker
@@ -130,6 +133,7 @@ async def _start_canonical_publication_delivery_workers(
     views_autodelete_executor_available: bool = False,
     repeat_continuation_executor_available: bool = False,
     repeat_time_executor_available: bool = False,
+    repeat_time_pin_executor_available: bool = False,
     repeat_views_executor_available: bool = False,
     repeat_views_pin_executor_available: bool = False,
     repeat_views_forward_executor_available: bool = False,
@@ -155,6 +159,9 @@ async def _start_canonical_publication_delivery_workers(
                     repeat_continuation_executor_available
                 ),
                 repeat_time_executor_available=repeat_time_executor_available,
+                repeat_time_pin_executor_available=(
+                    repeat_time_pin_executor_available
+                ),
                 repeat_views_executor_available=repeat_views_executor_available,
                 repeat_views_pin_executor_available=(
                     repeat_views_pin_executor_available
@@ -222,6 +229,43 @@ async def _start_canonical_repeat_time_autodelete_worker_if_enabled(
         except Exception:
             logger.exception(
                 "Boot: failed to clean up canonical repeat time autodelete worker after startup failure"
+            )
+        raise
+    return worker
+
+
+async def _start_canonical_repeat_time_pin_autodelete_worker_if_enabled(
+    *,
+    repeat_continuation_available: bool,
+    repeat_time_available: bool,
+):
+    if not settings.publication_autodelete_worker_enabled:
+        logger.info(
+            "Boot: canonical repeat time pin autodelete worker disabled with time worker"
+        )
+        return None
+    if not repeat_continuation_available or not repeat_time_available:
+        logger.info(
+            "Boot: canonical repeat time pin autodelete worker disabled without exact dependencies"
+        )
+        return None
+
+    worker = CanonicalRepeatTimePinAutodeleteWorker(
+        provider=bot,
+        session_factory=AsyncSessionLocal,
+        interval_seconds=settings.publication_autodelete_worker_interval_seconds,
+        batch_size=settings.publication_autodelete_worker_batch_size,
+        lease_ttl_seconds=settings.publication_autodelete_worker_lease_ttl_seconds,
+        allow_repeat_time_pin=True,
+    )
+    try:
+        await worker.start()
+    except BaseException:
+        try:
+            await worker.stop()
+        except Exception:
+            logger.exception(
+                "Boot: failed to clean up canonical repeat time pin autodelete worker after startup failure"
             )
         raise
     return worker
@@ -318,6 +362,7 @@ async def run_bot() -> None:
     publication_reconciler = None
     publication_autodelete = None
     canonical_repeat_time_autodelete = None
+    canonical_repeat_time_pin_autodelete = None
     publication_autodelete_views = None
     post_task_retention = None
     source_ingestion = None
@@ -368,13 +413,24 @@ async def run_bot() -> None:
         await publication_reconciler.start()
 
         # Start destructive consumers before any delete-capable canonical primary. Exact
-        # repeat/time and views-family facts below come only from successfully started
-        # concrete workers, never from config/construction alone.
+        # repeat/time compositions and views-family facts below come only from successfully
+        # started concrete workers, never from config/construction alone.
         publication_autodelete = await _start_publication_autodelete_worker_if_enabled()
         canonical_repeat_time_autodelete = (
             await _start_canonical_repeat_time_autodelete_worker_if_enabled(
                 repeat_continuation_available=bool(
                     scheduler.repeat_continuation_available
+                ),
+            )
+        )
+        canonical_repeat_time_pin_autodelete = (
+            await _start_canonical_repeat_time_pin_autodelete_worker_if_enabled(
+                repeat_continuation_available=bool(
+                    scheduler.repeat_continuation_available
+                ),
+                repeat_time_available=bool(
+                    canonical_repeat_time_autodelete is not None
+                    and canonical_repeat_time_autodelete.repeat_time_available
                 ),
             )
         )
@@ -400,6 +456,10 @@ async def run_bot() -> None:
         repeat_time_executor_available = bool(
             canonical_repeat_time_autodelete is not None
             and canonical_repeat_time_autodelete.repeat_time_available
+        )
+        repeat_time_pin_executor_available = bool(
+            canonical_repeat_time_pin_autodelete is not None
+            and canonical_repeat_time_pin_autodelete.repeat_time_pin_available
         )
         repeat_views_executor_available = bool(
             publication_autodelete_views is not None
@@ -430,6 +490,7 @@ async def run_bot() -> None:
                 scheduler.repeat_continuation_available
             ),
             repeat_time_executor_available=repeat_time_executor_available,
+            repeat_time_pin_executor_available=repeat_time_pin_executor_available,
             repeat_views_executor_available=repeat_views_executor_available,
             repeat_views_pin_executor_available=(
                 repeat_views_pin_executor_available
@@ -519,6 +580,11 @@ async def run_bot() -> None:
             await _safe_stop(
                 "canonical views publication autodelete",
                 publication_autodelete_views.stop,
+            )
+        if canonical_repeat_time_pin_autodelete is not None:
+            await _safe_stop(
+                "canonical repeat time pin publication autodelete",
+                canonical_repeat_time_pin_autodelete.stop,
             )
         if canonical_repeat_time_autodelete is not None:
             await _safe_stop(
