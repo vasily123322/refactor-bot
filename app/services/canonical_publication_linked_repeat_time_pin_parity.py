@@ -100,7 +100,11 @@ class CanonicalPublicationLinkedRepeatTimePinParityService:
         )
         if proof is None or proof.time_autodelete_seconds is None:
             return None
-        if proof.pin_on or proof.forward_channel_ids or proof.views_autodelete_threshold is not None:
+        if (
+            proof.pin_on
+            or proof.forward_channel_ids
+            or proof.views_autodelete_threshold is not None
+        ):
             return None
 
         return replace(proof, pin_on=True)
