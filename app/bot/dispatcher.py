@@ -44,7 +44,7 @@ from app.workers.candidate_enrichment import LocalCandidateEnrichmentWorker
 from app.workers.canonical_publication_delivery_recovery import (
     CanonicalPublicationDeliveryRecoveryWorker,
 )
-from app.workers.canonical_recovery_scheduler import Scheduler
+from app.workers.canonical_repeat_continuation_scheduler import Scheduler
 from app.workers.grab_poll import GrabPoller
 from app.workers.post_task_retention import PostTaskRetentionWorker
 from app.workers.publication_autodelete import PublicationAutodeleteWorker
@@ -271,6 +271,9 @@ async def run_bot() -> None:
         # is the PostDocument-aware service used by rich and classic publications.
         posting = PostingService(bot, AsyncSessionLocal)
 
+        # This wrapper preserves the historical Scheduler behavior and, under the
+        # existing successful-repeat opt-in, starts the provider-free continuation
+        # recovery worker before canonical primary delivery can start.
         scheduler = Scheduler(AsyncSessionLocal, posting)
         await scheduler.start()
 
@@ -381,7 +384,8 @@ async def run_bot() -> None:
         if post_task_retention is not None:
             await _safe_stop("PostTask retention", post_task_retention.stop)
 
-        # Stop the canonical producer/recovery pair before dependent delete consumers.
+        # Stop the canonical producer/recovery pair before dependent delete consumers and
+        # before the scheduler wrapper stops repeat continuation recovery.
         await stop_canonical_publication_delivery_workers(
             primary_worker=canonical_publication_delivery,
             recovery_worker=canonical_publication_delivery_recovery,
