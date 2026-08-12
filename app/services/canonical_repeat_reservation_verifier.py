@@ -9,6 +9,9 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.publishing.models import Publication, ScheduleEntry
+from app.services.canonical_repeat_continuation_authority import (
+    CanonicalRepeatContinuationAuthorityService,
+)
 from app.services.canonical_repeat_plan_reservation import (
     CANONICAL_REPEAT_PLAN_RESERVATION_META_KEY,
 )
@@ -63,7 +66,13 @@ def _runtime_options(meta: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 class CanonicalRepeatReservationVerifier:
-    """Read-only proof that a legacy-created successor fulfills a reservation."""
+    """Prove reservation/successor state only while canonical source authority is live.
+
+    The source authority is transactionally locked before reservation or successor state is
+    interpreted. If legacy transport is relinked, canonical-origin evidence drifts, or the
+    exact terminal linkage changes, verification fails closed as `conflict`; it must never
+    report a normal `pending` or `matched` state outside canonical continuation authority.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -79,28 +88,13 @@ class CanonicalRepeatReservationVerifier:
         if safe_source_id <= 0:
             return CanonicalRepeatReservationVerification(safe_source_id, "ineligible")
 
-        source = (
-            await self.session.execute(
-                select(Publication, ScheduleEntry)
-                .join(
-                    ScheduleEntry,
-                    and_(
-                        ScheduleEntry.id == Publication.schedule_entry_id,
-                        ScheduleEntry.channel_id == Publication.channel_id,
-                        ScheduleEntry.content_item_id == Publication.content_item_id,
-                        ScheduleEntry.content_revision == Publication.content_revision,
-                    ),
-                )
-                .where(
-                    Publication.id == safe_source_id,
-                    Publication.status == "published",
-                    ScheduleEntry.status == "completed",
-                )
-            )
-        ).one_or_none()
-        if source is None:
-            return CanonicalRepeatReservationVerification(safe_source_id, "ineligible")
-        publication, schedule = source
+        authority = await CanonicalRepeatContinuationAuthorityService(
+            self.session
+        ).lock_and_prove(safe_source_id)
+        if authority is None:
+            return CanonicalRepeatReservationVerification(safe_source_id, "conflict")
+        publication = authority.publication
+        schedule = authority.schedule
 
         publication_meta = _mapping(publication.meta)
         schedule_meta = _mapping(schedule.meta)
@@ -153,22 +147,15 @@ class CanonicalRepeatReservationVerifier:
         assert expected_at is not None
         assert reserved_options is not None
 
-        repeat_rule = _mapping(schedule.repeat_rule)
-        source_publication_options = _runtime_options(publication_meta)
-        source_schedule_options = _runtime_options(schedule_meta)
         if (
             reserved_source_id != int(publication.id)
             or reserved_schedule_id != int(schedule.id)
+            or repeat_group_id != int(authority.repeat_group_id)
             or channel_id != int(publication.channel_id)
             or content_item_id != int(publication.content_item_id)
             or content_revision != int(publication.content_revision)
-            or _positive_int(publication_meta.get("repeat_group_id")) != repeat_group_id
-            or _positive_int(schedule_meta.get("repeat_group_id")) != repeat_group_id
-            or repeat_rule is None
-            or repeat_rule.get("enabled") is not True
-            or _positive_int(repeat_rule.get("seconds")) != repeat_seconds
-            or source_publication_options != reserved_options
-            or source_schedule_options != reserved_options
+            or repeat_seconds != int(authority.repeat_seconds)
+            or reserved_options != authority.runtime_options
         ):
             return CanonicalRepeatReservationVerification(safe_source_id, "conflict")
 

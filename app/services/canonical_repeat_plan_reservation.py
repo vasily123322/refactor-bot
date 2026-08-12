@@ -6,10 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
-from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.publishing.models import Publication, ScheduleEntry
+from app.services.canonical_repeat_continuation_authority import (
+    CanonicalRepeatContinuationAuthorityService,
+)
 from app.services.canonical_repeat_planner import (
     CanonicalRepeatPlan,
     CanonicalRepeatPlanner,
@@ -55,38 +56,16 @@ def _reservation_snapshot(plan: CanonicalRepeatPlan) -> dict[str, Any]:
 
 
 class CanonicalRepeatPlanReservationService:
-    """Persist one deterministic canonical repeat plan on its terminal source rows.
+    """Persist one deterministic repeat plan only under live canonical authority.
 
-    This stage deliberately does not create a successor ScheduleEntry, Publication or
-    PostTask. Source Publication/Schedule rows are locked first, the pure planner is
-    re-evaluated inside that transaction, and the same deterministic snapshot is then
-    written to both metadata documents. Existing canonical metadata is never repaired
-    from one side or overwritten with a different reservation.
+    Source Publication/Schedule/exact Attempt are locked and re-proven by the shared
+    continuation authority service before planning or metadata mutation. Selection by a
+    worker is never authority: a relinked legacy PostTask or canonical-origin drift makes
+    reservation immediately ineligible in this transaction.
     """
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
-
-    async def _lock_source(
-        self,
-        publication_id: int,
-    ) -> tuple[Publication, ScheduleEntry] | None:
-        return (
-            await self.session.execute(
-                select(Publication, ScheduleEntry)
-                .join(
-                    ScheduleEntry,
-                    and_(
-                        ScheduleEntry.id == Publication.schedule_entry_id,
-                        ScheduleEntry.channel_id == Publication.channel_id,
-                        ScheduleEntry.content_item_id == Publication.content_item_id,
-                        ScheduleEntry.content_revision == Publication.content_revision,
-                    ),
-                )
-                .where(Publication.id == int(publication_id))
-                .with_for_update()
-            )
-        ).one_or_none()
 
     async def reserve_next(
         self,
@@ -107,14 +86,17 @@ class CanonicalRepeatPlanReservationService:
                 outcome="ineligible",
             )
 
-        locked = await self._lock_source(safe_publication_id)
-        if locked is None:
+        authority = await CanonicalRepeatContinuationAuthorityService(
+            self.session
+        ).lock_and_prove(safe_publication_id)
+        if authority is None:
             await self.session.rollback()
             return CanonicalRepeatPlanReservationResult(
                 publication_id=safe_publication_id,
                 outcome="ineligible",
             )
-        publication, schedule = locked
+        publication = authority.publication
+        schedule = authority.schedule
 
         plan = await CanonicalRepeatPlanner(self.session).plan_next(
             safe_publication_id,
@@ -129,6 +111,12 @@ class CanonicalRepeatPlanReservationService:
         if (
             int(plan.source_publication_id) != int(publication.id)
             or int(plan.source_schedule_entry_id) != int(schedule.id)
+            or int(plan.repeat_group_id) != int(authority.repeat_group_id)
+            or int(plan.channel_id) != int(publication.channel_id)
+            or int(plan.content_item_id) != int(publication.content_item_id)
+            or int(plan.content_revision) != int(publication.content_revision)
+            or int(plan.repeat_seconds) != int(authority.repeat_seconds)
+            or dict(plan.runtime_options) != authority.runtime_options
         ):
             await self.session.rollback()
             return CanonicalRepeatPlanReservationResult(
