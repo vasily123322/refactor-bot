@@ -98,6 +98,7 @@ def test_bridge_root_repeat_proves_fixed_delay_lineage_without_payload_group_id(
             assert proof.repeat_group_id == task_id
             assert proof.repeat_seconds == 60
             assert proof.root_occurrence is True
+            assert proof.pin_on is False
         finally:
             await engine.dispose()
 
@@ -163,7 +164,6 @@ def test_repeat_seconds_or_canonical_group_drift_blocks_parity(tmp_path) -> None
                 await session.commit()
             assert await _prove(Session, publication_id, task_id, plan) is None
 
-            # Restore transport cadence, then drift one canonical lineage copy.
             async with Session() as session:
                 publication = await session.get(Publication, publication_id)
                 task = await session.get(PostTask, task_id)
@@ -183,7 +183,40 @@ def test_repeat_seconds_or_canonical_group_drift_blocks_parity(tmp_path) -> None
     asyncio.run(run())
 
 
-def test_repeat_parity_does_not_absorb_pin_forward_or_delete_effects(tmp_path) -> None:
+def test_repeat_pin_parity_requires_exact_legacy_pin_intent(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'repeat-pin-parity.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            publication_id, task_id, plan = await _seed_root(
+                Session,
+                seed=4,
+                runtime_options={"silent": True, "pin_on": True},
+            )
+            proof = await _prove(Session, publication_id, task_id, plan)
+            assert proof is not None
+            assert proof.pin_on is True
+            assert proof.repeat_seconds == 60
+
+            async with Session() as session:
+                task = await session.get(PostTask, task_id)
+                assert task is not None
+                payload = dict(task.payload or {})
+                payload["pin_on"] = False
+                task.payload = payload
+                await session.commit()
+            assert await _prove(Session, publication_id, task_id, plan) is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_repeat_pin_parity_does_not_absorb_forward_or_delete_effects(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'repeat-effect-scope.db'}"
@@ -193,10 +226,10 @@ def test_repeat_parity_does_not_absorb_pin_forward_or_delete_effects(tmp_path) -
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             cases = [
-                (4, {"pin_on": True}),
                 (5, {"forward_to": [1]}),
                 (6, {"autodelete_seconds": 60}),
                 (7, {"autodelete_views": 5}),
+                (8, {"pin_on": True, "forward_to": [1]}),
             ]
             for seed, options in cases:
                 publication_id, task_id, plan = await _seed_root(
@@ -220,7 +253,7 @@ def test_repeat_generated_result_evidence_blocks_parity(tmp_path) -> None:
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
-            publication_id, task_id, plan = await _seed_root(Session, seed=8)
+            publication_id, task_id, plan = await _seed_root(Session, seed=9)
             async with Session() as session:
                 task = await session.get(PostTask, task_id)
                 assert task is not None
