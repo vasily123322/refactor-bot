@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
@@ -13,10 +15,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content.models import ContentItem
 from app.domain.models import Channel, Client, PostTask
-from app.domain.publication_autodelete import PublicationAutodeleteViewState
+from app.domain.publication_autodelete import (
+    PublicationAutodeleteLease,
+    PublicationAutodeleteViewState,
+)
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.canonical_repeat_views_lifecycle_authority import (
     CanonicalRepeatViewsLifecycleAuthorityService,
+)
+from app.services.publication_autodelete_lease import PublicationAutodeleteLeaseHandle
+from app.services.publication_autodelete_views_action_ledger import (
+    PublicationAutodeleteViewsActionLedger,
+    PublicationAutodeleteViewsActionReservation,
+    inspect_publication_autodelete_views_actions,
 )
 from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
 from app.services.telegram_results import (
@@ -66,6 +77,7 @@ class PublicationAutodeleteViewsResult:
     deleted_count: int = 0
     unavailable_count: int = 0
     retryable_count: int = 0
+    ambiguous_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +93,10 @@ class _Candidate:
     telegram_message_ids: tuple[int, ...]
     report_enabled: bool
     result_link: str | None
+    authority_fingerprint: str
+    ledger_observed_views: int | None = None
+    ledger_succeeded_count: int = 0
+    ledger_unavailable_count: int = 0
 
 
 def _utc(value: datetime | None = None) -> datetime:
@@ -139,7 +155,6 @@ def _runtime_status(meta: Mapping[str, Any]) -> tuple[bool, bool]:
         return False, False
     if deleted is True:
         return True, True
-    # A pending time-based runtime must never be repurposed as a views runtime.
     if runtime.get("scheduled_at") is not None or runtime.get("effective_seconds") is not None:
         return False, False
     return True, False
@@ -172,7 +187,6 @@ def _view_intent(
 
 
 def _is_unavailable_delete_error(exc: Exception) -> bool:
-    # Provider text is used only for in-memory classification and is never persisted.
     text = str(exc).lower()
     return (
         "message to delete not found" in text
@@ -183,18 +197,33 @@ def _is_unavailable_delete_error(exc: Exception) -> bool:
     )
 
 
+def _fingerprint(payload: Mapping[str, Any]) -> str | None:
+    try:
+        encoded = json.dumps(
+            dict(payload),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return hashlib.sha256(encoded).hexdigest()
+
+
 class PublicationAutodeleteViewsService:
-    """Evaluate and delete one views-based Publication with fail-closed revalidation.
+    """Evaluate views and delete through a durable reserve-before-provider barrier.
 
-    This service does not own distributed scheduling. The worker must acquire the
-    existing Publication autodelete lease before calling it. Network calls are never
-    made with a DB transaction held open. Report delivery is disabled by default and
-    may be enabled only by a caller that has explicitly opted into the proven path.
+    The publication autodelete lease serializes workers but is not itself destructive
+    authority. Every Telegram DELETE requires a newly committed occurrence-local action
+    reservation bound to exact current Publication/Schedule/Channel/views lifecycle
+    authority and the exact live lease token+holder. Provider calls use only the immutable
+    chat/message captured by that reservation and execute after commit, outside the DB
+    transaction.
 
-    Repeat views are independently default-off. An explicit test/runtime composition may
-    set `allow_repeat_views=True`, but every such occurrence must then pass the centralized
-    locked repeat-views lifecycle proof both during candidate admission and fresh
-    pre-delete/current-state revalidation. Existing production workers do not set it.
+    Existing ``reserved``/``unknown`` actions are permanent automatic no-replay barriers.
+    Terminal ``succeeded``/``unavailable`` actions may be reused only as evidence for the
+    exact same authority fingerprint, allowing clean per-message continuation without
+    replay. Repeat views remain independently default-off.
     """
 
     def __init__(
@@ -206,6 +235,7 @@ class PublicationAutodeleteViewsService:
         next_check_seconds: int = 60,
         allow_report: bool = False,
         allow_repeat_views: bool = False,
+        lease: PublicationAutodeleteLeaseHandle | None = None,
     ) -> None:
         self.session = session
         self.view_source = view_source
@@ -213,6 +243,7 @@ class PublicationAutodeleteViewsService:
         self.next_check_seconds = max(15, min(int(next_check_seconds), 3600))
         self.allow_report = bool(allow_report)
         self.allow_repeat_views = bool(allow_repeat_views)
+        self.lease = lease
 
     async def _authoritative_intent(
         self,
@@ -272,8 +303,53 @@ class PublicationAutodeleteViewsService:
             proof.publication_id == int(publication.id)
             and proof.schedule_entry_id == int(schedule.id)
             and proof.threshold == int(threshold)
-            and proof.autodelete_report is bool(report_enabled)
+            and proof.autodelete_report == bool(report_enabled)
             and proof.telegram_message_ids == telegram_message_ids
+        )
+
+    def _authority_fingerprint(
+        self,
+        *,
+        publication: Publication,
+        schedule: ScheduleEntry,
+        channel: Channel,
+        telegram_message_ids: tuple[int, ...],
+        threshold: int,
+        report_enabled: bool,
+    ) -> str | None:
+        meta = _mapping(publication.meta)
+        repeat_rule = _mapping(schedule.repeat_rule)
+        if meta is None or repeat_rule is None:
+            return None
+        raw_options = meta.get("runtime_options")
+        if raw_options is not None and not isinstance(raw_options, Mapping):
+            return None
+        runtime_options = _mapping(raw_options)
+        if runtime_options is None:
+            return None
+        return _fingerprint(
+            {
+                "version": 1,
+                "publication_id": int(publication.id),
+                "channel_id": int(publication.channel_id),
+                "telegram_chat_id": int(channel.tg_chat_id),
+                "content_item_id": int(publication.content_item_id),
+                "content_revision": int(publication.content_revision),
+                "schedule_entry_id": int(schedule.id),
+                "schedule_scheduled_at": _utc(schedule.scheduled_at).isoformat(),
+                "schedule_timezone": schedule.timezone,
+                "legacy_post_task_id": (
+                    int(publication.legacy_post_task_id)
+                    if publication.legacy_post_task_id is not None
+                    else None
+                ),
+                "threshold": int(threshold),
+                "report_enabled": bool(report_enabled),
+                "telegram_message_ids": list(telegram_message_ids),
+                "result_link": normalize_telegram_result_link(publication.result_link),
+                "repeat_rule": repeat_rule,
+                "runtime_options": runtime_options,
+            }
         )
 
     async def _candidate(
@@ -379,8 +455,48 @@ class PublicationAutodeleteViewsService:
                 message_count=len(ids),
             )
 
+        fingerprint = self._authority_fingerprint(
+            publication=publication,
+            schedule=schedule,
+            channel=channel,
+            telegram_message_ids=ids,
+            threshold=threshold,
+            report_enabled=report_enabled,
+        )
+        if fingerprint is None or meta is None:
+            await self.session.rollback()
+            return None, PublicationAutodeleteViewsResult(
+                publication_id=safe_publication_id,
+                outcome="ineligible",
+                threshold=threshold,
+                message_count=len(ids),
+            )
+
+        inspection = inspect_publication_autodelete_views_actions(
+            meta,
+            authority_fingerprint=fingerprint,
+            telegram_chat_id=int(channel.tg_chat_id),
+            telegram_message_ids=ids,
+            threshold=threshold,
+        )
+        if inspection.outcome == "conflict":
+            await self.session.rollback()
+            raise PublicationAutodeleteViewsSyncConflict()
+        if inspection.outcome == "ambiguous":
+            await self.session.rollback()
+            return None, PublicationAutodeleteViewsResult(
+                publication_id=safe_publication_id,
+                outcome="retry",
+                threshold=threshold,
+                observed_views=inspection.observed_views,
+                message_count=len(ids),
+                deleted_count=inspection.succeeded_count,
+                unavailable_count=inspection.unavailable_count,
+                ambiguous_count=1,
+            )
+
         next_check_at = _utc(state.next_check_at)
-        if next_check_at > now:
+        if inspection.action_count == 0 and next_check_at > now:
             await self.session.rollback()
             return None, PublicationAutodeleteViewsResult(
                 publication_id=safe_publication_id,
@@ -405,6 +521,12 @@ class PublicationAutodeleteViewsService:
             telegram_message_ids=ids,
             report_enabled=report_enabled,
             result_link=normalize_telegram_result_link(publication.result_link),
+            authority_fingerprint=fingerprint,
+            ledger_observed_views=(
+                inspection.observed_views if inspection.action_count > 0 else None
+            ),
+            ledger_succeeded_count=inspection.succeeded_count,
+            ledger_unavailable_count=inspection.unavailable_count,
         )
         await self.session.rollback()
         return candidate, PublicationAutodeleteViewsResult(
@@ -419,7 +541,12 @@ class PublicationAutodeleteViewsService:
         candidate: _Candidate,
         *,
         require_state: bool,
-    ) -> tuple[Publication, PublicationAutodeleteViewState | None] | Literal["already_deleted"]:
+    ) -> tuple[
+        Publication,
+        PublicationAutodeleteViewState | None,
+        ScheduleEntry,
+        Channel,
+    ] | Literal["already_deleted"]:
         publication = (
             await self.session.execute(
                 select(Publication)
@@ -437,8 +564,27 @@ class PublicationAutodeleteViewsService:
         if publication is None:
             raise PublicationAutodeleteViewsSyncConflict()
 
-        schedule = await self.session.get(ScheduleEntry, candidate.schedule_entry_id)
-        item = await self.session.get(ContentItem, candidate.content_item_id)
+        schedule = (
+            await self.session.execute(
+                select(ScheduleEntry)
+                .where(ScheduleEntry.id == candidate.schedule_entry_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        item = (
+            await self.session.execute(
+                select(ContentItem)
+                .where(ContentItem.id == candidate.content_item_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        channel = (
+            await self.session.execute(
+                select(Channel)
+                .where(Channel.id == candidate.channel_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
         if (
             schedule is None
             or str(schedule.status) != "completed"
@@ -448,6 +594,8 @@ class PublicationAutodeleteViewsService:
             or item is None
             or str(item.kind) != "post"
             or int(item.channel_id) != candidate.channel_id
+            or channel is None
+            or int(channel.tg_chat_id) != candidate.tg_chat_id
         ):
             raise PublicationAutodeleteViewsSyncConflict()
 
@@ -504,7 +652,18 @@ class PublicationAutodeleteViewsService:
             report_enabled=candidate.report_enabled,
         ):
             raise PublicationAutodeleteViewsSyncConflict()
-        return publication, state
+
+        fingerprint = self._authority_fingerprint(
+            publication=publication,
+            schedule=schedule,
+            channel=channel,
+            telegram_message_ids=ids,
+            threshold=candidate.threshold,
+            report_enabled=candidate.report_enabled,
+        )
+        if fingerprint != candidate.authority_fingerprint:
+            raise PublicationAutodeleteViewsSyncConflict()
+        return publication, state, schedule, channel
 
     async def _cleanup_terminal_state(self, publication_id: int) -> None:
         publication = (
@@ -555,14 +714,85 @@ class PublicationAutodeleteViewsService:
             state.last_checked_at = now
         await self.session.commit()
 
-    async def _predelete_revalidate(self, candidate: _Candidate) -> bool:
+    async def _reserve_message(
+        self,
+        candidate: _Candidate,
+        *,
+        message_id: int,
+        observed_views: int,
+    ):
+        handle = self.lease
+        if handle is None or int(handle.publication_id) != candidate.publication_id:
+            return "ineligible", None
+
         current = await self._load_current(candidate, require_state=True)
         if current == "already_deleted":
             await self.session.rollback()
             await self._cleanup_terminal_state(candidate.publication_id)
+            return "already_deleted", None
+
+        result = await PublicationAutodeleteViewsActionLedger(self.session).reserve(
+            handle,
+            telegram_chat_id=candidate.tg_chat_id,
+            telegram_message_id=int(message_id),
+            authority_fingerprint=candidate.authority_fingerprint,
+            telegram_message_ids=candidate.telegram_message_ids,
+            threshold=candidate.threshold,
+            observed_views=observed_views,
+            now=_utc(),
+        )
+        return result.outcome, result
+
+    async def _mark_action(
+        self,
+        reservation: PublicationAutodeleteViewsActionReservation,
+        state: Literal["succeeded", "unavailable", "unknown"],
+    ) -> bool:
+        ledger = PublicationAutodeleteViewsActionLedger(self.session)
+        if state == "succeeded":
+            return await ledger.mark_succeeded(reservation)
+        if state == "unavailable":
+            return await ledger.mark_unavailable(reservation)
+        return await ledger.mark_unknown(reservation)
+
+    async def _best_effort_mark_action(
+        self,
+        reservation: PublicationAutodeleteViewsActionReservation,
+        state: Literal["succeeded", "unavailable", "unknown"],
+    ) -> bool:
+        try:
+            return await self._mark_action(reservation, state)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Publication views autodelete action mark failed publication_id={} "
+                "message_id={} state={} type={}",
+                int(reservation.publication_id),
+                int(reservation.telegram_message_id),
+                state,
+                type(exc).__name__,
+            )
             return False
-        await self.session.rollback()
-        return True
+
+    async def _live_lease(self, *, at: datetime) -> bool:
+        handle = self.lease
+        if handle is None:
+            return False
+        lease = (
+            await self.session.execute(
+                select(PublicationAutodeleteLease)
+                .where(
+                    PublicationAutodeleteLease.publication_id
+                    == int(handle.publication_id),
+                    PublicationAutodeleteLease.lease_token == str(handle.lease_token),
+                    PublicationAutodeleteLease.holder == str(handle.holder),
+                    PublicationAutodeleteLease.expires_at > at,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        return lease is not None
 
     async def _mark_deleted(
         self,
@@ -570,19 +800,66 @@ class PublicationAutodeleteViewsService:
         *,
         observed_views: int,
         deleted_at: datetime,
-    ) -> Literal["deleted", "already_deleted"]:
+    ) -> PublicationAutodeleteViewsResult:
         current = await self._load_current(candidate, require_state=True)
         if current == "already_deleted":
             await self.session.rollback()
             await self._cleanup_terminal_state(candidate.publication_id)
-            return "already_deleted"
-        publication, state = current
+            return PublicationAutodeleteViewsResult(
+                publication_id=candidate.publication_id,
+                outcome="already_deleted",
+                threshold=candidate.threshold,
+                observed_views=observed_views,
+                message_count=len(candidate.telegram_message_ids),
+            )
+        publication, state, _, _ = current
         assert state is not None
+
+        if not await self._live_lease(at=_utc()):
+            await self.session.rollback()
+            return PublicationAutodeleteViewsResult(
+                publication_id=candidate.publication_id,
+                outcome="retry",
+                threshold=candidate.threshold,
+                observed_views=observed_views,
+                message_count=len(candidate.telegram_message_ids),
+            )
 
         meta = _mapping(publication.meta)
         if meta is None:
             await self.session.rollback()
             raise PublicationAutodeleteViewsSyncConflict()
+        inspection = inspect_publication_autodelete_views_actions(
+            meta,
+            authority_fingerprint=candidate.authority_fingerprint,
+            telegram_chat_id=candidate.tg_chat_id,
+            telegram_message_ids=candidate.telegram_message_ids,
+            threshold=candidate.threshold,
+        )
+        if inspection.outcome == "ambiguous":
+            await self.session.rollback()
+            return PublicationAutodeleteViewsResult(
+                publication_id=candidate.publication_id,
+                outcome="retry",
+                threshold=candidate.threshold,
+                observed_views=inspection.observed_views,
+                message_count=len(candidate.telegram_message_ids),
+                deleted_count=inspection.succeeded_count,
+                unavailable_count=inspection.unavailable_count,
+                ambiguous_count=1,
+            )
+        if (
+            inspection.outcome != "clean"
+            or inspection.observed_views != observed_views
+            or inspection.action_count != len(candidate.telegram_message_ids)
+            or (
+                inspection.succeeded_count + inspection.unavailable_count
+                != len(candidate.telegram_message_ids)
+            )
+        ):
+            await self.session.rollback()
+            raise PublicationAutodeleteViewsSyncConflict()
+
         runtime = {
             "mode": "views",
             "view_threshold": int(candidate.threshold),
@@ -595,7 +872,15 @@ class PublicationAutodeleteViewsService:
         publication.meta = new_meta
         await self.session.delete(state)
         await self.session.commit()
-        return "deleted"
+        return PublicationAutodeleteViewsResult(
+            publication_id=candidate.publication_id,
+            outcome="deleted",
+            threshold=candidate.threshold,
+            observed_views=observed_views,
+            message_count=len(candidate.telegram_message_ids),
+            deleted_count=inspection.succeeded_count,
+            unavailable_count=inspection.unavailable_count,
+        )
 
     async def _send_report_best_effort(self, candidate: _Candidate) -> None:
         if not candidate.report_enabled:
@@ -609,7 +894,6 @@ class PublicationAutodeleteViewsService:
                     .where(Channel.id == candidate.channel_id)
                 )
             ).scalar_one_or_none()
-            # Release the read transaction before the provider network side effect.
             await self.session.rollback()
             if recipient is None:
                 return
@@ -655,106 +939,177 @@ class PublicationAutodeleteViewsService:
         if candidate is None:
             return early
 
-        counts: list[int] = []
-        for message_id in candidate.telegram_message_ids:
-            try:
-                raw_views = await self.view_source.get_message_views(
-                    candidate.tg_chat_id,
-                    int(message_id),
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                await self._defer(candidate, now=current)
-                return PublicationAutodeleteViewsResult(
-                    publication_id=candidate.publication_id,
-                    outcome="deferred",
-                    threshold=candidate.threshold,
-                    message_count=len(candidate.telegram_message_ids),
-                )
-            views = _nonnegative_view_count(raw_views)
-            if views is None:
-                await self._defer(candidate, now=current)
-                return PublicationAutodeleteViewsResult(
-                    publication_id=candidate.publication_id,
-                    outcome="deferred",
-                    threshold=candidate.threshold,
-                    message_count=len(candidate.telegram_message_ids),
-                )
-            counts.append(views)
+        if candidate.ledger_observed_views is None:
+            counts: list[int] = []
+            for message_id in candidate.telegram_message_ids:
+                try:
+                    raw_views = await self.view_source.get_message_views(
+                        candidate.tg_chat_id,
+                        int(message_id),
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    await self._defer(candidate, now=current)
+                    return PublicationAutodeleteViewsResult(
+                        publication_id=candidate.publication_id,
+                        outcome="deferred",
+                        threshold=candidate.threshold,
+                        message_count=len(candidate.telegram_message_ids),
+                    )
+                views = _nonnegative_view_count(raw_views)
+                if views is None:
+                    await self._defer(candidate, now=current)
+                    return PublicationAutodeleteViewsResult(
+                        publication_id=candidate.publication_id,
+                        outcome="deferred",
+                        threshold=candidate.threshold,
+                        message_count=len(candidate.telegram_message_ids),
+                    )
+                counts.append(views)
 
-        observed_views = min(counts)
-        if observed_views < candidate.threshold:
-            await self._defer(
+            observed_views = min(counts)
+            if observed_views < candidate.threshold:
+                await self._defer(
+                    candidate,
+                    now=current,
+                    observed_views=observed_views,
+                )
+                return PublicationAutodeleteViewsResult(
+                    publication_id=candidate.publication_id,
+                    outcome="below_threshold",
+                    threshold=candidate.threshold,
+                    observed_views=observed_views,
+                    message_count=len(candidate.telegram_message_ids),
+                )
+        else:
+            observed_views = int(candidate.ledger_observed_views)
+
+        if self.lease is None or int(self.lease.publication_id) != candidate.publication_id:
+            return PublicationAutodeleteViewsResult(
+                publication_id=candidate.publication_id,
+                outcome="ineligible",
+                threshold=candidate.threshold,
+                observed_views=observed_views,
+                message_count=len(candidate.telegram_message_ids),
+            )
+
+        deleted_count = candidate.ledger_succeeded_count
+        unavailable_count = candidate.ledger_unavailable_count
+        for message_id in candidate.telegram_message_ids:
+            outcome, reserve_result = await self._reserve_message(
                 candidate,
-                now=current,
+                message_id=int(message_id),
                 observed_views=observed_views,
             )
-            return PublicationAutodeleteViewsResult(
-                publication_id=candidate.publication_id,
-                outcome="below_threshold",
-                threshold=candidate.threshold,
-                observed_views=observed_views,
-                message_count=len(candidate.telegram_message_ids),
-            )
+            if outcome == "already_deleted":
+                return PublicationAutodeleteViewsResult(
+                    publication_id=candidate.publication_id,
+                    outcome="already_deleted",
+                    threshold=candidate.threshold,
+                    observed_views=observed_views,
+                    message_count=len(candidate.telegram_message_ids),
+                )
+            if outcome == "conflict":
+                raise PublicationAutodeleteViewsSyncConflict()
+            if outcome == "ineligible":
+                return PublicationAutodeleteViewsResult(
+                    publication_id=candidate.publication_id,
+                    outcome="retry",
+                    threshold=candidate.threshold,
+                    observed_views=observed_views,
+                    message_count=len(candidate.telegram_message_ids),
+                    deleted_count=deleted_count,
+                    unavailable_count=unavailable_count,
+                )
+            if outcome == "ambiguous":
+                return PublicationAutodeleteViewsResult(
+                    publication_id=candidate.publication_id,
+                    outcome="retry",
+                    threshold=candidate.threshold,
+                    observed_views=observed_views,
+                    message_count=len(candidate.telegram_message_ids),
+                    deleted_count=deleted_count,
+                    unavailable_count=unavailable_count,
+                    ambiguous_count=1,
+                )
+            if reserve_result is None:
+                raise PublicationAutodeleteViewsSyncConflict()
+            if outcome == "already_terminal":
+                state = str(reserve_result.existing_state)
+                if candidate.ledger_observed_views is None:
+                    if state == "succeeded":
+                        deleted_count += 1
+                    elif state == "unavailable":
+                        unavailable_count += 1
+                    else:
+                        raise PublicationAutodeleteViewsSyncConflict()
+                continue
 
-        if not await self._predelete_revalidate(candidate):
-            return PublicationAutodeleteViewsResult(
-                publication_id=candidate.publication_id,
-                outcome="already_deleted",
-                threshold=candidate.threshold,
-                observed_views=observed_views,
-                message_count=len(candidate.telegram_message_ids),
-            )
-
-        deleted_count = 0
-        unavailable_count = 0
-        retryable_count = 0
-        for message_id in candidate.telegram_message_ids:
+            reservation = reserve_result.reservation
+            if reservation is None:
+                raise PublicationAutodeleteViewsSyncConflict()
             try:
                 await self.delete_provider.delete_message(
-                    chat_id=candidate.tg_chat_id,
-                    message_id=int(message_id),
+                    chat_id=int(reservation.telegram_chat_id),
+                    message_id=int(reservation.telegram_message_id),
                 )
-                deleted_count += 1
             except asyncio.CancelledError:
-                raise
+                try:
+                    await self._best_effort_mark_action(reservation, "unknown")
+                finally:
+                    raise
             except Exception as exc:
                 if _is_unavailable_delete_error(exc):
+                    marked = await self._best_effort_mark_action(
+                        reservation,
+                        "unavailable",
+                    )
+                    if not marked:
+                        return PublicationAutodeleteViewsResult(
+                            publication_id=candidate.publication_id,
+                            outcome="retry",
+                            threshold=candidate.threshold,
+                            observed_views=observed_views,
+                            message_count=len(candidate.telegram_message_ids),
+                            deleted_count=deleted_count,
+                            unavailable_count=unavailable_count,
+                            ambiguous_count=1,
+                        )
                     unavailable_count += 1
-                else:
-                    retryable_count += 1
+                    continue
 
-        if retryable_count:
-            await self._defer(candidate, now=current)
-            return PublicationAutodeleteViewsResult(
-                publication_id=candidate.publication_id,
-                outcome="retry",
-                threshold=candidate.threshold,
-                observed_views=observed_views,
-                message_count=len(candidate.telegram_message_ids),
-                deleted_count=deleted_count,
-                unavailable_count=unavailable_count,
-                retryable_count=retryable_count,
-            )
+                await self._best_effort_mark_action(reservation, "unknown")
+                return PublicationAutodeleteViewsResult(
+                    publication_id=candidate.publication_id,
+                    outcome="retry",
+                    threshold=candidate.threshold,
+                    observed_views=observed_views,
+                    message_count=len(candidate.telegram_message_ids),
+                    deleted_count=deleted_count,
+                    unavailable_count=unavailable_count,
+                    ambiguous_count=1,
+                )
 
-        outcome = await self._mark_deleted(
+            marked = await self._best_effort_mark_action(reservation, "succeeded")
+            if not marked:
+                return PublicationAutodeleteViewsResult(
+                    publication_id=candidate.publication_id,
+                    outcome="retry",
+                    threshold=candidate.threshold,
+                    observed_views=observed_views,
+                    message_count=len(candidate.telegram_message_ids),
+                    deleted_count=deleted_count,
+                    unavailable_count=unavailable_count,
+                    ambiguous_count=1,
+                )
+            deleted_count += 1
+
+        result = await self._mark_deleted(
             candidate,
             observed_views=observed_views,
             deleted_at=current,
         )
-        # Report only after durable terminal truth and only if at least one delete was
-        # actually confirmed. Terminal-unavailable-only resolution must not claim a
-        # destructive action happened now.
-        if outcome == "deleted" and deleted_count > 0:
+        if result.outcome == "deleted" and result.deleted_count > 0:
             await self._send_report_best_effort(candidate)
-        return PublicationAutodeleteViewsResult(
-            publication_id=candidate.publication_id,
-            outcome=outcome,
-            threshold=candidate.threshold,
-            observed_views=observed_views,
-            message_count=len(candidate.telegram_message_ids),
-            deleted_count=deleted_count,
-            unavailable_count=unavailable_count,
-            retryable_count=0,
-        )
+        return result

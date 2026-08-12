@@ -36,6 +36,7 @@ class PublicationAutodeleteViewsWorkerTick:
     not_due: int = 0
     ineligible: int = 0
     retry: int = 0
+    ambiguous: int = 0
     conflicts: int = 0
     failures: int = 0
     release_failures: int = 0
@@ -52,10 +53,11 @@ def _utc(value: datetime | None = None) -> datetime:
 class PublicationAutodeleteViewsWorker:
     """Bounded lease-backed orchestrator for views-based canonical deletion.
 
-    Selection, ownership, destructive evaluation, optional ineligible backoff and lease
-    release all use separate sessions. Cancellation deliberately leaves ownership until
-    lease expiry so an ambiguous provider operation cannot be immediately duplicated by
-    another process.
+    Selection, ownership, destructive evaluation, ambiguity backoff and lease release use
+    separate sessions. The service receives the exact acquired lease handle; a provider
+    DELETE can occur only after the service commits a per-message action reservation bound
+    to that exact token+holder. Cancellation still keeps the lease until expiry, while the
+    durable reserved/unknown action independently prevents automatic destructive replay.
     """
 
     def __init__(
@@ -155,6 +157,7 @@ class PublicationAutodeleteViewsWorker:
         not_due = 0
         ineligible = 0
         retry = 0
+        ambiguous = 0
         conflicts = 0
         failures = 0
         release_failures = 0
@@ -189,6 +192,7 @@ class PublicationAutodeleteViewsWorker:
                         delete_provider=self.delete_provider,
                         next_check_seconds=self.next_check_seconds,
                         allow_report=True,
+                        lease=handle,
                     ).evaluate_and_delete(int(publication_id), now=current)
 
                 if result.outcome == "deleted":
@@ -225,8 +229,29 @@ class PublicationAutodeleteViewsWorker:
                             )
                 else:
                     retry += 1
+                    if result.ambiguous_count:
+                        ambiguous += 1
+                        if result.threshold is not None:
+                            try:
+                                backed_off = await self._backoff_ineligible(
+                                    publication_id=int(publication_id),
+                                    threshold=int(result.threshold),
+                                    now=current,
+                                )
+                                if not backed_off:
+                                    backoff_failures += 1
+                            except asyncio.CancelledError:
+                                release_after = False
+                                raise
+                            except Exception as exc:
+                                backoff_failures += 1
+                                logger.warning(
+                                    "Publication views autodelete: ambiguity backoff failed "
+                                    "publication_id={} type={}",
+                                    int(publication_id),
+                                    type(exc).__name__,
+                                )
             except asyncio.CancelledError:
-                # Keep ownership until expiry when transport outcome may be ambiguous.
                 release_after = False
                 raise
             except PublicationAutodeleteViewsSyncConflict:
@@ -267,6 +292,7 @@ class PublicationAutodeleteViewsWorker:
             not_due=not_due,
             ineligible=ineligible,
             retry=retry,
+            ambiguous=ambiguous,
             conflicts=conflicts,
             failures=failures,
             release_failures=release_failures,
@@ -278,6 +304,7 @@ class PublicationAutodeleteViewsWorker:
         if (
             tick.deleted
             or tick.retry
+            or tick.ambiguous
             or tick.conflicts
             or tick.failures
             or tick.release_failures
@@ -286,7 +313,7 @@ class PublicationAutodeleteViewsWorker:
             logger.info(
                 "Publication views autodelete: selected={} leased={} busy={} deleted={} "
                 "already_deleted={} below_threshold={} deferred={} not_due={} "
-                "ineligible={} retry={} conflicts={} failures={} "
+                "ineligible={} retry={} ambiguous={} conflicts={} failures={} "
                 "release_failures={} backoff_failures={}",
                 tick.selected,
                 tick.leased,
@@ -298,6 +325,7 @@ class PublicationAutodeleteViewsWorker:
                 tick.not_due,
                 tick.ineligible,
                 tick.retry,
+                tick.ambiguous,
                 tick.conflicts,
                 tick.failures,
                 tick.release_failures,

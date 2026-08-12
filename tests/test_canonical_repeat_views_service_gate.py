@@ -14,6 +14,7 @@ from app.domain.models import Channel, Client, PostTask
 from app.domain.publication_autodelete import PublicationAutodeleteViewState
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.repositories.content import ContentRepo
+from app.services.publication_autodelete_lease import PublicationAutodeleteLeaseService
 from app.services.publication_autodelete_views import (
     PublicationAutodeleteViewsService,
     PublicationAutodeleteViewsSyncConflict,
@@ -105,6 +106,16 @@ async def _seed_terminal_views(
         await session.delete(task)
         await session.commit()
         return int(publication.id)
+
+
+async def _acquire(Session, publication_id: int, holder: str):
+    async with Session() as session:
+        handle = await PublicationAutodeleteLeaseService(session).acquire(
+            publication_id=publication_id,
+            holder=holder,
+        )
+        assert handle is not None
+        return handle
 
 
 class _Views:
@@ -251,6 +262,7 @@ def test_repeat_views_explicit_gate_revalidates_and_deletes_exact_source_message
                 now=now,
                 repeat=True,
             )
+            lease = await _acquire(Session, publication_id, "repeat-views-delete")
             views = _Views(17)
             provider = _DeleteProvider()
             async with Session() as session:
@@ -259,6 +271,7 @@ def test_repeat_views_explicit_gate_revalidates_and_deletes_exact_source_message
                     view_source=views,
                     delete_provider=provider,
                     allow_repeat_views=True,
+                    lease=lease,
                 ).evaluate_and_delete(publication_id, now=now)
             assert result.outcome == "deleted"
             assert result.deleted_count == 2
@@ -295,6 +308,7 @@ def test_repeat_views_authority_drift_after_observation_blocks_delete(tmp_path) 
                 now=now,
                 repeat=True,
             )
+            lease = await _acquire(Session, publication_id, "repeat-views-drift")
             views = _DriftingViews(99, Session, publication_id)
             provider = _DeleteProvider()
             async with Session() as session:
@@ -304,6 +318,7 @@ def test_repeat_views_authority_drift_after_observation_blocks_delete(tmp_path) 
                         view_source=views,
                         delete_provider=provider,
                         allow_repeat_views=True,
+                        lease=lease,
                     ).evaluate_and_delete(publication_id, now=now)
             assert len(views.calls) == 2
             assert provider.delete_calls == []
@@ -331,6 +346,7 @@ def test_default_off_repeat_gate_preserves_existing_nonrepeat_views_path(tmp_pat
                 now=now,
                 repeat=False,
             )
+            lease = await _acquire(Session, publication_id, "nonrepeat-views")
             views = _Views(99)
             provider = _DeleteProvider()
             async with Session() as session:
@@ -338,6 +354,7 @@ def test_default_off_repeat_gate_preserves_existing_nonrepeat_views_path(tmp_pat
                     session,
                     view_source=views,
                     delete_provider=provider,
+                    lease=lease,
                 ).evaluate_and_delete(publication_id, now=now)
             assert result.outcome == "deleted"
             assert len(provider.delete_calls) == 2
