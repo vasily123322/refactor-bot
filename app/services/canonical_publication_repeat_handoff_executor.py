@@ -39,8 +39,8 @@ class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHand
     """Route linked fixed-delay repeat through its dedicated atomic authority seam.
 
     Every repeat/effect composition fact is forwarded independently from the concrete
-    safe executor. Repeat+time therefore carries both generic time capability and its
-    dedicated started composition bit; neither can be inferred from the other.
+    safe executor. Repeat+time carries generic time plus its dedicated started bit;
+    repeat+time+pin carries an additional independent composition bit.
     """
 
     async def execute(self, publication_id: int):
@@ -79,6 +79,9 @@ class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHand
         allow_repeat_time = bool(
             getattr(self.executor, "allow_repeat_time", False)
         )
+        allow_repeat_time_pin = bool(
+            getattr(self.executor, "allow_repeat_time_pin", False)
+        )
         allow_views_autodelete = bool(
             getattr(self.executor, "allow_views_autodelete", False)
         )
@@ -104,6 +107,7 @@ class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHand
                 allow_repeat=allow_repeat,
                 allow_time_autodelete=allow_time_autodelete,
                 allow_repeat_time=allow_repeat_time,
+                allow_repeat_time_pin=allow_repeat_time_pin,
                 allow_views_autodelete=allow_views_autodelete,
                 allow_repeat_views=allow_repeat_views,
                 allow_repeat_views_pin=allow_repeat_views_pin,
