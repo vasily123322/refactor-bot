@@ -42,25 +42,29 @@ class CanonicalPublicationLinkedForwardParityProof:
     forward_channel_ids: tuple[int, ...]
     forward_targets: tuple[CanonicalPublicationLinkedForwardTargetProof, ...]
     disable_notification: bool
+    pin_on: bool = False
 
 
 def _neutral_number(value: Any) -> bool:
     return value in (None, False, 0, "0", "")
 
 
-def _forward_only_profile(options: dict[str, Any]) -> tuple[tuple[int, ...], bool] | None:
+def _forward_profile(
+    options: dict[str, Any],
+) -> tuple[tuple[int, ...], bool, bool] | None:
     capability = parse_canonical_publication_delivery_runtime_capability(options)
     if capability is None or not capability.forward_to:
         return None
-    if capability.pin_on or capability.time_autodelete_requested:
-        # Pin/timer composition is proven separately. This seam intentionally establishes
-        # forward semantics in isolation before those profiles are combined atomically.
+    if capability.time_autodelete_requested:
+        # Timer composition has a required durable post-send dependency and remains a
+        # separate authority stage. Forward+pin is safe here because both are already
+        # best-effort post-actions with durable one-way reservations.
         return None
     if options.get("autodelete_views") not in (None, False, 0, "0", ""):
         return None
     if options.get("autodelete_report") not in (None, False):
         return None
-    return capability.forward_to, capability.forward_silent
+    return capability.forward_to, capability.forward_silent, bool(capability.pin_on)
 
 
 def _legacy_forward_intent_matches(
@@ -69,6 +73,7 @@ def _legacy_forward_intent_matches(
     publication: Publication,
     plan: CanonicalPublicationDeliveryPlan,
     forward_ids: tuple[int, ...],
+    pin_on: bool,
 ) -> bool:
     if int(task.channel_id) != int(plan.channel_id):
         return False
@@ -111,6 +116,12 @@ def _legacy_forward_intent_matches(
         # Order is provider-visible because legacy iterates targets in list order.
         return False
 
+    if pin_on:
+        if type(current.get("pin_on")) is not bool or current.get("pin_on") is not True:
+            return False
+    elif current.get("pin_on") not in (None, False, 0):
+        return False
+
     # Generated/legacy execution evidence must still be pristine before authority moves.
     if current.get("result_ids") not in (None, []):
         return False
@@ -129,10 +140,10 @@ def _legacy_forward_intent_matches(
     for key in _IDENTITY_MARKERS:
         current_clean.pop(key, None)
     current_clean.pop("forward_to", None)
+    if pin_on:
+        current_clean.pop("pin_on", None)
 
-    # A forward-only proof cannot silently consume pin/timer/repeat effects.
-    if current_clean.get("pin_on") not in (None, False, 0):
-        return False
+    # A forward(+pin) proof cannot silently consume timer/repeat effects.
     if current_clean.get("repeat_on") not in (None, False, 0):
         return False
     if not _neutral_number(current_clean.get("autodelete_seconds")):
@@ -152,14 +163,15 @@ def _legacy_forward_intent_matches(
 
 
 class CanonicalPublicationLinkedForwardParityService:
-    """Read-only proof that linked legacy and canonical forward behavior are equivalent.
+    """Read-only proof that linked legacy/canonical forward behavior is equivalent.
 
     Legacy Scheduler and canonical runtime both interpret `forward_to` as ordered internal
     Channel IDs, resolve each to its current `tg_chat_id`, then forward primary message
     ids target-major/message-major with `disable_notification == silent`.
 
-    This service deliberately performs no handoff or claim. It makes the forward parity
-    contract independently testable before integration into the atomic authority seam.
+    Exact `pin_on=true` may be composed because both runtimes pin the last primary message
+    in the source chat immediately before forwarding. Timer/views/repeat remain excluded.
+    This service deliberately performs no handoff or claim.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -178,15 +190,16 @@ class CanonicalPublicationLinkedForwardParityService:
             options = plan.runtime_options()
         except (TypeError, ValueError):
             return None
-        profile = _forward_only_profile(options)
+        profile = _forward_profile(options)
         if profile is None:
             return None
-        forward_ids, forward_silent = profile
+        forward_ids, forward_silent, pin_on = profile
         if not _legacy_forward_intent_matches(
             task=task,
             publication=publication,
             plan=plan,
             forward_ids=forward_ids,
+            pin_on=pin_on,
         ):
             return None
 
@@ -194,8 +207,6 @@ class CanonicalPublicationLinkedForwardParityService:
         rows = (await self.session.execute(statement)).scalars().all()
         by_id = {int(channel.id): channel for channel in rows}
         if len(by_id) != len(forward_ids):
-            # Canonical claim is stricter than legacy's later best-effort skip. Missing
-            # targets therefore remain a clean pre-claim rejection, never a changed send.
             return None
 
         targets: list[CanonicalPublicationLinkedForwardTargetProof] = []
@@ -225,4 +236,5 @@ class CanonicalPublicationLinkedForwardParityService:
             forward_channel_ids=forward_ids,
             forward_targets=tuple(targets),
             disable_notification=bool(forward_silent),
+            pin_on=pin_on,
         )
