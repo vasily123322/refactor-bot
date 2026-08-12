@@ -23,7 +23,7 @@ from app.services.canonical_publication_linked_repeat_parity import (
 from app.services.publication_bridge import LegacyPublicationBridge
 
 
-async def _seed_repeat_pin_forward(Session) -> tuple[int, int, int]:
+async def _seed_future_repeat_semantics(Session) -> tuple[int, int, int]:
     async with Session() as session:
         owner = Client(
             tg_user_id=209001,
@@ -54,7 +54,7 @@ async def _seed_repeat_pin_forward(Session) -> tuple[int, int, int]:
                     {
                         "id": "b1",
                         "type": "text",
-                        "text": "repeat + pin + forward",
+                        "text": "future repeat semantics",
                     }
                 ]
             ),
@@ -63,7 +63,11 @@ async def _seed_repeat_pin_forward(Session) -> tuple[int, int, int]:
         publication = await LegacyPublicationBridge(session).queue(
             content_item_id=int(item.id),
             scheduled_at=datetime.now(timezone.utc) - timedelta(minutes=1),
-            repeat_rule={"enabled": True, "seconds": 60},
+            repeat_rule={
+                "enabled": True,
+                "seconds": 60,
+                "future_mode": "calendar",
+            },
             runtime_options={
                 "pin_on": True,
                 "forward_to": [int(target.id)],
@@ -77,7 +81,7 @@ async def _seed_repeat_pin_forward(Session) -> tuple[int, int, int]:
         )
 
 
-def test_atomic_repeat_handoff_keeps_strict_barrier_after_forward_widening(
+def test_atomic_repeat_handoff_keeps_strict_barrier_for_future_repeat_semantics(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -89,13 +93,14 @@ def test_atomic_repeat_handoff_keeps_strict_barrier_after_forward_widening(
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
-            publication_id, task_id, target_id = await _seed_repeat_pin_forward(Session)
+            publication_id, task_id, target_id = await _seed_future_repeat_semantics(Session)
 
             class PermissiveFutureParity:
                 def prove(self, *, task, publication, schedule, plan):
-                    # Simulate a future pin+forward parity widening. The strict repeat
-                    # claim remains an independent final authority barrier and must roll
-                    # the prepared legacy cutover back until composition is explicit.
+                    # Simulate a future parity implementation that understands a new
+                    # repeat-rule key. The strict repeat claim must remain an independent
+                    # barrier and roll prepared legacy cutover back until that cadence is
+                    # deliberately admitted by its own authority proof.
                     return CanonicalPublicationLinkedRepeatParityProof(
                         publication_id=int(publication.id),
                         legacy_post_task_id=int(task.id),
