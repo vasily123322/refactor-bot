@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
