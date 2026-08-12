@@ -26,14 +26,16 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
     views_autodelete_executor_available: bool = False,
     repeat_continuation_available: bool = False,
     repeat_views_executor_available: bool = False,
+    repeat_views_pin_executor_available: bool = False,
     repeat_owner_policy_enforced: bool = False,
 ) -> CanonicalPublicationDeliveryWorker | None:
-    """Start a repeat-aware primary only after every authority dependency is explicit.
+    """Start repeat-aware primary only from concrete successfully started dependencies.
 
-    Recovery remains mandatory for the primary itself. Repeat requires both continuation
-    and enforced owner policy. Repeat+views has a third independent fact supplied only by
-    a successfully started repeat-capable views worker; this function never derives that
-    fact from config or from ordinary views availability.
+    Recovery remains mandatory. Repeat requires continuation plus owner-policy enforcement.
+    Repeat+views additionally requires ordinary views availability and its explicit started
+    composition fact. Repeat+views+pin is narrower again: its exact started fact is accepted
+    only when the complete repeat+views dependency set is already present. Nothing here is
+    derived from config, pin support, or ordinary repeat/views booleans alone.
     """
 
     if not config.enabled:
@@ -44,15 +46,25 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
             "canonical publication delivery requires a successfully started recovery worker"
         )
 
+    repeat_available = bool(repeat_continuation_available)
+    views_available = bool(views_autodelete_executor_available)
+    repeat_views_available = bool(
+        repeat_views_executor_available and repeat_available and views_available
+    )
+    repeat_views_pin_available = bool(
+        repeat_views_pin_executor_available and repeat_views_available
+    )
+
     runtime = build_canonical_publication_safe_repeat_runtime(
         bot=bot,
         session_factory=session_factory,
         lease_seconds=config.lease_ttl_seconds,
         heartbeat_interval_seconds=float(config.heartbeat_interval_seconds),
         allow_time_autodelete=bool(time_autodelete_executor_available),
-        allow_views_autodelete=bool(views_autodelete_executor_available),
-        allow_repeat=bool(repeat_continuation_available),
-        allow_repeat_views=bool(repeat_views_executor_available),
+        allow_views_autodelete=views_available,
+        allow_repeat=repeat_available,
+        allow_repeat_views=repeat_views_available,
+        allow_repeat_views_pin=repeat_views_pin_available,
         repeat_owner_policy_enforced=bool(repeat_owner_policy_enforced),
     )
     handoff_executor = CanonicalPublicationRepeatHandoffExecutor(
