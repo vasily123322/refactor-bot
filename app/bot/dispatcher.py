@@ -50,7 +50,7 @@ from app.workers.canonical_repeat_continuation_scheduler import Scheduler
 from app.workers.grab_poll import GrabPoller
 from app.workers.post_task_retention import PostTaskRetentionWorker
 from app.workers.publication_autodelete import PublicationAutodeleteWorker
-from app.workers.publication_autodelete_views_pin import PublicationAutodeleteViewsPinWorker
+from app.workers.publication_autodelete_views_forward import PublicationAutodeleteViewsForwardWorker
 from app.workers.publication_reconciler import PublicationReconcilerWorker
 from app.workers.scheduler_recovery import SchedulerRecoveryWorker
 from app.workers.source_ingestion import SourceIngestionWorker
@@ -126,6 +126,7 @@ async def _start_canonical_publication_delivery_workers(
     repeat_continuation_executor_available: bool = False,
     repeat_views_executor_available: bool = False,
     repeat_views_pin_executor_available: bool = False,
+    repeat_views_forward_executor_available: bool = False,
 ):
     recovery_worker = (
         await _start_canonical_publication_delivery_recovery_worker_if_enabled()
@@ -149,6 +150,9 @@ async def _start_canonical_publication_delivery_workers(
                 repeat_views_executor_available=repeat_views_executor_available,
                 repeat_views_pin_executor_available=(
                     repeat_views_pin_executor_available
+                ),
+                repeat_views_forward_executor_available=(
+                    repeat_views_forward_executor_available
                 ),
                 repeat_owner_policy_enforced=True,
             )
@@ -192,10 +196,10 @@ async def _start_publication_autodelete_views_worker_if_enabled(
         )
         return None
 
-    # This concrete worker type is implementation-capable of the views+pin composition,
-    # but capability is not availability. The narrow started fact remains false until
-    # `start()` succeeds, and still depends on repeat continuation through plain views.
-    worker = PublicationAutodeleteViewsPinWorker(
+    # One successfully started concrete worker can implement the independently gated
+    # views+pin and views+ordered-forward slices. Capability booleans are construction
+    # modes; authority below is derived only from its started availability properties.
+    worker = PublicationAutodeleteViewsForwardWorker(
         view_source=userbot,
         delete_provider=bot,
         session_factory=AsyncSessionLocal,
@@ -210,6 +214,7 @@ async def _start_publication_autodelete_views_worker_if_enabled(
         ),
         allow_repeat_views=bool(repeat_continuation_available),
         allow_repeat_views_pin=True,
+        allow_repeat_views_forward=True,
     )
     try:
         await worker.start()
@@ -218,7 +223,7 @@ async def _start_publication_autodelete_views_worker_if_enabled(
             await worker.stop()
         except Exception:
             logger.exception(
-                "Boot: failed to clean up repeat views+pin autodelete worker after startup failure"
+                "Boot: failed to clean up repeat views composition autodelete worker after startup failure"
             )
         raise
     return worker
@@ -315,9 +320,9 @@ async def run_bot() -> None:
         publication_reconciler = PublicationReconcilerWorker(interval_seconds=5)
         await publication_reconciler.start()
 
-        # Start destructive consumers before any delete-capable canonical primary. The
-        # exact repeat/views and repeat/views+pin facts below come from this successfully
-        # started concrete worker, never from config or construction alone.
+        # Start destructive consumers before any delete-capable canonical primary. Exact
+        # repeat/views, views+pin and views+forward facts below come only from this
+        # successfully started concrete worker, never from config or construction alone.
         publication_autodelete = await _start_publication_autodelete_worker_if_enabled()
         publication_autodelete_views = (
             await _start_publication_autodelete_views_worker_if_enabled(
@@ -346,6 +351,10 @@ async def run_bot() -> None:
             publication_autodelete_views is not None
             and publication_autodelete_views.repeat_views_pin_available
         )
+        repeat_views_forward_executor_available = bool(
+            publication_autodelete_views is not None
+            and publication_autodelete_views.repeat_views_forward_available
+        )
         (
             canonical_publication_delivery,
             canonical_publication_delivery_recovery,
@@ -361,6 +370,9 @@ async def run_bot() -> None:
             repeat_views_executor_available=repeat_views_executor_available,
             repeat_views_pin_executor_available=(
                 repeat_views_pin_executor_available
+            ),
+            repeat_views_forward_executor_available=(
+                repeat_views_forward_executor_available
             ),
         )
 
