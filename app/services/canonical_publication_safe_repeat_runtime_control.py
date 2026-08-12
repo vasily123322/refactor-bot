@@ -7,6 +7,9 @@ from app.core.canonical_publication_delivery_primary_config import (
     CanonicalPublicationDeliveryPrimarySettings,
 )
 from app.core.db import AsyncSessionLocal
+from app.services.canonical_publication_delivery_authority import (
+    set_canonical_publication_delivery_primary_started,
+)
 from app.services.canonical_publication_repeat_handoff_executor import (
     CanonicalPublicationRepeatHandoffExecutor,
 )
@@ -116,4 +119,5 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
                 "Boot: failed to clean up safe repeat canonical publication worker after startup failure"
             )
         raise
+    set_canonical_publication_delivery_primary_started(True)
     return worker
