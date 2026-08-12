@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.content import PostDocument
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import Channel, PostTask
 from app.domain.publication_delivery import PublicationDeliveryLease
@@ -42,7 +43,6 @@ _FORBIDDEN_EPHEMERAL_KEYS = {
     "_also_schedule_autodelete",
 }
 _NEUTRAL_BOOL_KEYS = {
-    "silent",
     "pin_on",
     "forward_silent",
     "autodelete_report",
@@ -132,14 +132,25 @@ def _nonrepeat(plan: CanonicalPublicationDeliveryPlan) -> bool:
     return enabled is None or enabled is False
 
 
-def _plain_runtime(plan: CanonicalPublicationDeliveryPlan) -> bool:
+def _supported_runtime_options(
+    plan: CanonicalPublicationDeliveryPlan,
+) -> dict[str, Any] | None:
     try:
-        return plan.runtime_options() == {}
+        options = plan.runtime_options()
     except (TypeError, ValueError):
-        return False
+        return None
+    if not options:
+        return {}
+    if set(options) != {"silent"}:
+        return None
+    if type(options.get("silent")) is not bool:
+        return None
+    return options
 
 
-def _expected_transport_payload(plan: CanonicalPublicationDeliveryPlan) -> dict[str, Any] | None:
+def _expected_transport_payload(
+    plan: CanonicalPublicationDeliveryPlan,
+) -> dict[str, Any] | None:
     try:
         document = plan.post_document()
     except (TypeError, ValueError):
@@ -187,6 +198,58 @@ def _identity_markers_match(
     return True
 
 
+def _transport_effective_silent(payload: Mapping[str, Any]) -> bool | None:
+    """Return the silence legacy transport would actually use for this payload."""
+
+    if str(payload.get("type") or "") == "rich_document":
+        raw_document = payload.get("post_document")
+        if not isinstance(raw_document, Mapping):
+            return None
+        try:
+            document = PostDocument.from_dict(raw_document)
+            rendered = TelegramRenderer().render(document)
+        except (TelegramRenderError, TypeError, ValueError):
+            return None
+        if rendered.kind != "rich":
+            return None
+        return bool(rendered.disable_notification)
+
+    if "silent" in payload and type(payload.get("silent")) is not bool:
+        return None
+    return bool(payload.get("silent", False))
+
+
+def _silent_intent_matches(
+    current: Mapping[str, Any],
+    expected: Mapping[str, Any],
+    runtime_options: Mapping[str, Any],
+) -> bool:
+    current_effective = _transport_effective_silent(current)
+    expected_effective = _transport_effective_silent(expected)
+    if current_effective is None or expected_effective is None:
+        return False
+
+    if "silent" in runtime_options:
+        intended = runtime_options.get("silent")
+        if type(intended) is not bool:
+            return False
+        # The explicit canonical runtime bit must also be durably represented in the
+        # legacy PostTask, and legacy's *effective* provider behavior must already equal
+        # that value. This is especially important for rich_document, where historical
+        # legacy dispatch ignores the top-level `silent` key and re-renders post_document.
+        if type(current.get("silent")) is not bool or current.get("silent") is not intended:
+            return False
+        return current_effective is intended
+
+    # Without explicit runtime silent, do not infer a top-level legacy effect into
+    # canonical authority. Immutable rich-document Telegram settings are allowed only
+    # when both transport representations have the same effective behavior.
+    for payload in (current, expected):
+        if "silent" in payload and not _neutral_bool(payload.get("silent")):
+            return False
+    return current_effective is expected_effective
+
+
 def _legacy_intent_matches(
     *,
     task: PostTask,
@@ -200,13 +263,16 @@ def _legacy_intent_matches(
     if task.error not in (None, ""):
         return False
 
+    runtime_options = _supported_runtime_options(plan)
     current = _mapping(task.payload)
     expected = _expected_transport_payload(plan)
-    if current is None or expected is None:
+    if runtime_options is None or current is None or expected is None:
         return False
     if any(key in current for key in _FORBIDDEN_EPHEMERAL_KEYS):
         return False
     if not _identity_markers_match(current, publication=publication, plan=plan):
+        return False
+    if not _silent_intent_matches(current, expected, runtime_options):
         return False
     for key in _IDENTITY_MARKERS:
         current.pop(key, None)
@@ -236,6 +302,10 @@ class CanonicalPublicationLegacyTransportHandoffService:
     Any SchedulerTaskLease, live or expired, is an execution/recovery barrier and blocks
     handoff. This service never deletes or takes a scheduler lease and never calls a
     provider. Canonical delivery remains `queued` until a later exact canonical claim.
+
+    Current capability is non-repeat with empty runtime options or explicit `silent: bool`.
+    The legacy PostTask effective silent behavior must exactly match explicit canonical
+    silent intent; hidden legacy silent behavior is not inferred into canonical authority.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -291,7 +361,6 @@ class CanonicalPublicationLegacyTransportHandoffService:
                 return await self._result(_INELIGIBLE, safe_publication_id)
             task_id = int(publication.legacy_post_task_id)
 
-            # This CAS serializes against legacy SchedulerTaskLeaseService.claim_pending.
             claimed_cutover = await self.session.execute(
                 update(PostTask)
                 .where(
@@ -322,7 +391,6 @@ class CanonicalPublicationLegacyTransportHandoffService:
                 )
             ).scalar_one_or_none()
             if scheduler_lease is not None:
-                # Any lease, including expired recovery ambiguity, blocks authority transfer.
                 return await self._result(_CONFLICT, safe_publication_id, task_id)
 
             canonical_lease = (
@@ -381,7 +449,7 @@ class CanonicalPublicationLegacyTransportHandoffService:
                 or int(plan.content_item_id) != int(item.id)
                 or int(plan.content_revision) != int(revision.revision)
                 or int(plan.channel_id) != int(channel.id)
-                or not _plain_runtime(plan)
+                or _supported_runtime_options(plan) is None
                 or not _nonrepeat(plan)
                 or not _legacy_intent_matches(
                     task=task,
