@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -53,6 +54,14 @@ class CanonicalPublicationDeliveryExpiredLeaseRef:
 
 
 @dataclass(frozen=True, slots=True)
+class CanonicalPublicationDeliveryClaimRequirements:
+    """Optional executor capability restrictions applied inside the claim transaction."""
+
+    require_empty_runtime_options: bool = False
+    require_nonrepeat: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class CanonicalPublicationDeliveryClaim:
     plan: CanonicalPublicationDeliveryPlan
     lease: CanonicalPublicationDeliveryLeaseHandle
@@ -64,9 +73,9 @@ class CanonicalPublicationDeliveryClaimService:
 
     The pure delivery planner remains the eligibility proof. Claim acquires locks for
     every mutable row used by that proof, re-runs the planner under those locks, then
-    atomically transitions Publication ``queued -> sending``, creates unfinished
-    PublicationAttempt #1 and inserts the typed delivery lease. Any conflict rolls the
-    whole transaction back.
+    optionally applies executor capability restrictions before atomically transitioning
+    Publication ``queued -> sending``, creating unfinished PublicationAttempt #1 and
+    inserting the typed delivery lease. Any conflict rolls the whole transaction back.
 
     Normal claim never deletes/reuses an expired lease. An expired delivery lease may
     represent an ambiguous Telegram side effect and is therefore a recovery barrier.
@@ -76,7 +85,10 @@ class CanonicalPublicationDeliveryClaimService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def _lock_delivery_rows(self, publication_id: int) -> Publication | None:
+    async def _lock_delivery_rows(
+        self,
+        publication_id: int,
+    ) -> tuple[Publication, ScheduleEntry] | None:
         publication = (
             await self.session.execute(
                 select(Publication)
@@ -129,7 +141,31 @@ class CanonicalPublicationDeliveryClaimService:
         ).scalar_one_or_none()
         if channel is None:
             return None
-        return publication
+        return publication, schedule
+
+    @staticmethod
+    def _meets_requirements(
+        plan: CanonicalPublicationDeliveryPlan,
+        schedule: ScheduleEntry,
+        requirements: CanonicalPublicationDeliveryClaimRequirements | None,
+    ) -> bool:
+        if requirements is None:
+            return True
+        if requirements.require_empty_runtime_options:
+            try:
+                if plan.runtime_options():
+                    return False
+            except (TypeError, ValueError):
+                return False
+        if requirements.require_nonrepeat:
+            raw_rule = schedule.repeat_rule
+            if raw_rule is not None and not isinstance(raw_rule, Mapping):
+                return False
+            rule = dict(raw_rule or {})
+            enabled = rule.get("enabled")
+            if enabled is not None and enabled is not False:
+                return False
+        return True
 
     async def claim(
         self,
@@ -138,6 +174,7 @@ class CanonicalPublicationDeliveryClaimService:
         holder: str,
         ttl_seconds: int = DEFAULT_PUBLICATION_DELIVERY_LEASE_SECONDS,
         now: datetime | None = None,
+        requirements: CanonicalPublicationDeliveryClaimRequirements | None = None,
     ) -> CanonicalPublicationDeliveryClaim | None:
         try:
             safe_publication_id = int(publication_id)
@@ -152,10 +189,11 @@ class CanonicalPublicationDeliveryClaimService:
         holder_value = str(holder).strip()[:64] or "publication-delivery"
 
         try:
-            publication = await self._lock_delivery_rows(safe_publication_id)
-            if publication is None:
+            locked = await self._lock_delivery_rows(safe_publication_id)
+            if locked is None:
                 await self.session.rollback()
                 return None
+            publication, schedule = locked
 
             plan = await CanonicalPublicationDeliveryPlanner(self.session).plan(
                 safe_publication_id,
@@ -169,6 +207,7 @@ class CanonicalPublicationDeliveryClaimService:
                 or int(plan.content_item_id) != int(publication.content_item_id)
                 or int(plan.content_revision) != int(publication.content_revision)
                 or int(plan.channel_id) != int(publication.channel_id)
+                or not self._meets_requirements(plan, schedule, requirements)
             ):
                 await self.session.rollback()
                 return None
