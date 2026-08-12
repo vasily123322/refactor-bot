@@ -40,6 +40,8 @@ def test_dispatcher_starts_recovery_before_primary_and_passes_dependency_facts(
             assert kwargs["session_factory"] is dispatcher.AsyncSessionLocal
             assert kwargs["time_autodelete_executor_available"] is True
             assert kwargs["views_autodelete_executor_available"] is True
+            assert kwargs["repeat_continuation_available"] is True
+            assert kwargs["repeat_owner_policy_enforced"] is True
             return primary
 
         async def unexpected_stop(**kwargs):
@@ -52,7 +54,7 @@ def test_dispatcher_starts_recovery_before_primary_and_passes_dependency_facts(
         )
         monkeypatch.setattr(
             dispatcher,
-            "start_canonical_publication_delivery_primary_if_enabled",
+            "start_canonical_publication_safe_repeat_primary_if_enabled",
             start_primary,
         )
         monkeypatch.setattr(
@@ -65,6 +67,7 @@ def test_dispatcher_starts_recovery_before_primary_and_passes_dependency_facts(
             config,
             time_autodelete_executor_available=True,
             views_autodelete_executor_available=True,
+            repeat_continuation_executor_available=True,
         )
 
         assert result == (primary, recovery)
@@ -73,7 +76,9 @@ def test_dispatcher_starts_recovery_before_primary_and_passes_dependency_facts(
     asyncio.run(run())
 
 
-def test_dispatcher_primary_start_failure_stops_started_recovery(monkeypatch) -> None:
+def test_dispatcher_repeat_dependency_defaults_false_and_failure_stops_recovery(
+    monkeypatch,
+) -> None:
     async def run() -> None:
         from app.bot import dispatcher
 
@@ -87,6 +92,8 @@ def test_dispatcher_primary_start_failure_stops_started_recovery(monkeypatch) ->
             assert kwargs["recovery_worker"] is recovery
             assert kwargs["time_autodelete_executor_available"] is False
             assert kwargs["views_autodelete_executor_available"] is False
+            assert kwargs["repeat_continuation_available"] is False
+            assert kwargs["repeat_owner_policy_enforced"] is True
             raise RuntimeError("primary startup failed")
 
         async def stop_workers(**kwargs):
@@ -99,7 +106,7 @@ def test_dispatcher_primary_start_failure_stops_started_recovery(monkeypatch) ->
         )
         monkeypatch.setattr(
             dispatcher,
-            "start_canonical_publication_delivery_primary_if_enabled",
+            "start_canonical_publication_safe_repeat_primary_if_enabled",
             fail_primary,
         )
         monkeypatch.setattr(
