@@ -199,6 +199,7 @@ class SchedulerTaskLeaseService:
             .where(
                 SchedulerTaskLease.task_id == int(handle.task_id),
                 SchedulerTaskLease.lease_token == str(handle.lease_token),
+                SchedulerTaskLease.expires_at > current,
             )
             .values(expires_at=expires_at)
             .execution_options(synchronize_session=False)
