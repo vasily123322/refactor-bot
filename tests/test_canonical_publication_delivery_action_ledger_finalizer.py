@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+import app.domain  # noqa: F401 register complete ORM metadata
+from app.core.db import Base
+from app.domain.content import PostDocument
+from app.domain.models import Channel, Client, PostTask
+from app.domain.publication_delivery import (
+    PublicationDeliveryAction,
+    PublicationDeliveryLease,
+)
+from app.domain.publishing.models import Publication
+from app.repositories.content import ContentRepo
+from app.services.canonical_publication_delivery_action_ledger import (
+    CanonicalPublicationDeliveryActionLedger,
+)
+from app.services.canonical_publication_delivery_capability_claim import (
+    CanonicalPublicationDeliveryCapabilityClaimService,
+)
+from app.services.canonical_publication_delivery_finalizer import (
+    CanonicalPublicationDeliveryFinalizer,
+)
+from app.services.publication_bridge import LegacyPublicationBridge
+
+
+def test_reserved_action_survives_primary_finalizer_and_delivery_lease_delete(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'action-ledger-finalizer.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            now = datetime(2026, 8, 11, 15, 30, tzinfo=timezone.utc)
+
+            async with Session() as session:
+                owner = Client(
+                    tg_user_id=187001,
+                    username="action-ledger-finalizer",
+                    full_name="Action Ledger Finalizer",
+                    ui_settings={},
+                )
+                session.add(owner)
+                await session.flush()
+                channel = Channel(
+                    tg_chat_id=-100187001,
+                    title="Action Ledger Finalizer",
+                    owner_id=int(owner.id),
+                    is_active=True,
+                )
+                session.add(channel)
+                await session.commit()
+
+                item = await ContentRepo(session).create(
+                    channel_id=int(channel.id),
+                    document=PostDocument(
+                        blocks=[
+                            {
+                                "id": "b1",
+                                "type": "text",
+                                "text": "Action reservation survives finalizer",
+                            }
+                        ]
+                    ),
+                    created_by_tg_user_id=int(owner.tg_user_id),
+                )
+                publication = await LegacyPublicationBridge(session).queue(
+                    content_item_id=int(item.id),
+                    scheduled_at=now - timedelta(minutes=1),
+                    runtime_options={},
+                )
+                task = await session.get(
+                    PostTask,
+                    int(publication.legacy_post_task_id or 0),
+                )
+                assert task is not None
+                publication.legacy_post_task_id = None
+                await session.delete(task)
+                await session.commit()
+
+                claim = await CanonicalPublicationDeliveryCapabilityClaimService(
+                    session
+                ).claim_supported(
+                    publication_id=int(publication.id),
+                    holder="action-ledger-finalizer-test",
+                    ttl_seconds=180,
+                    now=now,
+                )
+                assert claim is not None
+                publication_id = int(publication.id)
+
+            fingerprint = hashlib.sha256(b"pin-finalizer-proof").hexdigest()
+            async with Session() as session:
+                reserved = await CanonicalPublicationDeliveryActionLedger(session).reserve(
+                    claim.lease,
+                    action_key="pin:2301",
+                    action_type="pin",
+                    intent_fingerprint=fingerprint,
+                    now=now + timedelta(seconds=1),
+                )
+                assert reserved.outcome == "reserved"
+
+            async with Session() as session:
+                finalized = await CanonicalPublicationDeliveryFinalizer(
+                    session
+                ).complete_success(
+                    claim.lease,
+                    plan=claim.plan,
+                    message_ids=[2301],
+                    result_link="https://t.me/c/187001/2301",
+                    finished_at=now + timedelta(seconds=2),
+                )
+                assert finalized.outcome == "published"
+
+            async with Session() as session:
+                publication = await session.get(Publication, publication_id)
+                assert publication is not None and publication.status == "published"
+                assert await session.get(PublicationDeliveryLease, publication_id) is None
+                action = await session.get(
+                    PublicationDeliveryAction,
+                    {"publication_id": publication_id, "action_key": "pin:2301"},
+                )
+                assert action is not None
+                assert action.state == "reserved"
+                assert action.intent_fingerprint == fingerprint
+                assert action.reserved_by_lease_token == claim.lease.lease_token
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
