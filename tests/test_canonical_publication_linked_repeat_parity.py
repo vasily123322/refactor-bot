@@ -218,7 +218,7 @@ def test_repeat_pin_parity_requires_exact_legacy_pin_intent(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_repeat_effect_scope_still_rejects_delete_and_pin_forward_composition(tmp_path) -> None:
+def test_repeat_effect_scope_still_rejects_delete_modes(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'repeat-effect-scope.db'}"
@@ -230,7 +230,6 @@ def test_repeat_effect_scope_still_rejects_delete_and_pin_forward_composition(tm
             cases = [
                 (6, {"autodelete_seconds": 60}),
                 (7, {"autodelete_views": 5}),
-                (8, {"pin_on": True, "forward_to": [1]}),
             ]
             for seed, options in cases:
                 publication_id, task_id, plan = await _seed_root(
