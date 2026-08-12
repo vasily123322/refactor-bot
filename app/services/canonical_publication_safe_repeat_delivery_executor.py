@@ -21,6 +21,7 @@ class CanonicalPublicationSafeRepeatDeliveryExecutor(
         *args,
         allow_repeat_time: bool = False,
         allow_repeat_time_pin: bool = False,
+        allow_repeat_time_forward: bool = False,
         allow_repeat_views: bool = False,
         allow_repeat_views_pin: bool = False,
         allow_repeat_views_forward: bool = False,
@@ -30,6 +31,7 @@ class CanonicalPublicationSafeRepeatDeliveryExecutor(
         super().__init__(*args, **kwargs)
         self.allow_repeat_time = bool(allow_repeat_time)
         self.allow_repeat_time_pin = bool(allow_repeat_time_pin)
+        self.allow_repeat_time_forward = bool(allow_repeat_time_forward)
         self.allow_repeat_views = bool(allow_repeat_views)
         self.allow_repeat_views_pin = bool(allow_repeat_views_pin)
         self.allow_repeat_views_forward = bool(allow_repeat_views_forward)
@@ -54,6 +56,7 @@ class CanonicalPublicationSafeRepeatDeliveryExecutor(
                 allow_repeat=self.allow_repeat,
                 allow_repeat_time=self.allow_repeat_time,
                 allow_repeat_time_pin=self.allow_repeat_time_pin,
+                allow_repeat_time_forward=self.allow_repeat_time_forward,
                 allow_repeat_views=self.allow_repeat_views,
                 allow_repeat_views_pin=self.allow_repeat_views_pin,
                 allow_repeat_views_forward=self.allow_repeat_views_forward,

@@ -27,6 +27,7 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
     repeat_continuation_available: bool = False,
     repeat_time_executor_available: bool = False,
     repeat_time_pin_executor_available: bool = False,
+    repeat_time_forward_executor_available: bool = False,
     repeat_views_executor_available: bool = False,
     repeat_views_pin_executor_available: bool = False,
     repeat_views_forward_executor_available: bool = False,
@@ -35,10 +36,9 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
 ) -> CanonicalPublicationDeliveryWorker | None:
     """Start repeat-aware primary only from concrete successfully started dependencies.
 
-    Recovery remains mandatory. Repeat+time requires a dedicated started fact in addition
-    to generic time deletion and continuation. Repeat+time+pin additionally requires its
-    own independently started destructive dependency. Views-family compositions retain
-    their own independent started facts and are never inferred from configuration.
+    Recovery remains mandatory. Plain repeat+time requires generic time plus continuation
+    and its own started fact. Time+pin and time+forward are independent narrower slices,
+    each requiring a separately started destructive dependency over plain repeat+time.
     """
 
     if not config.enabled:
@@ -56,6 +56,9 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
     )
     repeat_time_pin_available = bool(
         repeat_time_pin_executor_available and repeat_time_available
+    )
+    repeat_time_forward_available = bool(
+        repeat_time_forward_executor_available and repeat_time_available
     )
     views_available = bool(views_autodelete_executor_available)
     repeat_views_available = bool(
@@ -83,6 +86,7 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
         allow_repeat=repeat_available,
         allow_repeat_time=repeat_time_available,
         allow_repeat_time_pin=repeat_time_pin_available,
+        allow_repeat_time_forward=repeat_time_forward_available,
         allow_repeat_views=repeat_views_available,
         allow_repeat_views_pin=repeat_views_pin_available,
         allow_repeat_views_forward=repeat_views_forward_available,
