@@ -18,6 +18,7 @@ _ESTABLISHED_REPEAT_RUNTIME_KEYS = frozenset({"silent", "pin_on", "forward_to"})
 _REPEAT_VIEWS_RUNTIME_KEYS = frozenset(
     {"silent", "autodelete_views", "autodelete_report"}
 )
+_REPEAT_VIEWS_PIN_RUNTIME_KEYS = _REPEAT_VIEWS_RUNTIME_KEYS | frozenset({"pin_on"})
 _REPEAT_RUNTIME_KEYS = _ESTABLISHED_REPEAT_RUNTIME_KEYS | _REPEAT_VIEWS_RUNTIME_KEYS
 
 
@@ -50,6 +51,7 @@ def _strict_repeat_runtime_options(
     plan,
     *,
     allow_repeat_views: bool = False,
+    allow_repeat_views_pin: bool = False,
 ) -> dict[str, Any] | None:
     try:
         options = plan.runtime_options()
@@ -63,22 +65,24 @@ def _strict_repeat_runtime_options(
         return None
 
     if capability.views_autodelete_requested:
-        # Repeat+views is a dedicated destructive slice. Do not interpret neutral
-        # pin/forward keys as proof of their composition: only plain/silent views
-        # intent (+ optional report) belongs to this stage.
+        # Keep the stronger #301 key-shape barrier. A views profile may contain pin_on
+        # only after the narrower composition fact is explicit; forward/time stay closed.
+        allowed_views_keys = (
+            _REPEAT_VIEWS_PIN_RUNTIME_KEYS
+            if allow_repeat_views_pin
+            else _REPEAT_VIEWS_RUNTIME_KEYS
+        )
         if (
             not allow_repeat_views
-            or not set(options).issubset(_REPEAT_VIEWS_RUNTIME_KEYS)
+            or not set(options).issubset(allowed_views_keys)
             or "autodelete_views" not in options
             or capability.views_autodelete_threshold is None
-            or capability.pin_on
             or capability.forward_to
             or capability.time_autodelete_requested
+            or (capability.pin_on and not allow_repeat_views_pin)
         ):
             return None
     else:
-        # Preserve the already-proven silent/pin/forward surface exactly. Any views
-        # key that failed to produce a positive views capability stays fail-closed.
         if not set(options).issubset(_ESTABLISHED_REPEAT_RUNTIME_KEYS):
             return None
         if "forward_to" in options and not capability.forward_to:
@@ -92,24 +96,16 @@ class CanonicalPublicationRepeatCapabilityClaimService(
 ):
     """Keep repeat authority limited to explicitly proven runtime slices.
 
-    `allow_repeat=True` never removes the nonrepeat barrier for arbitrary understood side
-    effects. The established profile admits fixed-delay repeat with optional silent/pin/
-    ordered-forward effects that already have dedicated parity/replay proof.
+    Established repeat and plain repeat+views preserve their existing independent gates.
+    Views+pin is narrower again: it requires the ordinary repeat fact, concrete views
+    executor availability, the dedicated repeat+views fact, and a separate default-off
+    repeat+views+pin composition fact. Neutral pin keys are not admitted into the views
+    slice unless that narrower fact is present.
 
-    Plain/silent views autodelete is admitted only when three independent facts are true
-    at the claim boundary: repeat continuation authority, concrete views-executor
-    availability, and the dedicated `allow_repeat_views` composition fact. The latter is
-    default-off and is never inferred from the first two facts.
-
-    This stage deliberately excludes every views+pin/forward composition, including
-    neutral pin/forward keys, plus all time-autodelete, dual-delete, unknown runtime and
-    unknown repeat semantics. The claim only stages occurrence-local indexed views intent
-    atomically with primary authority. Destructive execution remains post-publication and
-    still requires the locked repeat-views lifecycle proof plus reserve-before-DELETE.
-
-    Non-repeat rows retain the complete existing capability surface. The proof is taken
-    while the same mutable delivery rows are locked; the parent service then re-locks and
-    re-proves before authority commit, so drift cannot widen the profile between checks.
+    Views+forward, every time-autodelete key, dual-delete, unknown runtime keys and unknown
+    repeat semantics remain fail-closed. This phase only stages occurrence-local indexed
+    views intent with primary authority; post-publication DELETE still requires the locked
+    lifecycle and reserve-before-provider destructive proof.
     """
 
     async def claim_supported(
@@ -123,6 +119,7 @@ class CanonicalPublicationRepeatCapabilityClaimService(
         allow_views_autodelete: bool = False,
         allow_repeat: bool = False,
         allow_repeat_views: bool = False,
+        allow_repeat_views_pin: bool = False,
     ) -> CanonicalPublicationDeliveryClaim | None:
         try:
             safe_publication_id = int(publication_id)
@@ -153,11 +150,15 @@ class CanonicalPublicationRepeatCapabilityClaimService(
                 if not _strict_fixed_delay_repeat(plan):
                     await self.session.rollback()
                     return None
+                repeat_views_enabled = bool(
+                    allow_repeat_views and allow_views_autodelete
+                )
                 if (
                     _strict_repeat_runtime_options(
                         plan,
-                        allow_repeat_views=bool(
-                            allow_repeat_views and allow_views_autodelete
+                        allow_repeat_views=repeat_views_enabled,
+                        allow_repeat_views_pin=bool(
+                            allow_repeat_views_pin and repeat_views_enabled
                         ),
                     )
                     is None
