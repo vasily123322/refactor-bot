@@ -27,6 +27,7 @@ def build_canonical_publication_safe_repeat_runtime(
     allow_time_autodelete: bool = False,
     allow_views_autodelete: bool = False,
     allow_repeat: bool = False,
+    allow_repeat_time: bool = False,
     allow_repeat_views: bool = False,
     allow_repeat_views_pin: bool = False,
     allow_repeat_views_forward: bool = False,
@@ -35,9 +36,9 @@ def build_canonical_publication_safe_repeat_runtime(
 ) -> CanonicalPublicationDeliveryRuntime:
     """Compose strict repeat delivery only from concrete dependency facts.
 
-    Views+pin and views+forward are independent narrower slices over repeat+views. Their
-    combined profile has a fourth default-off fact and is enabled only when both narrower
-    slices plus the combined proof are simultaneously present.
+    Repeat+time is a distinct composition and requires repeat authority, the ordinary
+    time destructive dependency, its dedicated started dependency, and owner policy.
+    Views+pin and views+forward remain independent narrower slices over repeat+views.
     """
 
     runtime = build_canonical_publication_delivery_runtime(
@@ -59,6 +60,11 @@ def build_canonical_publication_safe_repeat_runtime(
         repeat_owner_policy_enforced=owner_policy_enforced,
     )
     repeat_enabled = bool(allow_repeat and owner_policy_enforced)
+    repeat_time_enabled = bool(
+        allow_repeat_time
+        and repeat_enabled
+        and allow_time_autodelete
+    )
     repeat_views_enabled = bool(
         allow_repeat_views and repeat_enabled and allow_views_autodelete
     )
@@ -84,6 +90,7 @@ def build_canonical_publication_safe_repeat_runtime(
         allow_time_autodelete=allow_time_autodelete,
         allow_views_autodelete=allow_views_autodelete,
         allow_repeat=repeat_enabled,
+        allow_repeat_time=repeat_time_enabled,
         allow_repeat_views=repeat_views_enabled,
         allow_repeat_views_pin=repeat_views_pin_enabled,
         allow_repeat_views_forward=repeat_views_forward_enabled,
