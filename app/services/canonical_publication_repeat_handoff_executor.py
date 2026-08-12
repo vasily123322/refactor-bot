@@ -39,8 +39,9 @@ class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHand
     """Route linked fixed-delay repeat through its dedicated atomic authority seam.
 
     Linked repeat must satisfy parity plus the same strict capability facts as canonical-
-    only delivery. Repeat, views, repeat+views and views+pin facts are forwarded from the
-    concrete executor independently; no config fallback or implicit composition exists.
+    only delivery. Repeat, views, repeat+views, views+pin and views+ordered-forward facts
+    are forwarded from the concrete executor independently; no config fallback or implicit
+    composition exists.
     """
 
     async def execute(self, publication_id: int):
@@ -82,6 +83,9 @@ class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHand
         allow_repeat_views_pin = bool(
             getattr(self.executor, "allow_repeat_views_pin", False)
         )
+        allow_repeat_views_forward = bool(
+            getattr(self.executor, "allow_repeat_views_forward", False)
+        )
         async with self.session_factory() as session:
             transfer = await CanonicalPublicationLinkedRepeatAtomicHandoffService(
                 session
@@ -93,6 +97,7 @@ class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHand
                 allow_views_autodelete=allow_views_autodelete,
                 allow_repeat_views=allow_repeat_views,
                 allow_repeat_views_pin=allow_repeat_views_pin,
+                allow_repeat_views_forward=allow_repeat_views_forward,
             )
 
         if transfer.outcome == "claim_unavailable":
