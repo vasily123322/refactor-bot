@@ -53,12 +53,13 @@ async def start_canonical_publication_delivery_primary_if_enabled(
             "canonical publication delivery requires a successfully started recovery worker"
         )
 
+    time_available = bool(time_autodelete_executor_available)
     runtime = build_canonical_publication_delivery_runtime(
         bot=bot,
         session_factory=session_factory,
         lease_seconds=config.lease_ttl_seconds,
         heartbeat_interval_seconds=float(config.heartbeat_interval_seconds),
-        allow_time_autodelete=bool(time_autodelete_executor_available),
+        allow_time_autodelete=time_available,
         allow_views_autodelete=bool(views_autodelete_executor_available),
         allow_repeat=bool(repeat_continuation_available),
     )
@@ -83,7 +84,10 @@ async def start_canonical_publication_delivery_primary_if_enabled(
                 "Boot: failed to clean up canonical publication delivery worker after startup failure"
             )
         raise
-    set_canonical_publication_delivery_primary_worker(worker)
+    set_canonical_publication_delivery_primary_worker(
+        worker,
+        time_autodelete_available=time_available,
+    )
     return worker
 
 
