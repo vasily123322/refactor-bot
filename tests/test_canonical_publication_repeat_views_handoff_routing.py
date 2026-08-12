@@ -61,6 +61,7 @@ class _Executor:
     allow_time_autodelete = False
     allow_views_autodelete = True
     allow_repeat_views = True
+    allow_repeat_views_pin = True
 
     async def execute(self, publication_id: int):
         raise AssertionError("linked repeat must not route to direct execute")
@@ -108,6 +109,7 @@ def test_linked_repeat_router_forwards_exact_repeat_views_facts(monkeypatch, tmp
                 "allow_repeat": True,
                 "allow_views_autodelete": True,
                 "allow_repeat_views": True,
+                "allow_repeat_views_pin": True,
             }
         finally:
             await engine.dispose()
