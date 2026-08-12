@@ -25,6 +25,7 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
     time_autodelete_executor_available: bool = False,
     views_autodelete_executor_available: bool = False,
     repeat_continuation_available: bool = False,
+    repeat_time_executor_available: bool = False,
     repeat_views_executor_available: bool = False,
     repeat_views_pin_executor_available: bool = False,
     repeat_views_forward_executor_available: bool = False,
@@ -33,9 +34,9 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
 ) -> CanonicalPublicationDeliveryWorker | None:
     """Start repeat-aware primary only from concrete successfully started dependencies.
 
-    Recovery remains mandatory. Views+pin and views+forward retain independent started
-    facts. Their combined profile additionally requires one exact combined started fact;
-    it is never inferred merely because both narrower dependencies are available.
+    Recovery remains mandatory. Repeat+time requires a dedicated started fact in addition
+    to generic time deletion and continuation. Views-family compositions retain their own
+    independent started facts and are never inferred from configuration.
     """
 
     if not config.enabled:
@@ -47,6 +48,10 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
         )
 
     repeat_available = bool(repeat_continuation_available)
+    time_available = bool(time_autodelete_executor_available)
+    repeat_time_available = bool(
+        repeat_time_executor_available and repeat_available and time_available
+    )
     views_available = bool(views_autodelete_executor_available)
     repeat_views_available = bool(
         repeat_views_executor_available and repeat_available and views_available
@@ -68,9 +73,10 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
         session_factory=session_factory,
         lease_seconds=config.lease_ttl_seconds,
         heartbeat_interval_seconds=float(config.heartbeat_interval_seconds),
-        allow_time_autodelete=bool(time_autodelete_executor_available),
+        allow_time_autodelete=time_available,
         allow_views_autodelete=views_available,
         allow_repeat=repeat_available,
+        allow_repeat_time=repeat_time_available,
         allow_repeat_views=repeat_views_available,
         allow_repeat_views_pin=repeat_views_pin_available,
         allow_repeat_views_forward=repeat_views_forward_available,
