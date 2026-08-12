@@ -33,6 +33,7 @@ class PublicationAutodeleteWorkerTick:
     not_due: int = 0
     ineligible: int = 0
     retry: int = 0
+    ambiguous: int = 0
     conflicts: int = 0
     failures: int = 0
     release_failures: int = 0
@@ -43,10 +44,14 @@ class PublicationAutodeleteWorker:
     """Bounded lease-backed worker for canonical-only publication deletion.
 
     Candidate selection, lease ownership, destructive operation and lease release use
-    separate sessions. A failed/rolled-back provider operation therefore cannot poison
-    lease cleanup. Cancellation deliberately leaves the lease until expiry, matching a
-    process crash and preventing immediate concurrent work while the provider outcome
-    may still be ambiguous.
+    separate sessions. The operation receives the exact acquired lease handle; durable
+    per-message action reservations then remain the no-replay authority even after the
+    publication lease is released or expires. Cancellation leaves the publication lease
+    until expiry while the action ledger preserves any already-reserved ambiguity.
+
+    ``ambiguous`` is intentionally separate from ``retry``. It represents a provider
+    boundary that may already have produced an irreversible side effect and therefore
+    must never be interpreted as authorization for another Telegram delete attempt.
     """
 
     def __init__(
@@ -110,6 +115,7 @@ class PublicationAutodeleteWorker:
         not_due = 0
         ineligible = 0
         retry = 0
+        ambiguous = 0
         conflicts = 0
         failures = 0
         release_failures = 0
@@ -140,7 +146,10 @@ class PublicationAutodeleteWorker:
                         operation_session,
                         provider=self.provider,
                         allow_report=True,
-                    ).delete_if_due(int(publication_id))
+                    ).delete_if_due(
+                        int(publication_id),
+                        lease=handle,
+                    )
                 if result.outcome == "deleted":
                     deleted += 1
                 elif result.outcome == "already_deleted":
@@ -149,6 +158,8 @@ class PublicationAutodeleteWorker:
                     not_due += 1
                 elif result.outcome == "ineligible":
                     ineligible += 1
+                elif result.outcome == "ambiguous":
+                    ambiguous += 1
                 else:
                     retry += 1
             except asyncio.CancelledError:
@@ -190,6 +201,7 @@ class PublicationAutodeleteWorker:
             not_due=not_due,
             ineligible=ineligible,
             retry=retry,
+            ambiguous=ambiguous,
             conflicts=conflicts,
             failures=failures,
             release_failures=release_failures,
@@ -201,14 +213,15 @@ class PublicationAutodeleteWorker:
         if (
             tick.deleted
             or tick.retry
+            or tick.ambiguous
             or tick.conflicts
             or tick.failures
             or tick.release_failures
         ):
             logger.info(
                 "Publication autodelete: selected={} leased={} busy={} deleted={} "
-                "already_deleted={} not_due={} ineligible={} retry={} conflicts={} "
-                "failures={} release_failures={} cursor={}",
+                "already_deleted={} not_due={} ineligible={} retry={} ambiguous={} "
+                "conflicts={} failures={} release_failures={} cursor={}",
                 tick.selected,
                 tick.leased,
                 tick.busy,
@@ -217,6 +230,7 @@ class PublicationAutodeleteWorker:
                 tick.not_due,
                 tick.ineligible,
                 tick.retry,
+                tick.ambiguous,
                 tick.conflicts,
                 tick.failures,
                 tick.release_failures,

@@ -38,9 +38,11 @@ class PublicationAutodeleteLeaseService:
     linked rows because their evaluator revalidates the current PostTask intent before
     every destructive phase.
 
-    Expired leases are reclaimable because the protected provider operation is
-    delete-only and idempotent at this boundary: a retry sees already-removed Telegram
-    messages as terminal-unavailable and can safely finish canonical synchronization.
+    An expired publication-level lease may be reclaimed, but it no longer implies that
+    Telegram deletion is safe to replay. Time-autodelete provider authority is guarded
+    independently by the per-message one-way action ledger: a prior ``reserved`` or
+    ``unknown`` action survives lease expiry and blocks another provider invocation.
+    Normal renew is live-only so a stale worker cannot revive expired authority.
     """
 
     def __init__(self, session: AsyncSession):
@@ -127,6 +129,7 @@ class PublicationAutodeleteLeaseService:
             .where(
                 PublicationAutodeleteLease.publication_id == int(handle.publication_id),
                 PublicationAutodeleteLease.lease_token == str(handle.lease_token),
+                PublicationAutodeleteLease.expires_at > current,
             )
             .values(expires_at=expires_at)
             .execution_options(synchronize_session=False)
