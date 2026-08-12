@@ -9,6 +9,9 @@ from app.core.canonical_publication_delivery_primary_config import (
     CanonicalPublicationDeliveryPrimarySettings,
 )
 from app.core.db import AsyncSessionLocal
+from app.services.canonical_publication_delivery_authority import (
+    set_canonical_publication_delivery_primary_started,
+)
 from app.services.canonical_publication_delivery_handoff_executor import (
     CanonicalPublicationDeliveryHandoffExecutor,
 )
@@ -89,6 +92,9 @@ async def stop_canonical_publication_delivery_workers(
     recovery_worker: _StoppableWorker | None,
 ) -> None:
     """Stop canonical delivery in dependency order: primary first, recovery last."""
+
+    if primary_worker is not None:
+        set_canonical_publication_delivery_primary_started(False)
 
     for name, worker in (
         ("canonical publication delivery", primary_worker),
