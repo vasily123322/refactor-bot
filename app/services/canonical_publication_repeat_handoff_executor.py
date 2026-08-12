@@ -38,16 +38,9 @@ def _repeat_enabled(schedule: ScheduleEntry | None) -> bool:
 class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHandoffExecutor):
     """Route linked fixed-delay repeat through its dedicated atomic authority seam.
 
-    Non-repeat behavior is inherited unchanged from the existing handoff executor. A
-    linked repeat occurrence is routed to `CanonicalPublicationLinkedRepeatAtomicHandoffService`
-    and must satisfy linked parity plus the same strict capability claim used by
-    canonical-only repeat delivery.
-
-    Repeat authority depends on the concrete executor's `allow_repeat` fact. Views
-    availability and repeat+views composition authority are forwarded independently; no
-    config fallback or implicit composition exists. Claim-unavailable outcomes reuse the
-    same durable-state classifier as the base atomic handoff path before deciding whether
-    retry is safe.
+    Linked repeat must satisfy parity plus the same strict capability facts as canonical-
+    only delivery. Repeat, views, repeat+views and views+pin facts are forwarded from the
+    concrete executor independently; no config fallback or implicit composition exists.
     """
 
     async def execute(self, publication_id: int):
@@ -86,6 +79,9 @@ class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHand
         allow_repeat_views = bool(
             getattr(self.executor, "allow_repeat_views", False)
         )
+        allow_repeat_views_pin = bool(
+            getattr(self.executor, "allow_repeat_views_pin", False)
+        )
         async with self.session_factory() as session:
             transfer = await CanonicalPublicationLinkedRepeatAtomicHandoffService(
                 session
@@ -96,6 +92,7 @@ class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHand
                 allow_repeat=allow_repeat,
                 allow_views_autodelete=allow_views_autodelete,
                 allow_repeat_views=allow_repeat_views,
+                allow_repeat_views_pin=allow_repeat_views_pin,
             )
 
         if transfer.outcome == "claim_unavailable":

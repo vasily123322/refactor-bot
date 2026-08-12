@@ -41,12 +41,12 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
     The legacy pending-task CAS, parity proof, transport retirement and canonical repeat
     claim share one AsyncSession. The first successful authority commit therefore cannot
     expose a transport-free queued occurrence: durable state is already canonical
-    `sending + Attempt #1 + lease`. Repeat claim is allowed only when the caller proves a
-    continuation worker is available to recover successor creation after terminal publish.
+    `sending + Attempt #1 + lease`.
 
-    Repeat+views additionally requires both a concrete views executor fact and the
-    dedicated repeat/views composition fact. If either is absent, strict claim rejection
-    rolls back the entire prepared legacy cutover, including indexed views intent.
+    Repeat+views requires concrete views availability plus its dedicated composition fact.
+    Views+pin requires one additional fact; parity success never substitutes for it. Any
+    strict-claim rejection rolls the prepared legacy cutover and indexed views intent back
+    atomically.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -75,6 +75,7 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
         allow_repeat: bool = False,
         allow_views_autodelete: bool = False,
         allow_repeat_views: bool = False,
+        allow_repeat_views_pin: bool = False,
     ) -> CanonicalPublicationAtomicHandoffClaimResult:
         try:
             safe_publication_id = int(publication_id)
@@ -297,6 +298,7 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
                 allow_repeat=True,
                 allow_views_autodelete=bool(allow_views_autodelete),
                 allow_repeat_views=bool(allow_repeat_views),
+                allow_repeat_views_pin=bool(allow_repeat_views_pin),
             )
             if claim is None:
                 # Pre-commit claim rejection rolls back every cutover mutation above.

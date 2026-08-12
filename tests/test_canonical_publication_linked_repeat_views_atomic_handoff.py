@@ -68,6 +68,40 @@ async def _seed_linked_repeat_views(
         return int(publication.id), int(publication.legacy_post_task_id)
 
 
+async def _assert_rolled_back(Session, publication_id: int, task_id: int) -> None:
+    async with Session() as session:
+        publication = await session.get(Publication, publication_id)
+        task = await session.get(PostTask, task_id)
+        state = await session.get(PublicationAutodeleteViewState, publication_id)
+        lease = await session.get(PublicationDeliveryLease, publication_id)
+        assert publication is not None
+        assert publication.status == "queued"
+        assert int(publication.attempt_count or 0) == 0
+        assert publication.legacy_post_task_id == task_id
+        assert CUTOVER_META_KEY not in dict(publication.meta or {})
+        assert task is not None and task.status == "pending"
+        assert state is None
+        assert lease is None
+
+
+async def _assert_claimed(Session, publication_id: int, task_id: int, threshold: int) -> None:
+    async with Session() as session:
+        publication = await session.get(Publication, publication_id)
+        task = await session.get(PostTask, task_id)
+        state = await session.get(PublicationAutodeleteViewState, publication_id)
+        lease = await session.get(PublicationDeliveryLease, publication_id)
+        assert publication is not None
+        assert publication.status == "sending"
+        assert int(publication.attempt_count or 0) == 1
+        assert publication.legacy_post_task_id is None
+        cutover = dict(publication.meta or {}).get(CUTOVER_META_KEY)
+        assert isinstance(cutover, dict) and cutover.get("retired") is True
+        assert task is None
+        assert state is not None and int(state.threshold) == threshold
+        assert state.last_views is None
+        assert lease is not None
+
+
 def test_linked_repeat_views_missing_composition_fact_rolls_back_entire_cutover(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
@@ -82,7 +116,6 @@ def test_linked_repeat_views_missing_composition_fact_rolls_back_entire_cutover(
                 seed=1,
                 runtime_options={"silent": True, "autodelete_views": 17},
             )
-
             async with Session() as session:
                 result = await CanonicalPublicationLinkedRepeatAtomicHandoffService(
                     session
@@ -95,21 +128,7 @@ def test_linked_repeat_views_missing_composition_fact_rolls_back_entire_cutover(
                     allow_repeat_views=False,
                 )
                 assert result.outcome == "claim_unavailable"
-
-            async with Session() as session:
-                publication = await session.get(Publication, publication_id)
-                task = await session.get(PostTask, task_id)
-                state = await session.get(PublicationAutodeleteViewState, publication_id)
-                lease = await session.get(PublicationDeliveryLease, publication_id)
-                assert publication is not None
-                assert publication.status == "queued"
-                assert int(publication.attempt_count or 0) == 0
-                assert publication.legacy_post_task_id == task_id
-                assert CUTOVER_META_KEY not in dict(publication.meta or {})
-                assert task is not None
-                assert task.status == "pending"
-                assert state is None
-                assert lease is None
+            await _assert_rolled_back(Session, publication_id, task_id)
         finally:
             await engine.dispose()
 
@@ -134,7 +153,6 @@ def test_linked_repeat_views_all_facts_commit_cutover_and_indexed_intent_atomica
                     "autodelete_report": True,
                 },
             )
-
             async with Session() as session:
                 result = await CanonicalPublicationLinkedRepeatAtomicHandoffService(
                     session
@@ -148,34 +166,17 @@ def test_linked_repeat_views_all_facts_commit_cutover_and_indexed_intent_atomica
                 )
                 assert result.outcome == "claimed"
                 assert result.claim is not None
-
-            async with Session() as session:
-                publication = await session.get(Publication, publication_id)
-                task = await session.get(PostTask, task_id)
-                state = await session.get(PublicationAutodeleteViewState, publication_id)
-                lease = await session.get(PublicationDeliveryLease, publication_id)
-                assert publication is not None
-                assert publication.status == "sending"
-                assert int(publication.attempt_count or 0) == 1
-                assert publication.legacy_post_task_id is None
-                cutover = dict(publication.meta or {}).get(CUTOVER_META_KEY)
-                assert isinstance(cutover, dict)
-                assert cutover.get("retired") is True
-                assert task is None
-                assert state is not None
-                assert int(state.threshold) == 23
-                assert state.last_views is None
-                assert lease is not None
+            await _assert_claimed(Session, publication_id, task_id, 23)
         finally:
             await engine.dispose()
 
     asyncio.run(run())
 
 
-def test_linked_repeat_views_pin_composition_stays_parity_closed_with_all_facts(tmp_path) -> None:
+def test_linked_repeat_views_pin_missing_narrow_fact_rolls_back_after_parity(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'linked-repeat-views-pin-closed.db'}"
+            f"sqlite+aiosqlite:///{tmp_path / 'linked-repeat-views-pin-rollback.db'}"
         )
         try:
             async with engine.begin() as connection:
@@ -186,29 +187,58 @@ def test_linked_repeat_views_pin_composition_stays_parity_closed_with_all_facts(
                 seed=3,
                 runtime_options={"pin_on": True, "autodelete_views": 7},
             )
-
             async with Session() as session:
                 result = await CanonicalPublicationLinkedRepeatAtomicHandoffService(
                     session
                 ).claim_linked_repeat(
                     publication_id,
-                    holder="linked-repeat-views-pin-closed",
+                    holder="linked-repeat-views-pin-missing-fact",
                     ttl_seconds=180,
                     allow_repeat=True,
                     allow_views_autodelete=True,
                     allow_repeat_views=True,
                 )
-                assert result.outcome == "ineligible"
+                assert result.outcome == "claim_unavailable"
+            await _assert_rolled_back(Session, publication_id, task_id)
+        finally:
+            await engine.dispose()
 
+    asyncio.run(run())
+
+
+def test_linked_repeat_views_pin_exact_fact_commits_atomic_claim(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'linked-repeat-views-pin-claimed.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            publication_id, task_id = await _seed_linked_repeat_views(
+                Session,
+                seed=4,
+                runtime_options={
+                    "silent": True,
+                    "pin_on": True,
+                    "autodelete_views": 29,
+                },
+            )
             async with Session() as session:
-                publication = await session.get(Publication, publication_id)
-                task = await session.get(PostTask, task_id)
-                state = await session.get(PublicationAutodeleteViewState, publication_id)
-                assert publication is not None
-                assert publication.status == "queued"
-                assert publication.legacy_post_task_id == task_id
-                assert task is not None and task.status == "pending"
-                assert state is None
+                result = await CanonicalPublicationLinkedRepeatAtomicHandoffService(
+                    session
+                ).claim_linked_repeat(
+                    publication_id,
+                    holder="linked-repeat-views-pin-claimed",
+                    ttl_seconds=180,
+                    allow_repeat=True,
+                    allow_views_autodelete=True,
+                    allow_repeat_views=True,
+                    allow_repeat_views_pin=True,
+                )
+                assert result.outcome == "claimed"
+                assert result.claim is not None
+            await _assert_claimed(Session, publication_id, task_id, 29)
         finally:
             await engine.dispose()
 
