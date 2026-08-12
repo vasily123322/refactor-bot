@@ -27,15 +27,16 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
     repeat_continuation_available: bool = False,
     repeat_views_executor_available: bool = False,
     repeat_views_pin_executor_available: bool = False,
+    repeat_views_forward_executor_available: bool = False,
     repeat_owner_policy_enforced: bool = False,
 ) -> CanonicalPublicationDeliveryWorker | None:
     """Start repeat-aware primary only from concrete successfully started dependencies.
 
     Recovery remains mandatory. Repeat requires continuation plus owner-policy enforcement.
     Repeat+views additionally requires ordinary views availability and its explicit started
-    composition fact. Repeat+views+pin is narrower again: its exact started fact is accepted
-    only when the complete repeat+views dependency set is already present. Nothing here is
-    derived from config, pin support, or ordinary repeat/views booleans alone.
+    composition fact. Views+pin and views+ordered-forward are narrower independent started
+    facts; neither is derived from config, from the other composition, or from ordinary
+    repeat/views availability.
     """
 
     if not config.enabled:
@@ -54,6 +55,9 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
     repeat_views_pin_available = bool(
         repeat_views_pin_executor_available and repeat_views_available
     )
+    repeat_views_forward_available = bool(
+        repeat_views_forward_executor_available and repeat_views_available
+    )
 
     runtime = build_canonical_publication_safe_repeat_runtime(
         bot=bot,
@@ -65,6 +69,7 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
         allow_repeat=repeat_available,
         allow_repeat_views=repeat_views_available,
         allow_repeat_views_pin=repeat_views_pin_available,
+        allow_repeat_views_forward=repeat_views_forward_available,
         repeat_owner_policy_enforced=bool(repeat_owner_policy_enforced),
     )
     handoff_executor = CanonicalPublicationRepeatHandoffExecutor(
