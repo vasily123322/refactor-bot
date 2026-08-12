@@ -378,11 +378,15 @@ async def _forward_authority_intent_matches(
     if not parity.delete_requested:
         return True
     if parity.pin_on:
-        return bool(
-            parity.time_autodelete_requested
-            and allow_time_autodelete
-            and not parity.views_autodelete_requested
-        )
+        if parity.time_autodelete_requested:
+            return bool(
+                allow_time_autodelete and not parity.views_autodelete_requested
+            )
+        if parity.views_autodelete_requested:
+            return bool(
+                allow_views_autodelete and not parity.time_autodelete_requested
+            )
+        return False
     if parity.time_autodelete_requested:
         return bool(allow_time_autodelete and not parity.views_autodelete_requested)
     if parity.views_autodelete_requested:
@@ -410,11 +414,10 @@ class CanonicalPublicationLegacyTransportHandoffService:
     provider. Canonical delivery remains `queued` until a later exact canonical claim.
 
     Baseline capability is non-repeat empty/silent/pin parity. Callers may additionally
-    prove started canonical time or views autodelete dependencies, admit exact pin+time
-    or pin+views, admit forward/pin+forward, admit forward+time/forward+views, and admit
-    exact pin+forward+time only with the live time dependency. Pin+forward+views, report,
-    mixed delete modes and repeat remain closed here. Hidden legacy effects are never
-    inferred.
+    prove started canonical time or views autodelete dependencies and admit the proven
+    pin/forward/delete compositions only when the corresponding dependency is live.
+    Report, mixed delete modes and repeat remain closed here. Hidden legacy effects are
+    never inferred.
     """
 
     def __init__(self, session: AsyncSession) -> None:
