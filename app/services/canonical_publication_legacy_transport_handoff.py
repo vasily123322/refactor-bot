@@ -74,16 +74,6 @@ def _neutral_int(value: Any) -> bool:
     return value in (None, False, 0, "0", "")
 
 
-def _positive_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return parsed if parsed > 0 else None
-
-
 def _neutral_payload_effects(payload: Mapping[str, Any]) -> bool:
     if payload.get("repeat_on") not in (None, False, 0):
         return False
@@ -144,8 +134,6 @@ def _nonrepeat(plan: CanonicalPublicationDeliveryPlan) -> bool:
 
 def _supported_runtime_options(
     plan: CanonicalPublicationDeliveryPlan,
-    *,
-    allow_time_autodelete: bool = False,
 ) -> dict[str, Any] | None:
     try:
         options = plan.runtime_options()
@@ -153,18 +141,6 @@ def _supported_runtime_options(
         return None
     if not options:
         return {}
-
-    if "autodelete_seconds" in options:
-        if not allow_time_autodelete:
-            return None
-        if not set(options).issubset({"silent", "autodelete_seconds"}):
-            return None
-        if _positive_int(options.get("autodelete_seconds")) is None:
-            return None
-        if "silent" in options and type(options.get("silent")) is not bool:
-            return None
-        return options
-
     if not set(options).issubset({"silent", "pin_on"}):
         return None
     for key in ("silent", "pin_on"):
@@ -283,36 +259,11 @@ def _pin_intent_matches(
     return True
 
 
-def _time_intent_matches(
-    current: Mapping[str, Any],
-    runtime_options: Mapping[str, Any],
-) -> bool:
-    if "autodelete_seconds" in runtime_options:
-        intended = _positive_int(runtime_options.get("autodelete_seconds"))
-        current_seconds = _positive_int(current.get("autodelete_seconds"))
-        if intended is None or current_seconds != intended:
-            return False
-        if not _neutral_int(current.get("autodelete_effective_seconds")):
-            return False
-        if not _neutral_bool(current.get("autodelete_report")):
-            return False
-        return True
-
-    if not _neutral_int(current.get("autodelete_seconds")):
-        return False
-    if not _neutral_int(current.get("autodelete_effective_seconds")):
-        return False
-    if not _neutral_bool(current.get("autodelete_report")):
-        return False
-    return True
-
-
 def _legacy_intent_matches(
     *,
     task: PostTask,
     publication: Publication,
     plan: CanonicalPublicationDeliveryPlan,
-    allow_time_autodelete: bool = False,
 ) -> bool:
     if int(task.channel_id) != int(plan.channel_id):
         return False
@@ -321,10 +272,7 @@ def _legacy_intent_matches(
     if task.error not in (None, ""):
         return False
 
-    runtime_options = _supported_runtime_options(
-        plan,
-        allow_time_autodelete=allow_time_autodelete,
-    )
+    runtime_options = _supported_runtime_options(plan)
     current = _mapping(task.payload)
     expected = _expected_transport_payload(plan)
     if runtime_options is None or current is None or expected is None:
@@ -337,19 +285,60 @@ def _legacy_intent_matches(
         return False
     if not _pin_intent_matches(current, runtime_options):
         return False
-    if not _time_intent_matches(current, runtime_options):
-        return False
     for key in _IDENTITY_MARKERS:
         current.pop(key, None)
     current.pop("pin_on", None)
-    if "autodelete_seconds" in runtime_options:
-        current.pop("autodelete_seconds", None)
 
     current_clean = _strip_neutral_effect_fields(current)
     expected_clean = _strip_neutral_effect_fields(expected)
     if current_clean is None or expected_clean is None:
         return False
     return current_clean == expected_clean
+
+
+def _authority_intent_matches(
+    *,
+    task: PostTask,
+    publication: Publication,
+    plan: CanonicalPublicationDeliveryPlan,
+    allow_time_autodelete: bool,
+) -> bool:
+    if _legacy_intent_matches(
+        task=task,
+        publication=publication,
+        plan=plan,
+    ):
+        return True
+    if not allow_time_autodelete:
+        return False
+
+    # Reuse the exact atomic handoff capability lattice rather than defining another
+    # timer parser/matcher here. The local import avoids the module-init dependency cycle:
+    # the atomic service imports baseline helpers from this module at import time.
+    from app.services.canonical_publication_delivery_atomic_handoff_claim import (
+        _atomic_legacy_intent_matches,
+        _atomic_runtime_profile,
+    )
+
+    profile = _atomic_runtime_profile(
+        plan,
+        allow_time_autodelete=True,
+        allow_views_autodelete=False,
+    )
+    if (
+        profile is None
+        or not profile.timer_requested
+        or profile.pin_on
+        or profile.views_requested
+        or profile.autodelete_report
+    ):
+        return False
+    return _atomic_legacy_intent_matches(
+        task=task,
+        publication=publication,
+        plan=plan,
+        profile=profile,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,10 +360,10 @@ class CanonicalPublicationLegacyTransportHandoffService:
     handoff. This service never deletes or takes a scheduler lease and never calls a
     provider. Canonical delivery remains `queued` until a later exact canonical claim.
 
-    Baseline capability is non-repeat with empty runtime options plus explicit boolean
-    `silent` and `pin_on` intent. A caller may additionally prove a started canonical
-    time-autodelete dependency; only then an exact positive `autodelete_seconds` profile
-    without report/pin/forward/views is admitted. Hidden legacy effects are never inferred.
+    Baseline capability is non-repeat empty/silent/pin parity. A caller may additionally
+    prove a started canonical time-autodelete dependency; timer-only admission then reuses
+    the existing atomic handoff runtime profile and legacy-intent matcher. Pin+time, views,
+    report and forward remain closed here. Hidden legacy effects are never inferred.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -519,13 +508,8 @@ class CanonicalPublicationLegacyTransportHandoffService:
                 or int(plan.content_item_id) != int(item.id)
                 or int(plan.content_revision) != int(revision.revision)
                 or int(plan.channel_id) != int(channel.id)
-                or _supported_runtime_options(
-                    plan,
-                    allow_time_autodelete=allow_time_autodelete,
-                )
-                is None
                 or not _nonrepeat(plan)
-                or not _legacy_intent_matches(
+                or not _authority_intent_matches(
                     task=task,
                     publication=publication,
                     plan=plan,
