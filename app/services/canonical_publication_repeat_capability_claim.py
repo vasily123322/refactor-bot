@@ -29,6 +29,9 @@ _REPEAT_TIME_PIN_RUNTIME_KEYS = _REPEAT_TIME_QUEUE_RUNTIME_KEYS | frozenset({"pi
 _REPEAT_TIME_FORWARD_RUNTIME_KEYS = _REPEAT_TIME_QUEUE_RUNTIME_KEYS | frozenset(
     {"forward_to"}
 )
+_REPEAT_TIME_PIN_FORWARD_RUNTIME_KEYS = _REPEAT_TIME_QUEUE_RUNTIME_KEYS | frozenset(
+    {"pin_on", "forward_to"}
+)
 
 
 def _positive_int(value: Any) -> int | None:
@@ -62,6 +65,7 @@ def _strict_repeat_runtime_options(
     allow_repeat_time: bool = False,
     allow_repeat_time_pin: bool = False,
     allow_repeat_time_forward: bool = False,
+    allow_repeat_time_pin_forward: bool = False,
     allow_repeat_views: bool = False,
     allow_repeat_views_pin: bool = False,
     allow_repeat_views_forward: bool = False,
@@ -76,11 +80,8 @@ def _strict_repeat_runtime_options(
 
     has_repeat_time_key = any(key in options for key in _REPEAT_TIME_RUNTIME_KEYS)
     if has_repeat_time_key:
-        # Queue-time repeat+time is intentionally its own narrow family. Generated
-        # `autodelete_effective_seconds` is execution state, never caller intent.
         if "autodelete_effective_seconds" in options or not allow_repeat_time:
             return None
-
         capability = parse_canonical_publication_delivery_runtime_capability(options)
         if (
             capability is None
@@ -93,9 +94,16 @@ def _strict_repeat_runtime_options(
         has_pin_key = "pin_on" in options
         has_forward_key = "forward_to" in options
         if has_pin_key and has_forward_key:
-            # Combined time+pin+forward is deliberately deferred to its own proof fact.
-            return None
-        if has_pin_key:
+            if not (
+                allow_repeat_time_pin_forward
+                and allow_repeat_time_pin
+                and allow_repeat_time_forward
+                and capability.pin_on is True
+                and capability.forward_to
+                and set(options).issubset(_REPEAT_TIME_PIN_FORWARD_RUNTIME_KEYS)
+            ):
+                return None
+        elif has_pin_key:
             if (
                 not allow_repeat_time_pin
                 or capability.pin_on is not True
@@ -120,7 +128,6 @@ def _strict_repeat_runtime_options(
 
     if not set(options).issubset(_REPEAT_RUNTIME_KEYS):
         return None
-
     capability = parse_canonical_publication_delivery_runtime_capability(options)
     if capability is None:
         return None
@@ -128,14 +135,10 @@ def _strict_repeat_runtime_options(
     if capability.views_autodelete_requested:
         if not allow_repeat_views:
             return None
-
         has_pin_key = "pin_on" in options
         has_forward_key = "forward_to" in options
         has_combined_keys = has_pin_key and has_forward_key
-
         if has_combined_keys:
-            # Exact combined composition requires all underlying facts plus the dedicated
-            # combined bit. Neutral pin/forward keys are not accepted as combined intent.
             if not (
                 allow_repeat_views_pin_forward
                 and allow_repeat_views_pin
@@ -153,7 +156,6 @@ def _strict_repeat_runtime_options(
                 allowed_views_keys = allowed_views_keys | frozenset({"pin_on"})
             if allow_repeat_views_forward:
                 allowed_views_keys = allowed_views_keys | frozenset({"forward_to"})
-
         if (
             not set(options).issubset(allowed_views_keys)
             or "autodelete_views" not in options
@@ -175,7 +177,6 @@ def _strict_repeat_runtime_options(
             return None
         if "forward_to" in options and not capability.forward_to:
             return None
-
     return deepcopy(options)
 
 
@@ -184,16 +185,10 @@ class CanonicalPublicationRepeatCapabilityClaimService(
 ):
     """Keep repeat authority limited to explicit independently proven compositions.
 
-    Plain repeat+time requires generic destructive-time plus `allow_repeat_time`.
-    Repeat+time+pin and repeat+time+ordered-forward each require an additional independent
-    composition fact. Neither narrower fact implies the other, and combined time+pin+
-    forward remains closed until its own proof stage. Generated timer state, views and
-    unknown effects remain closed.
-
-    Plain repeat+views, views+pin and views+forward retain separate default-off facts.
-    Views+pin+forward is narrower again and requires the complete underlying repeat/views,
-    pin and forward fact set plus `allow_repeat_views_pin_forward`. Independent pin and
-    forward facts can never implicitly compose into combined authority.
+    Plain repeat+time requires generic destructive-time plus its dedicated fact. Time+pin
+    and time+forward are narrower independent facts. Their combined composition requires
+    both narrower facts plus an additional `allow_repeat_time_pin_forward`; having both
+    narrower facts is deliberately insufficient by itself. Time+views remains closed.
     """
 
     async def claim_supported(
@@ -209,6 +204,7 @@ class CanonicalPublicationRepeatCapabilityClaimService(
         allow_repeat_time: bool = False,
         allow_repeat_time_pin: bool = False,
         allow_repeat_time_forward: bool = False,
+        allow_repeat_time_pin_forward: bool = False,
         allow_repeat_views: bool = False,
         allow_repeat_views_pin: bool = False,
         allow_repeat_views_forward: bool = False,
@@ -243,14 +239,17 @@ class CanonicalPublicationRepeatCapabilityClaimService(
                 if not _strict_fixed_delay_repeat(plan):
                     await self.session.rollback()
                     return None
-                repeat_time_enabled = bool(
-                    allow_repeat_time and allow_time_autodelete
-                )
+                repeat_time_enabled = bool(allow_repeat_time and allow_time_autodelete)
                 repeat_time_pin_enabled = bool(
                     allow_repeat_time_pin and repeat_time_enabled
                 )
                 repeat_time_forward_enabled = bool(
                     allow_repeat_time_forward and repeat_time_enabled
+                )
+                repeat_time_pin_forward_enabled = bool(
+                    allow_repeat_time_pin_forward
+                    and repeat_time_pin_enabled
+                    and repeat_time_forward_enabled
                 )
                 repeat_views_enabled = bool(
                     allow_repeat_views and allow_views_autodelete
@@ -259,7 +258,7 @@ class CanonicalPublicationRepeatCapabilityClaimService(
                 forward_enabled = bool(
                     allow_repeat_views_forward and repeat_views_enabled
                 )
-                combined_enabled = bool(
+                views_combined_enabled = bool(
                     allow_repeat_views_pin_forward
                     and pin_enabled
                     and forward_enabled
@@ -270,10 +269,13 @@ class CanonicalPublicationRepeatCapabilityClaimService(
                         allow_repeat_time=repeat_time_enabled,
                         allow_repeat_time_pin=repeat_time_pin_enabled,
                         allow_repeat_time_forward=repeat_time_forward_enabled,
+                        allow_repeat_time_pin_forward=(
+                            repeat_time_pin_forward_enabled
+                        ),
                         allow_repeat_views=repeat_views_enabled,
                         allow_repeat_views_pin=pin_enabled,
                         allow_repeat_views_forward=forward_enabled,
-                        allow_repeat_views_pin_forward=combined_enabled,
+                        allow_repeat_views_pin_forward=views_combined_enabled,
                     )
                     is None
                 ):
