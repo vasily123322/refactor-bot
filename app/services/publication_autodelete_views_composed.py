@@ -18,9 +18,9 @@ class PublicationAutodeleteViewsComposedService(PublicationAutodeleteViewsServic
     target capture and reserved/unknown no-replay semantics. This adapter changes only the
     provider-free repeat lifecycle proof.
 
-    Views+pin and views+ordered-forward have independent default-off facts. Supplying both
-    independent facts never grants views+pin+forward authority because the lifecycle proof
-    keeps that combined profile closed until its own later explicit composition stage.
+    Views+pin and views+forward retain independent facts. Their combined composition is
+    narrower again and requires its own default-off `allow_repeat_views_pin_forward` fact
+    in addition to both independent facts.
     """
 
     def __init__(
@@ -28,11 +28,13 @@ class PublicationAutodeleteViewsComposedService(PublicationAutodeleteViewsServic
         *args,
         allow_repeat_views_pin: bool = False,
         allow_repeat_views_forward: bool = False,
+        allow_repeat_views_pin_forward: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.allow_repeat_views_pin = bool(allow_repeat_views_pin)
         self.allow_repeat_views_forward = bool(allow_repeat_views_forward)
+        self.allow_repeat_views_pin_forward = bool(allow_repeat_views_pin_forward)
 
     async def _lifecycle_allowed(
         self,
@@ -54,6 +56,7 @@ class PublicationAutodeleteViewsComposedService(PublicationAutodeleteViewsServic
             int(publication.id),
             allow_pin=self.allow_repeat_views_pin,
             allow_forward=self.allow_repeat_views_forward,
+            allow_pin_forward=self.allow_repeat_views_pin_forward,
         )
         if proof is None:
             return False
