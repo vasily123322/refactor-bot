@@ -38,9 +38,9 @@ def _repeat_enabled(schedule: ScheduleEntry | None) -> bool:
 class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHandoffExecutor):
     """Route linked fixed-delay repeat through its dedicated atomic authority seam.
 
-    Every repeat/views composition fact is forwarded independently from the concrete safe
-    executor. The combined views+pin+forward bit cannot be inferred from its narrower pin
-    and forward bits or from configuration.
+    Every repeat/effect composition fact is forwarded independently from the concrete
+    safe executor. Repeat+time therefore carries both generic time capability and its
+    dedicated started composition bit; neither can be inferred from the other.
     """
 
     async def execute(self, publication_id: int):
@@ -73,6 +73,12 @@ class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHand
             return await super().execute(safe_publication_id)
 
         allow_repeat = bool(getattr(self.executor, "allow_repeat", False))
+        allow_time_autodelete = bool(
+            getattr(self.executor, "allow_time_autodelete", False)
+        )
+        allow_repeat_time = bool(
+            getattr(self.executor, "allow_repeat_time", False)
+        )
         allow_views_autodelete = bool(
             getattr(self.executor, "allow_views_autodelete", False)
         )
@@ -96,6 +102,8 @@ class CanonicalPublicationRepeatHandoffExecutor(CanonicalPublicationDeliveryHand
                 holder=str(self.executor.holder),
                 ttl_seconds=int(self.executor.lease_seconds),
                 allow_repeat=allow_repeat,
+                allow_time_autodelete=allow_time_autodelete,
+                allow_repeat_time=allow_repeat_time,
                 allow_views_autodelete=allow_views_autodelete,
                 allow_repeat_views=allow_repeat_views,
                 allow_repeat_views_pin=allow_repeat_views_pin,
