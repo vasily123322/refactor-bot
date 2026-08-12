@@ -329,11 +329,13 @@ def _authority_intent_matches(
     if profile is None or profile.autodelete_report:
         return False
     if profile.pin_on:
-        if (
-            not profile.timer_requested
-            or profile.views_requested
-            or not allow_time_autodelete
-        ):
+        if profile.timer_requested:
+            if not allow_time_autodelete or profile.views_requested:
+                return False
+        elif profile.views_requested:
+            if not allow_views_autodelete or profile.timer_requested:
+                return False
+        else:
             return False
     elif profile.timer_requested:
         if not allow_time_autodelete or profile.views_requested:
@@ -397,8 +399,8 @@ class CanonicalPublicationLegacyTransportHandoffService:
     provider. Canonical delivery remains `queued` until a later exact canonical claim.
 
     Baseline capability is non-repeat empty/silent/pin parity. Callers may additionally
-    prove started canonical time or views autodelete dependencies, admit exact pin+time,
-    or admit the already-proven forward-only parity profile. Pin+views, pin+forward,
+    prove started canonical time or views autodelete dependencies, admit exact pin+time
+    or pin+views, or admit the already-proven forward-only parity profile. Pin+forward,
     delete+forward, report, mixed delete modes and repeat remain closed here. Hidden
     legacy effects are never inferred.
     """
