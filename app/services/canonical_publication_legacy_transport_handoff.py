@@ -381,7 +381,8 @@ async def _forward_authority_intent_matches(
         return False
     if parity.time_autodelete_requested:
         return bool(allow_time_autodelete and not parity.views_autodelete_requested)
-    # Views+forward remains a later independent retirement slice.
+    if parity.views_autodelete_requested:
+        return bool(allow_views_autodelete and not parity.time_autodelete_requested)
     return False
 
 
@@ -406,9 +407,9 @@ class CanonicalPublicationLegacyTransportHandoffService:
 
     Baseline capability is non-repeat empty/silent/pin parity. Callers may additionally
     prove started canonical time or views autodelete dependencies, admit exact pin+time
-    or pin+views, admit forward/pin+forward, and admit forward+time only with the live
-    time dependency. Pin+forward+delete, forward+views, report, mixed delete modes and
-    repeat remain closed here. Hidden legacy effects are never inferred.
+    or pin+views, admit forward/pin+forward, and admit forward+time or forward+views only
+    with the corresponding live dependency. Pin+forward+delete, report, mixed delete
+    modes and repeat remain closed here. Hidden legacy effects are never inferred.
     """
 
     def __init__(self, session: AsyncSession) -> None:
