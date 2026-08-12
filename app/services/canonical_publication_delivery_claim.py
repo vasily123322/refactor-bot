@@ -318,6 +318,7 @@ class CanonicalPublicationDeliveryClaimService:
             .where(
                 PublicationDeliveryLease.publication_id == int(handle.publication_id),
                 PublicationDeliveryLease.lease_token == str(handle.lease_token),
+                PublicationDeliveryLease.expires_at > current,
             )
             .values(expires_at=expires_at)
             .execution_options(synchronize_session=False)
