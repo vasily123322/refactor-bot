@@ -9,6 +9,9 @@ from app.core.canonical_publication_delivery_primary_config import (
     CanonicalPublicationDeliveryPrimarySettings,
 )
 from app.core.db import AsyncSessionLocal
+from app.services.canonical_publication_delivery_handoff_executor import (
+    CanonicalPublicationDeliveryHandoffExecutor,
+)
 from app.services.canonical_publication_delivery_runtime import (
     build_canonical_publication_delivery_runtime,
 )
@@ -33,6 +36,10 @@ async def start_canonical_publication_delivery_primary_if_enabled(
     The caller passes the concrete recovery worker returned only after its awaited
     ``start()`` completed. A missing object therefore fails closed before runtime
     composition or provider-capable worker construction.
+
+    The polling worker receives a handoff-gated executor rather than the concrete
+    provider executor directly. Linked legacy rows must first commit the atomic
+    PostTask retirement seam; canonical-only rows delegate without a handoff write.
     """
 
     if not config.enabled:
@@ -50,8 +57,12 @@ async def start_canonical_publication_delivery_primary_if_enabled(
         lease_seconds=config.lease_ttl_seconds,
         heartbeat_interval_seconds=float(config.heartbeat_interval_seconds),
     )
-    worker = CanonicalPublicationDeliveryWorker(
+    handoff_executor = CanonicalPublicationDeliveryHandoffExecutor(
         executor=runtime.executor,
+        session_factory=session_factory,
+    )
+    worker = CanonicalPublicationDeliveryWorker(
+        executor=handoff_executor,
         session_factory=session_factory,
         interval_seconds=config.interval_seconds,
         batch_size=config.batch_size,

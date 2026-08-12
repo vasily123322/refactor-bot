@@ -29,6 +29,10 @@ def test_primary_runtime_disabled_constructs_nothing(monkeypatch) -> None:
         def unexpected_runtime(**kwargs):
             raise AssertionError("disabled primary must not build runtime")
 
+        class UnexpectedHandoff:
+            def __init__(self, **kwargs) -> None:
+                raise AssertionError("disabled primary must not construct handoff executor")
+
         class UnexpectedWorker:
             def __init__(self, **kwargs) -> None:
                 raise AssertionError("disabled primary must not construct worker")
@@ -37,6 +41,11 @@ def test_primary_runtime_disabled_constructs_nothing(monkeypatch) -> None:
             control,
             "build_canonical_publication_delivery_runtime",
             unexpected_runtime,
+        )
+        monkeypatch.setattr(
+            control,
+            "CanonicalPublicationDeliveryHandoffExecutor",
+            UnexpectedHandoff,
         )
         monkeypatch.setattr(control, "CanonicalPublicationDeliveryWorker", UnexpectedWorker)
 
@@ -84,6 +93,10 @@ def test_primary_runtime_starts_with_exact_safe_configuration(monkeypatch) -> No
             captured["runtime"] = kwargs
             return SimpleNamespace(executor=executor)
 
+        class FakeHandoffExecutor:
+            def __init__(self, **kwargs) -> None:
+                captured["handoff"] = kwargs
+
         class FakeWorker:
             def __init__(self, **kwargs) -> None:
                 captured["worker"] = kwargs
@@ -99,6 +112,11 @@ def test_primary_runtime_starts_with_exact_safe_configuration(monkeypatch) -> No
             control,
             "build_canonical_publication_delivery_runtime",
             fake_runtime,
+        )
+        monkeypatch.setattr(
+            control,
+            "CanonicalPublicationDeliveryHandoffExecutor",
+            FakeHandoffExecutor,
         )
         monkeypatch.setattr(control, "CanonicalPublicationDeliveryWorker", FakeWorker)
 
@@ -124,8 +142,14 @@ def test_primary_runtime_starts_with_exact_safe_configuration(monkeypatch) -> No
             "lease_seconds": 120,
             "heartbeat_interval_seconds": 29.0,
         }
-        assert captured["worker"] == {
+        assert captured["handoff"] == {
             "executor": executor,
+            "session_factory": session_factory,
+        }
+        handoff_executor = captured["worker"]["executor"]  # type: ignore[index]
+        assert isinstance(handoff_executor, FakeHandoffExecutor)
+        assert captured["worker"] == {
+            "executor": handoff_executor,
             "session_factory": session_factory,
             "interval_seconds": 7,
             "batch_size": 31,
