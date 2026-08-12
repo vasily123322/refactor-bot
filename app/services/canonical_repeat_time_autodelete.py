@@ -33,9 +33,9 @@ class CanonicalRepeatTimeAutodeleteService(PublicationAutodeleteService):
     transaction, and exact reservation finalization.
 
     The adapter only widens candidate admission for one proven terminal canonical repeat
-    occurrence. `CanonicalRepeatTimeLifecycleAuthorityService` is re-run before every
-    preflight/reserve/finalize candidate load. The widening is default-off through the
-    dedicated `allow_repeat_time` fact.
+    occurrence. Its protected lifecycle seam is re-run before every preflight/reserve/
+    finalize candidate load, allowing narrower composition adapters to replace only the
+    provider-free proof while retaining this exact destructive implementation.
     """
 
     def __init__(
@@ -48,6 +48,14 @@ class CanonicalRepeatTimeAutodeleteService(PublicationAutodeleteService):
     ) -> None:
         super().__init__(session, provider=provider, allow_report=allow_report)
         self.allow_repeat_time = bool(allow_repeat_time)
+
+    async def _prove_lifecycle(self, publication_id: int):
+        return await CanonicalRepeatTimeLifecycleAuthorityService(
+            self.session
+        ).lock_and_prove(
+            publication_id,
+            allow_time=True,
+        )
 
     def _candidate_from_row(
         self,
@@ -137,12 +145,7 @@ class CanonicalRepeatTimeAutodeleteService(PublicationAutodeleteService):
                 "ineligible",
             )
 
-        lifecycle = await CanonicalRepeatTimeLifecycleAuthorityService(
-            self.session
-        ).lock_and_prove(
-            publication_id,
-            allow_time=True,
-        )
+        lifecycle = await self._prove_lifecycle(publication_id)
         if lifecycle is None:
             await self.session.rollback()
             return None, PublicationAutodeleteResult(
