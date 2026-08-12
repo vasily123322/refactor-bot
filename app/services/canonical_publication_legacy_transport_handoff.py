@@ -344,6 +344,32 @@ def _authority_intent_matches(
     )
 
 
+async def _forward_authority_intent_matches(
+    session: AsyncSession,
+    *,
+    task: PostTask,
+    publication: Publication,
+    plan: CanonicalPublicationDeliveryPlan,
+) -> bool:
+    """Reuse the proven linked-forward parity while keeping effect composition closed."""
+
+    from app.services.canonical_publication_linked_forward_parity import (
+        CanonicalPublicationLinkedForwardParityService,
+    )
+
+    parity = await CanonicalPublicationLinkedForwardParityService(session).prove(
+        task=task,
+        publication=publication,
+        plan=plan,
+    )
+    return bool(
+        parity is not None
+        and not parity.pin_on
+        and not parity.delete_requested
+        and not parity.autodelete_report
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CanonicalPublicationLegacyTransportHandoffResult:
     outcome: str
@@ -364,10 +390,9 @@ class CanonicalPublicationLegacyTransportHandoffService:
     provider. Canonical delivery remains `queued` until a later exact canonical claim.
 
     Baseline capability is non-repeat empty/silent/pin parity. Callers may additionally
-    prove started canonical time or views autodelete dependencies; timer-only/views-only
-    admission then reuses the existing atomic handoff runtime profile and legacy-intent
-    matcher. Pin+delete, report, mixed delete modes and forward remain closed here.
-    Hidden legacy effects are never inferred.
+    prove started canonical time or views autodelete dependencies, or admit the already
+    proven forward-only parity profile. Pin+forward, delete+forward, report, mixed delete
+    modes and repeat remain closed here. Hidden legacy effects are never inferred.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -393,6 +418,7 @@ class CanonicalPublicationLegacyTransportHandoffService:
         at: datetime | None = None,
         allow_time_autodelete: bool = False,
         allow_views_autodelete: bool = False,
+        allow_forward: bool = False,
     ) -> CanonicalPublicationLegacyTransportHandoffResult:
         try:
             safe_publication_id = int(publication_id)
@@ -514,14 +540,24 @@ class CanonicalPublicationLegacyTransportHandoffService:
                 or int(plan.content_revision) != int(revision.revision)
                 or int(plan.channel_id) != int(channel.id)
                 or not _nonrepeat(plan)
-                or not _authority_intent_matches(
+            ):
+                return await self._result(_INELIGIBLE, safe_publication_id, task_id)
+
+            authority_matches = _authority_intent_matches(
+                task=task,
+                publication=publication,
+                plan=plan,
+                allow_time_autodelete=allow_time_autodelete,
+                allow_views_autodelete=allow_views_autodelete,
+            )
+            if not authority_matches and allow_forward:
+                authority_matches = await _forward_authority_intent_matches(
+                    self.session,
                     task=task,
                     publication=publication,
                     plan=plan,
-                    allow_time_autodelete=allow_time_autodelete,
-                    allow_views_autodelete=allow_views_autodelete,
                 )
-            ):
+            if not authority_matches:
                 return await self._result(_INELIGIBLE, safe_publication_id, task_id)
 
             schedule_meta = _mapping(schedule.meta)
