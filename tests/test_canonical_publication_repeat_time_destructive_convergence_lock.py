@@ -11,7 +11,7 @@ from app.core.db import Base
 from app.domain.content import PostDocument
 from app.domain.models import Channel, Client, PostTask
 from app.domain.publication_delivery import PublicationDeliveryLease
-from app.domain.publishing.models import Publication, PublicationAttempt
+from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.repositories.content import ContentRepo
 from app.services.canonical_publication_repeat_capability_claim import (
     CanonicalPublicationRepeatCapabilityClaimService,
@@ -136,8 +136,28 @@ def test_generated_effective_timer_key_is_also_hard_closed_for_repeat(tmp_path) 
             publication_id, task_id = await _seed(
                 Session,
                 seed=2,
-                options={"autodelete_effective_seconds": 90},
+                options={"autodelete_seconds": 90},
             )
+
+            # `autodelete_effective_seconds` is intentionally reserved by the bridge and
+            # cannot be queued as caller intent. Model generated/drifted canonical state
+            # directly so this regression reaches the strict repeat claim boundary.
+            async with Session() as session:
+                publication = await session.get(Publication, publication_id)
+                assert publication is not None
+                schedule = await session.get(
+                    ScheduleEntry,
+                    int(publication.schedule_entry_id),
+                )
+                assert schedule is not None
+                publication_meta = dict(publication.meta or {})
+                schedule_meta = dict(schedule.meta or {})
+                generated_options = {"autodelete_effective_seconds": 90}
+                publication_meta["runtime_options"] = dict(generated_options)
+                schedule_meta["runtime_options"] = dict(generated_options)
+                publication.meta = publication_meta
+                schedule.meta = schedule_meta
+                await session.commit()
 
             async with Session() as session:
                 claim = await CanonicalPublicationRepeatCapabilityClaimService(
