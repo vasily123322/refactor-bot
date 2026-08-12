@@ -88,9 +88,10 @@ def _repeat_runtime_options(
     report = bool(capability.autodelete_report)
 
     if views_threshold is not None:
-        # Views is introduced as one independent repeat parity slice first. Compositions
-        # with pin/forward remain fail-closed until their own lifecycle/replay proofs.
-        if bool(capability.pin_on) or forward_ids:
+        # Exact pin intent already has linked parity and provider-order proof. This stage
+        # widens only read-only legacy parity to let views compose with pin. Ordered
+        # forward remains outside the views slice until its own dedicated parity stage.
+        if forward_ids:
             return None
     elif "autodelete_report" in options:
         # The generic parser already rejects report-without-trigger. Keep this explicit
@@ -182,12 +183,13 @@ class CanonicalPublicationLinkedRepeatParityService:
     """Read-only proof for pristine fixed-delay linked repeat handoff.
 
     Already-proven pin and ordered-forward intents may compose with each other. Views
-    autodelete is now recognized only as a separate plain/silent repeat slice with exact
-    threshold/report legacy parity and pristine generated state. Views+pin/forward and all
-    time-autodelete semantics remain outside this proof.
+    autodelete now has exact linked parity for plain/silent repeat and for the independent
+    views+pin slice, including threshold/report parity and pristine generated state.
+    Views+forward and all time-autodelete semantics remain outside this proof.
 
-    This is parity only. The strict repeat capability claim still excludes every views
-    runtime key, and the destructive views worker remains independently non-repeat-only.
+    This remains parity only. The strict repeat capability claim and post-publication
+    views lifecycle proof still reject views+pin, so no new primary or DELETE authority is
+    created by this stage.
     """
 
     def prove(
