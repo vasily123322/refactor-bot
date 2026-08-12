@@ -28,6 +28,7 @@ def build_canonical_publication_safe_repeat_runtime(
     allow_views_autodelete: bool = False,
     allow_repeat: bool = False,
     allow_repeat_time: bool = False,
+    allow_repeat_time_pin: bool = False,
     allow_repeat_views: bool = False,
     allow_repeat_views_pin: bool = False,
     allow_repeat_views_forward: bool = False,
@@ -38,6 +39,7 @@ def build_canonical_publication_safe_repeat_runtime(
 
     Repeat+time is a distinct composition and requires repeat authority, the ordinary
     time destructive dependency, its dedicated started dependency, and owner policy.
+    Repeat+time+pin is narrower again and additionally requires its own started fact.
     Views+pin and views+forward remain independent narrower slices over repeat+views.
     """
 
@@ -65,6 +67,10 @@ def build_canonical_publication_safe_repeat_runtime(
         and repeat_enabled
         and allow_time_autodelete
     )
+    repeat_time_pin_enabled = bool(
+        allow_repeat_time_pin
+        and repeat_time_enabled
+    )
     repeat_views_enabled = bool(
         allow_repeat_views and repeat_enabled and allow_views_autodelete
     )
@@ -91,6 +97,7 @@ def build_canonical_publication_safe_repeat_runtime(
         allow_views_autodelete=allow_views_autodelete,
         allow_repeat=repeat_enabled,
         allow_repeat_time=repeat_time_enabled,
+        allow_repeat_time_pin=repeat_time_pin_enabled,
         allow_repeat_views=repeat_views_enabled,
         allow_repeat_views_pin=repeat_views_pin_enabled,
         allow_repeat_views_forward=repeat_views_forward_enabled,
