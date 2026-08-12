@@ -39,6 +39,7 @@ class CanonicalPublicationLinkedRepeatParityProof:
     forward_channel_ids: tuple[int, ...] = ()
     views_autodelete_threshold: int | None = None
     autodelete_report: bool = False
+    views_pin_forward_composed: bool = False
 
 
 def _positive_int(value: Any) -> int | None:
@@ -87,14 +88,9 @@ def _repeat_runtime_options(
     views_threshold = capability.views_autodelete_threshold
     report = bool(capability.autodelete_report)
 
-    if views_threshold is not None:
-        # Views+pin and views+forward each have an independent read-only parity slice.
-        # Their combined pin+forward composition remains closed until its own proof.
-        if bool(capability.pin_on) and forward_ids:
-            return None
-    elif "autodelete_report" in options:
-        # The generic parser already rejects report-without-trigger. Keep this explicit
-        # here so future parser evolution cannot silently give report independent meaning.
+    if views_threshold is None and "autodelete_report" in options:
+        # Report has no independent meaning. This stays explicit against future parser
+        # widening even though the generic parser already rejects it.
         return None
 
     return deepcopy(options), forward_ids, views_threshold, report
@@ -172,7 +168,6 @@ def _legacy_views_intent_matches(
     elif payload.get("autodelete_report") not in (None, False):
         return False
 
-    # This stage intentionally does not prove any time-autodelete semantics.
     if payload.get("autodelete_seconds") not in _NEUTRAL_NUMBER_VALUES:
         return False
     return True
@@ -181,15 +176,14 @@ def _legacy_views_intent_matches(
 class CanonicalPublicationLinkedRepeatParityService:
     """Read-only proof for pristine fixed-delay linked repeat handoff.
 
-    Already-proven pin and ordered-forward intents may compose with each other outside the
-    views family. Views autodelete has exact linked parity for plain/silent repeat and for
-    two independent effect slices: views+pin and views+ordered-forward. Each includes exact
-    threshold/report parity and pristine generated state. Views+pin+forward and all
-    time-autodelete semantics remain outside this proof.
+    Pin and ordered-forward already have exact legacy parity, and views has independent
+    parity for each. This stage additionally recognizes their exact combined read-only
+    shape and emits `views_pin_forward_composed=True` only when views threshold, real pin
+    intent and a non-empty ordered forward target set are all simultaneously proven.
 
-    This remains parity only. Strict repeat claim/lifecycle/destructive gates retain their
-    independent default-closed facts, so no primary, forward or DELETE authority is created
-    merely because read-only legacy parity succeeds.
+    The combined proof bit is evidence only. Existing strict/lifecycle/destructive facts
+    do not consume it and remain default-closed, so independent pin/forward authority can
+    never be mistaken for combined provider authority.
     """
 
     def prove(
@@ -281,8 +275,6 @@ class CanonicalPublicationLinkedRepeatParityService:
             if task_group is None or task_group != group_id:
                 return None
 
-        # Remove only effects whose exact parity was proven above. Hidden time/delete or
-        # unknown effects remain visible and fail the established immutable comparison.
         current_clean = deepcopy(current)
         for key in _IDENTITY_MARKERS:
             current_clean.pop(key, None)
@@ -306,6 +298,7 @@ class CanonicalPublicationLinkedRepeatParityService:
         ):
             return None
 
+        combined = bool(views_threshold is not None and pin_on and forward_ids)
         return CanonicalPublicationLinkedRepeatParityProof(
             publication_id=publication_id,
             legacy_post_task_id=task_id,
@@ -316,4 +309,5 @@ class CanonicalPublicationLinkedRepeatParityService:
             forward_channel_ids=forward_ids,
             views_autodelete_threshold=views_threshold,
             autodelete_report=autodelete_report,
+            views_pin_forward_composed=combined,
         )
