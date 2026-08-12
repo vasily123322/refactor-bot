@@ -30,17 +30,10 @@ class CanonicalPublicationDeliveryCapabilityClaimService(
 ):
     """Concrete claim profile for explicitly enabled canonical delivery capabilities.
 
-    Generic canonical claim remains capability agnostic. This layer locks the mutable
-    delivery proof rows before authority transition, parses the exact supported runtime
-    profile, resolves forward targets, and stages indexed views-autodelete intent while
-    the same claim transaction is still open.
-
-    Time- and views-based autodelete are guarded independently by actual executor
-    availability facts. Both default to disabled. A positive views threshold is persisted
-    in `PublicationAutodeleteViewState` before `queued -> sending`; the lower claim's
-    single commit therefore atomically contains indexed views intent + Attempt + lease.
-    Any pre-claim rejection rolls the staged state back. Rows without views intent clear
-    stale indexed state in the same authority transaction.
+    Time/views delete and repeat authority are independently gated by concrete runtime
+    dependencies. Repeat remains default-off and is admitted only when a successfully
+    started canonical continuation worker can guarantee successor recovery after terminal
+    canonical delivery. Overdue/boot semantics remain separate legacy-owned authority.
     """
 
     async def claim_supported(
@@ -52,6 +45,7 @@ class CanonicalPublicationDeliveryCapabilityClaimService(
         now: datetime | None = None,
         allow_time_autodelete: bool = False,
         allow_views_autodelete: bool = False,
+        allow_repeat: bool = False,
     ) -> CanonicalPublicationDeliveryClaim | None:
         try:
             safe_publication_id = int(publication_id)
@@ -105,10 +99,7 @@ class CanonicalPublicationDeliveryCapabilityClaimService(
             for target in targets
         ]
 
-        # Stage the indexed threshold before the lower claim's single authority commit.
-        # A row is safe while Publication is `sending`: the views worker candidate query
-        # structurally requires terminal `published`. Passing None deliberately removes a
-        # stale indexed threshold when current canonical intent is not views-based.
+        # Stage indexed views intent before the lower claim's single authority commit.
         await PublicationAutodeleteViewStateService(self.session).sync_intent(
             publication_id=safe_publication_id,
             threshold=capability.views_autodelete_threshold,
@@ -122,19 +113,15 @@ class CanonicalPublicationDeliveryCapabilityClaimService(
             now=current,
             requirements=CanonicalPublicationDeliveryClaimRequirements(
                 require_empty_runtime_options=False,
-                require_nonrepeat=True,
+                require_nonrepeat=not bool(allow_repeat),
                 require_transport_retired=True,
             ),
         )
         if claim is None:
-            # The lower claim rolls the shared transaction back, including staged views
-            # state or stale-state cleanup above.
             return None
 
         # Persist all resolved forward destinations before any provider call. Failure
-        # after the authority transition intentionally leaves `sending + lease` for
-        # recovery and returns no executable claim. The views state is already durable
-        # from the same authority commit at this point.
+        # after authority transition leaves `sending + lease` for recovery.
         try:
             attempt = (
                 await self.session.execute(
@@ -160,9 +147,6 @@ class CanonicalPublicationDeliveryCapabilityClaimService(
             await self.session.rollback()
             raise
 
-        # Re-prove the exact lease live after the snapshot commit before returning an
-        # executable claim. Production uses a fresh wall clock; explicit test clocks stay
-        # deterministic.
         renew_at = current if now is not None else None
         renewed = await super().renew(
             claim.lease,

@@ -32,13 +32,13 @@ async def start_canonical_publication_delivery_primary_if_enabled(
     session_factory: async_sessionmaker[AsyncSession] = AsyncSessionLocal,
     time_autodelete_executor_available: bool = False,
     views_autodelete_executor_available: bool = False,
+    repeat_continuation_available: bool = False,
 ) -> CanonicalPublicationDeliveryWorker | None:
-    """Start primary only after recovery and optional dependent executors are proven.
+    """Start primary only after recovery and optional dependencies are proven.
 
-    Recovery is mandatory for every enabled primary worker. Delete capabilities are
-    narrower: plain/silent/pin/forward delivery remains available without either delete
-    worker, while time/views intent is admitted only when the caller passes the fact that
-    its corresponding canonical worker successfully started.
+    Recovery is mandatory for every enabled primary worker. Time/views delete and repeat
+    authority remain independent: each is admitted only when the caller passes the fact
+    that its corresponding canonical worker successfully started.
     """
 
     if not config.enabled:
@@ -57,6 +57,7 @@ async def start_canonical_publication_delivery_primary_if_enabled(
         heartbeat_interval_seconds=float(config.heartbeat_interval_seconds),
         allow_time_autodelete=bool(time_autodelete_executor_available),
         allow_views_autodelete=bool(views_autodelete_executor_available),
+        allow_repeat=bool(repeat_continuation_available),
     )
     handoff_executor = CanonicalPublicationDeliveryHandoffExecutor(
         executor=runtime.executor,
