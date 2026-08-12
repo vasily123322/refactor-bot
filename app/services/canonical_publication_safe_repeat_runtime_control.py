@@ -28,15 +28,14 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
     repeat_views_executor_available: bool = False,
     repeat_views_pin_executor_available: bool = False,
     repeat_views_forward_executor_available: bool = False,
+    repeat_views_pin_forward_executor_available: bool = False,
     repeat_owner_policy_enforced: bool = False,
 ) -> CanonicalPublicationDeliveryWorker | None:
     """Start repeat-aware primary only from concrete successfully started dependencies.
 
-    Recovery remains mandatory. Repeat requires continuation plus owner-policy enforcement.
-    Repeat+views additionally requires ordinary views availability and its explicit started
-    composition fact. Views+pin and views+ordered-forward are narrower independent started
-    facts; neither is derived from config, from the other composition, or from ordinary
-    repeat/views availability.
+    Recovery remains mandatory. Views+pin and views+forward retain independent started
+    facts. Their combined profile additionally requires one exact combined started fact;
+    it is never inferred merely because both narrower dependencies are available.
     """
 
     if not config.enabled:
@@ -58,6 +57,11 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
     repeat_views_forward_available = bool(
         repeat_views_forward_executor_available and repeat_views_available
     )
+    repeat_views_pin_forward_available = bool(
+        repeat_views_pin_forward_executor_available
+        and repeat_views_pin_available
+        and repeat_views_forward_available
+    )
 
     runtime = build_canonical_publication_safe_repeat_runtime(
         bot=bot,
@@ -70,6 +74,7 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
         allow_repeat_views=repeat_views_available,
         allow_repeat_views_pin=repeat_views_pin_available,
         allow_repeat_views_forward=repeat_views_forward_available,
+        allow_repeat_views_pin_forward=repeat_views_pin_forward_available,
         repeat_owner_policy_enforced=bool(repeat_owner_policy_enforced),
     )
     handoff_executor = CanonicalPublicationRepeatHandoffExecutor(
