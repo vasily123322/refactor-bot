@@ -45,18 +45,13 @@ def _mapping(value: Any) -> dict[str, Any] | None:
 class CanonicalRepeatViewsLifecycleAuthorityService:
     """Lock and prove one terminal canonical repeat occurrence owns views lifecycle state.
 
-    The provider-free proof composes the centralized repeat-continuation authority rather
-    than creating another repeat-origin policy. Plain/silent repeat+views remains the base
-    profile. Views+pin and views+ordered-forward are independent composition slices and
-    require their own explicit proof facts. Even if both independent facts are supplied,
-    views+pin+forward remains closed until its later dedicated combined proof.
+    Plain repeat+views, views+pin and views+ordered-forward retain their independent facts.
+    The combined views+pin+forward profile is narrower again: it requires all three proof
+    facts (`allow_pin`, `allow_forward`, `allow_pin_forward`) at the same provider-free
+    boundary. Independent pin+forward facts therefore never compose implicitly.
 
-    The indexed views row is occurrence-local and locked in the same transaction. Exact
-    source/Attempt Telegram message identity remains mandatory before any later destructive
-    consumer can bind observations/deletes to the canonical source occurrence.
-
-    No Telegram call, lease acquisition, candidate selection or destructive authority is
-    granted by this service.
+    Exact terminal canonical source/Attempt identity and the occurrence-local indexed views
+    row remain locked before any later destructive consumer can observe or delete.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -68,6 +63,7 @@ class CanonicalRepeatViewsLifecycleAuthorityService:
         *,
         allow_pin: bool = False,
         allow_forward: bool = False,
+        allow_pin_forward: bool = False,
     ) -> CanonicalRepeatViewsLifecycleAuthority | None:
         authority = await CanonicalRepeatContinuationAuthorityService(
             self.session
@@ -90,16 +86,20 @@ class CanonicalRepeatViewsLifecycleAuthorityService:
         has_pin = bool(capability.pin_on)
         has_forward = bool(capability.forward_to)
         if has_pin and has_forward:
-            # Independent facts never compose implicitly into a combined authority.
-            return None
-        if has_pin and not bool(allow_pin):
-            return None
-        if has_forward and not bool(allow_forward):
-            return None
+            if not (
+                bool(allow_pin)
+                and bool(allow_forward)
+                and bool(allow_pin_forward)
+            ):
+                return None
+        else:
+            if has_pin and not bool(allow_pin):
+                return None
+            if has_forward and not bool(allow_forward):
+                return None
 
         publication_meta = _mapping(authority.publication.meta)
         if publication_meta is None or AUTODELETE_RUNTIME_META_KEY in publication_meta:
-            # Queue-time intent is valid here; generated/deleted lifecycle state is not.
             return None
 
         publication_message_ids = tuple(
