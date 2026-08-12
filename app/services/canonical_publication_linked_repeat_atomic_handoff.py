@@ -77,6 +77,7 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
         allow_repeat_views: bool = False,
         allow_repeat_views_pin: bool = False,
         allow_repeat_views_forward: bool = False,
+        allow_repeat_views_pin_forward: bool = False,
     ) -> CanonicalPublicationAtomicHandoffClaimResult:
         try:
             safe_publication_id = int(publication_id)
@@ -301,6 +302,7 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
                 allow_repeat_views=bool(allow_repeat_views),
                 allow_repeat_views_pin=bool(allow_repeat_views_pin),
                 allow_repeat_views_forward=bool(allow_repeat_views_forward),
+                allow_repeat_views_pin_forward=bool(allow_repeat_views_pin_forward),
             )
             if claim is None:
                 # Pre-commit claim rejection rolls back every cutover mutation above.
