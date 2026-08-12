@@ -23,7 +23,7 @@ from app.services.canonical_publication_linked_repeat_parity import (
 from app.services.publication_bridge import LegacyPublicationBridge
 
 
-async def _seed_repeat_pin(Session) -> tuple[int, int]:
+async def _seed_repeat_forward(Session) -> tuple[int, int]:
     async with Session() as session:
         owner = Client(
             tg_user_id=209001,
@@ -33,18 +33,24 @@ async def _seed_repeat_pin(Session) -> tuple[int, int]:
         )
         session.add(owner)
         await session.flush()
-        channel = Channel(
+        source = Channel(
             tg_chat_id=-100209001,
-            title="Repeat Strict Claim",
+            title="Repeat Strict Claim Source",
             owner_id=int(owner.id),
             is_active=True,
         )
-        session.add(channel)
+        target = Channel(
+            tg_chat_id=-100309001,
+            title="Repeat Strict Claim Target",
+            owner_id=int(owner.id),
+            is_active=True,
+        )
+        session.add_all([source, target])
         await session.commit()
         item = await ContentRepo(session).create(
-            channel_id=int(channel.id),
+            channel_id=int(source.id),
             document=PostDocument(
-                blocks=[{"id": "b1", "type": "text", "text": "repeat + pin"}]
+                blocks=[{"id": "b1", "type": "text", "text": "repeat + forward"}]
             ),
             created_by_tg_user_id=int(owner.tg_user_id),
         )
@@ -52,7 +58,7 @@ async def _seed_repeat_pin(Session) -> tuple[int, int]:
             content_item_id=int(item.id),
             scheduled_at=datetime.now(timezone.utc) - timedelta(minutes=1),
             repeat_rule={"enabled": True, "seconds": 60},
-            runtime_options={"pin_on": True},
+            runtime_options={"forward_to": [int(target.id)]},
         )
         assert publication.legacy_post_task_id is not None
         return int(publication.id), int(publication.legacy_post_task_id)
@@ -67,13 +73,13 @@ def test_atomic_repeat_handoff_uses_strict_repeat_claim_after_parity(monkeypatch
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
-            publication_id, task_id = await _seed_repeat_pin(Session)
+            publication_id, task_id = await _seed_repeat_forward(Session)
 
             class PermissiveFutureParity:
                 def prove(self, *, task, publication, schedule, plan):
-                    # Simulate a future parity widening before the authority claim is
-                    # intentionally widened. The strict repeat claim must remain the
-                    # independent final barrier and roll the prepared cutover back.
+                    # Simulate the next parity widening before repeat+forward authority is
+                    # intentionally widened. The strict repeat claim remains an
+                    # independent final barrier and must roll prepared cutover back.
                     return CanonicalPublicationLinkedRepeatParityProof(
                         publication_id=int(publication.id),
                         legacy_post_task_id=int(task.id),

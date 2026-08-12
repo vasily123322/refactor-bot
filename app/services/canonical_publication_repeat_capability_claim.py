@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime
 from typing import Any, Mapping
 
@@ -8,9 +9,9 @@ from app.services.canonical_publication_delivery_capability_claim import (
 )
 from app.services.canonical_publication_delivery_claim import CanonicalPublicationDeliveryClaim
 from app.services.canonical_publication_delivery_planner import CanonicalPublicationDeliveryPlanner
-from app.services.canonical_publication_legacy_transport_handoff import (
-    _supported_runtime_options,
-)
+
+
+_REPEAT_PIN_RUNTIME_KEYS = frozenset({"silent", "pin_on"})
 
 
 def _positive_int(value: Any) -> int | None:
@@ -38,18 +39,33 @@ def _strict_fixed_delay_repeat(plan) -> bool:
     )
 
 
+def _strict_repeat_runtime_options(plan) -> dict[str, Any] | None:
+    try:
+        options = plan.runtime_options()
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(options, dict) or not set(options).issubset(_REPEAT_PIN_RUNTIME_KEYS):
+        return None
+    if "silent" in options and type(options.get("silent")) is not bool:
+        return None
+    if "pin_on" in options and type(options.get("pin_on")) is not bool:
+        return None
+    return deepcopy(options)
+
+
 class CanonicalPublicationRepeatCapabilityClaimService(
     CanonicalPublicationDeliveryCapabilityClaimService
 ):
-    """Keep repeat authority limited to the first proven runtime slice.
+    """Keep repeat authority limited to explicitly proven runtime slices.
 
-    `allow_repeat=True` must not mean "remove the nonrepeat barrier for every currently
-    understood side effect". Repeat post-send parity is not yet proven for pin/forward,
-    views, and especially time-autodelete (legacy may align a timer to the repeat cadence).
+    `allow_repeat=True` never means "remove the nonrepeat barrier for every understood
+    side effect". The current repeat profile admits only:
+      * exact positive fixed-delay repeat;
+      * optional `silent: bool`;
+      * optional `pin_on: bool`.
 
-    This layer therefore admits repeat only when:
-      * fixed-delay rule is exact and positive;
-      * runtime is empty or explicit `silent: bool` only.
+    Forward and both autodelete modes remain fail-closed until their repeat-specific
+    parity/lifecycle semantics are proven separately.
 
     Non-repeat rows retain the complete existing capability surface. The proof is taken
     while the same mutable delivery rows are locked; the parent service then re-locks and
@@ -96,7 +112,7 @@ class CanonicalPublicationRepeatCapabilityClaimService(
                 if not _strict_fixed_delay_repeat(plan):
                     await self.session.rollback()
                     return None
-                if _supported_runtime_options(plan) is None:
+                if _strict_repeat_runtime_options(plan) is None:
                     await self.session.rollback()
                     return None
 

@@ -147,7 +147,7 @@ def test_repeat_router_uses_repeat_atomic_path_only_when_continuation_is_availab
     asyncio.run(run())
 
 
-def test_repeat_router_keeps_effectful_repeat_outside_first_profile(tmp_path) -> None:
+def test_repeat_router_keeps_unproven_forward_outside_current_profile(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'repeat-router-effects.db'}"
@@ -160,7 +160,7 @@ def test_repeat_router_keeps_effectful_repeat_outside_first_profile(tmp_path) ->
                 Session,
                 seed=3,
                 repeat=True,
-                runtime_options={"pin_on": True},
+                runtime_options={"forward_to": [999999]},
             )
             sender = _Sender()
             delegate = CanonicalPublicationRepeatDeliveryExecutor(
