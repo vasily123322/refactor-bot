@@ -44,9 +44,9 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
     `sending + Attempt #1 + lease`.
 
     Repeat+views requires concrete views availability plus its dedicated composition fact.
-    Views+pin requires one additional fact; parity success never substitutes for it. Any
-    strict-claim rejection rolls the prepared legacy cutover and indexed views intent back
-    atomically.
+    Views+pin and views+ordered-forward each require an additional independent fact;
+    parity success never substitutes for either. Any strict-claim rejection rolls the
+    prepared legacy cutover and indexed views intent back atomically.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -76,6 +76,7 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
         allow_views_autodelete: bool = False,
         allow_repeat_views: bool = False,
         allow_repeat_views_pin: bool = False,
+        allow_repeat_views_forward: bool = False,
     ) -> CanonicalPublicationAtomicHandoffClaimResult:
         try:
             safe_publication_id = int(publication_id)
@@ -299,6 +300,7 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
                 allow_views_autodelete=bool(allow_views_autodelete),
                 allow_repeat_views=bool(allow_repeat_views),
                 allow_repeat_views_pin=bool(allow_repeat_views_pin),
+                allow_repeat_views_forward=bool(allow_repeat_views_forward),
             )
             if claim is None:
                 # Pre-commit claim rejection rolls back every cutover mutation above.
