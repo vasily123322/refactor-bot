@@ -34,10 +34,9 @@ _CUTOVER_STATUS = "canonical_cutover"
 class CanonicalPublicationLinkedRepeatAtomicHandoffService:
     """Atomically transfer one pristine linked fixed-delay repeat occurrence.
 
-    This first repeat handoff profile is intentionally limited to the read-only parity
-    proven by `CanonicalPublicationLinkedRepeatParityService`: empty/explicit-silent
-    runtime plus exact fixed-delay repeat cadence/lineage. Effect compositions are widened
-    separately.
+    Read-only linked parity is established before transport retirement. The final strict
+    repeat claim then applies the same capability boundary used by canonical-only repeat
+    delivery. Effect compositions are widened only by explicit independent facts.
 
     The legacy pending-task CAS, parity proof, transport retirement and canonical repeat
     claim share one AsyncSession. The first successful authority commit therefore cannot
@@ -45,10 +44,9 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
     `sending + Attempt #1 + lease`. Repeat claim is allowed only when the caller proves a
     continuation worker is available to recover successor creation after terminal publish.
 
-    The final authority claim deliberately uses the strict repeat capability service, not
-    the generic delivery capability service. This keeps the atomic linked path behind the
-    same explicit repeat profile as canonical-only delivery when future effect parity is
-    widened.
+    Repeat+views additionally requires both a concrete views executor fact and the
+    dedicated repeat/views composition fact. If either is absent, strict claim rejection
+    rolls back the entire prepared legacy cutover, including indexed views intent.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -75,6 +73,8 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
         ttl_seconds: int,
         at: datetime | None = None,
         allow_repeat: bool = False,
+        allow_views_autodelete: bool = False,
+        allow_repeat_views: bool = False,
     ) -> CanonicalPublicationAtomicHandoffClaimResult:
         try:
             safe_publication_id = int(publication_id)
@@ -295,6 +295,8 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
                 ttl_seconds=ttl_seconds,
                 now=current,
                 allow_repeat=True,
+                allow_views_autodelete=bool(allow_views_autodelete),
+                allow_repeat_views=bool(allow_repeat_views),
             )
             if claim is None:
                 # Pre-commit claim rejection rolls back every cutover mutation above.
