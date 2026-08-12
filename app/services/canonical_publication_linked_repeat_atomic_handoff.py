@@ -25,6 +25,9 @@ from app.services.canonical_publication_legacy_transport_handoff import (
 from app.services.canonical_publication_linked_repeat_parity import (
     CanonicalPublicationLinkedRepeatParityService,
 )
+from app.services.canonical_publication_linked_repeat_time_forward_parity import (
+    CanonicalPublicationLinkedRepeatTimeForwardParityService,
+)
 from app.services.canonical_publication_linked_repeat_time_pin_parity import (
     CanonicalPublicationLinkedRepeatTimePinParityService,
 )
@@ -50,10 +53,9 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
     `sending + Attempt #1 + lease`.
 
     Plain repeat+time requires both the destructive time dependency and its dedicated
-    repeat+time composition fact. Repeat+time+pin additionally requires its independent
-    composition fact; exact time+pin intent is routed through a separate read-only parity
-    proof rather than weakening generic repeat parity. Missing strict-claim authority
-    rolls every prepared legacy cutover mutation back atomically.
+    repeat+time composition fact. Repeat+time+pin and repeat+time+ordered-forward each use
+    a separate read-only parity proof and independent authority bit. Combined time+pin+
+    forward matches neither specialized path and remains closed until its own stage.
 
     Repeat+views requires concrete views availability plus its dedicated composition fact.
     Views+pin and views+ordered-forward each require an additional independent fact;
@@ -88,6 +90,7 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
         allow_time_autodelete: bool = False,
         allow_repeat_time: bool = False,
         allow_repeat_time_pin: bool = False,
+        allow_repeat_time_forward: bool = False,
         allow_views_autodelete: bool = False,
         allow_repeat_views: bool = False,
         allow_repeat_views_pin: bool = False,
@@ -256,11 +259,20 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
                 and not capability.views_autodelete_requested
                 and "pin_on" in runtime_options
             )
-            parity_service = (
-                CanonicalPublicationLinkedRepeatTimePinParityService()
-                if exact_time_pin
-                else CanonicalPublicationLinkedRepeatParityService()
+            exact_time_forward = bool(
+                capability is not None
+                and capability.time_autodelete_requested
+                and not capability.pin_on
+                and bool(capability.forward_to)
+                and not capability.views_autodelete_requested
+                and "forward_to" in runtime_options
             )
+            if exact_time_pin:
+                parity_service = CanonicalPublicationLinkedRepeatTimePinParityService()
+            elif exact_time_forward:
+                parity_service = CanonicalPublicationLinkedRepeatTimeForwardParityService()
+            else:
+                parity_service = CanonicalPublicationLinkedRepeatParityService()
             parity = parity_service.prove(
                 task=task,
                 publication=publication,
@@ -338,6 +350,7 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
                 allow_time_autodelete=bool(allow_time_autodelete),
                 allow_repeat_time=bool(allow_repeat_time),
                 allow_repeat_time_pin=bool(allow_repeat_time_pin),
+                allow_repeat_time_forward=bool(allow_repeat_time_forward),
                 allow_views_autodelete=bool(allow_views_autodelete),
                 allow_repeat_views=bool(allow_repeat_views),
                 allow_repeat_views_pin=bool(allow_repeat_views_pin),
@@ -345,9 +358,6 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
                 allow_repeat_views_pin_forward=bool(allow_repeat_views_pin_forward),
             )
             if claim is None:
-                # Pre-commit claim rejection rolls back every cutover mutation above.
-                # A post-commit snapshot/renew failure may already be recovery-owned;
-                # caller must classify durable state before retrying provider work.
                 await self.session.rollback()
                 return CanonicalPublicationAtomicHandoffClaimResult(
                     publication_id=safe_publication_id,
