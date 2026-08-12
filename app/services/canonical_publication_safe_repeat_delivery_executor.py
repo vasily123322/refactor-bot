@@ -16,6 +16,12 @@ class CanonicalPublicationSafeRepeatDeliveryExecutor(
 ):
     """Repeat-gated executor that keeps effectful repeat profiles fail-closed."""
 
+    def __init__(self, *args, allow_repeat_views: bool = False, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # Deliberately independent from allow_repeat + allow_views_autodelete. Production
+        # runtime composition does not set this fact in this stage.
+        self.allow_repeat_views = bool(allow_repeat_views)
+
     async def _claim(
         self,
         publication_id: int,
@@ -33,4 +39,5 @@ class CanonicalPublicationSafeRepeatDeliveryExecutor(
                 allow_time_autodelete=self.allow_time_autodelete,
                 allow_views_autodelete=self.allow_views_autodelete,
                 allow_repeat=self.allow_repeat,
+                allow_repeat_views=self.allow_repeat_views,
             )
