@@ -313,9 +313,6 @@ def _authority_intent_matches(
     if not allow_time_autodelete and not allow_views_autodelete:
         return False
 
-    # Reuse the exact atomic handoff capability lattice rather than defining another
-    # delete parser/matcher here. The local import avoids the module-init dependency
-    # cycle: the atomic service imports baseline helpers from this module at import time.
     from app.services.canonical_publication_delivery_atomic_handoff_claim import (
         _atomic_legacy_intent_matches,
         _atomic_runtime_profile,
@@ -565,7 +562,7 @@ class CanonicalPublicationLegacyTransportHandoffService:
                 )
             ).scalar_one_or_none()
             if schedule is None or item is None or revision is None or channel is None:
-                return await self._result(_INELIBLE, safe_publication_id, task_id)
+                return await self._result(_INELIGIBLE, safe_publication_id, task_id)
 
             plan = await CanonicalPublicationDeliveryPlanner(self.session).plan(
                 safe_publication_id,
