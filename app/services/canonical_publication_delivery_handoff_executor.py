@@ -54,8 +54,9 @@ class CanonicalPublicationDeliveryHandoffExecutor:
 
     Linked plain/silent/pin/time profiles use the established atomic handoff service.
     Linked rows whose canonical queue-time intent contains `forward_to` are routed through
-    the dedicated forward coordinator, which requires #239 legacy/canonical parity and
-    locks the exact destination Channels before sharing the capability claim transaction.
+    the dedicated forward coordinator. The same concrete time-autodelete availability
+    fact is passed to either coordinator, so any linked profile containing a requested
+    timer remains ineligible until its delete worker is actually available.
 
     If capability claim returns no executable handle, durable state is classified before
     choosing the wrapper outcome: complete rollback is ordinary `claim_rejected`; every
@@ -95,6 +96,7 @@ class CanonicalPublicationDeliveryHandoffExecutor:
         if not linked:
             return await self.executor.execute(safe_publication_id)
 
+        allow_time_autodelete = bool(self.executor.allow_time_autodelete)
         async with self.session_factory() as session:
             if forward_requested:
                 transfer = await CanonicalPublicationLinkedForwardAtomicHandoffService(
@@ -103,6 +105,7 @@ class CanonicalPublicationDeliveryHandoffExecutor:
                     safe_publication_id,
                     holder=str(self.executor.holder),
                     ttl_seconds=int(self.executor.lease_seconds),
+                    allow_time_autodelete=allow_time_autodelete,
                 )
             else:
                 transfer = await CanonicalPublicationAtomicHandoffClaimService(
@@ -111,7 +114,7 @@ class CanonicalPublicationDeliveryHandoffExecutor:
                     safe_publication_id,
                     holder=str(self.executor.holder),
                     ttl_seconds=int(self.executor.lease_seconds),
-                    allow_time_autodelete=bool(self.executor.allow_time_autodelete),
+                    allow_time_autodelete=allow_time_autodelete,
                 )
 
         if transfer.outcome == "claim_unavailable":

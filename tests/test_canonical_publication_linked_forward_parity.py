@@ -137,6 +137,7 @@ def test_exact_ordered_forward_parity_resolves_internal_channel_ids(tmp_path) ->
                 ]
                 assert proof.disable_notification is True
                 assert proof.pin_on is False
+                assert proof.time_autodelete_requested is False
         finally:
             await engine.dispose()
 
@@ -227,24 +228,26 @@ def test_missing_forward_target_is_clean_parity_rejection(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_forward_parity_allows_exact_pin_but_rejects_timer_and_execution_evidence(
-    tmp_path,
-) -> None:
+def test_forward_parity_composes_exact_pin_and_pristine_base_timer(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'forward-parity-scope.db'}"
+            f"sqlite+aiosqlite:///{tmp_path / 'forward-parity-composition.db'}"
         )
         try:
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
 
-            publication_id, task_id, *_rest, pin_plan = await _seed_linked(
+            publication_id, task_id, *_rest, plan = await _seed_linked(
                 Session,
                 seed=4,
                 runtime_builder=lambda a, b: {
+                    "silent": True,
                     "forward_to": [int(a.id)],
                     "pin_on": True,
+                    "autodelete_seconds": 60,
+                    "autodelete_views": 0,
+                    "autodelete_report": True,
                 },
             )
             async with Session() as session:
@@ -254,56 +257,61 @@ def test_forward_parity_allows_exact_pin_but_rejects_timer_and_execution_evidenc
                 proof = await CanonicalPublicationLinkedForwardParityService(session).prove(
                     task=task,
                     publication=publication,
-                    plan=pin_plan,
+                    plan=plan,
                 )
                 assert proof is not None
                 assert proof.pin_on is True
+                assert proof.time_autodelete_seconds == 60
+                assert proof.autodelete_report is True
+        finally:
+            await engine.dispose()
 
-            publication_id, task_id, *_rest, timer_plan = await _seed_linked(
-                Session,
-                seed=5,
-                runtime_builder=lambda a, b: {
-                    "forward_to": [int(a.id)],
-                    "autodelete_seconds": 60,
-                },
-            )
-            async with Session() as session:
-                publication = await session.get(Publication, publication_id)
-                task = await session.get(PostTask, task_id)
-                assert publication is not None and task is not None
-                assert (
-                    await CanonicalPublicationLinkedForwardParityService(session).prove(
-                        task=task,
-                        publication=publication,
-                        plan=timer_plan,
-                    )
-                    is None
-                )
+    asyncio.run(run())
 
-            publication_id, task_id, *_rest, evidence_plan = await _seed_linked(
-                Session,
-                seed=6,
-                runtime_builder=lambda a, b: {"forward_to": [int(a.id)]},
-            )
-            async with Session() as session:
-                task = await session.get(PostTask, task_id)
-                assert task is not None
-                payload = dict(task.payload or {})
-                payload["result_ids"] = [6001]
-                task.payload = payload
-                await session.commit()
-            async with Session() as session:
-                publication = await session.get(Publication, publication_id)
-                task = await session.get(PostTask, task_id)
-                assert publication is not None and task is not None
-                assert (
-                    await CanonicalPublicationLinkedForwardParityService(session).prove(
-                        task=task,
-                        publication=publication,
-                        plan=evidence_plan,
-                    )
-                    is None
+
+def test_forward_timer_generated_state_or_result_evidence_blocks_parity(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'forward-parity-generated-state.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+
+            for seed, key, value in (
+                (5, "autodelete_effective_seconds", 60),
+                (6, "autodelete_at", "2026-08-11T20:00:00+00:00"),
+                (7, "result_ids", [7001]),
+            ):
+                publication_id, task_id, *_rest, plan = await _seed_linked(
+                    Session,
+                    seed=seed,
+                    runtime_builder=lambda a, b: {
+                        "forward_to": [int(a.id)],
+                        "autodelete_seconds": 60,
+                        "autodelete_report": True,
+                    },
                 )
+                async with Session() as session:
+                    task = await session.get(PostTask, task_id)
+                    assert task is not None
+                    payload = dict(task.payload or {})
+                    payload[key] = value
+                    task.payload = payload
+                    await session.commit()
+                async with Session() as session:
+                    publication = await session.get(Publication, publication_id)
+                    task = await session.get(PostTask, task_id)
+                    assert publication is not None and task is not None
+                    assert (
+                        await CanonicalPublicationLinkedForwardParityService(session).prove(
+                            task=task,
+                            publication=publication,
+                            plan=plan,
+                        )
+                        is None
+                    )
         finally:
             await engine.dispose()
 
