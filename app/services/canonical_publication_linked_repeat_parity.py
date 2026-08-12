@@ -24,7 +24,14 @@ from app.services.scheduling import as_utc
 
 _NEUTRAL_NUMBER_VALUES = (None, False, 0, "0", "")
 _REPEAT_RUNTIME_KEYS = frozenset(
-    {"silent", "pin_on", "forward_to", "autodelete_views", "autodelete_report"}
+    {
+        "silent",
+        "pin_on",
+        "forward_to",
+        "autodelete_seconds",
+        "autodelete_views",
+        "autodelete_report",
+    }
 )
 
 
@@ -37,6 +44,7 @@ class CanonicalPublicationLinkedRepeatParityProof:
     root_occurrence: bool
     pin_on: bool = False
     forward_channel_ids: tuple[int, ...] = ()
+    time_autodelete_seconds: int | None = None
     views_autodelete_threshold: int | None = None
     autodelete_report: bool = False
     views_pin_forward_composed: bool = False
@@ -69,7 +77,7 @@ def _repeat_rule(plan: CanonicalPublicationDeliveryPlan) -> tuple[int, dict[str,
 
 def _repeat_runtime_options(
     plan: CanonicalPublicationDeliveryPlan,
-) -> tuple[dict[str, Any], tuple[int, ...], int | None, bool] | None:
+) -> tuple[dict[str, Any], tuple[int, ...], int | None, int | None, bool] | None:
     try:
         options = plan.runtime_options()
     except (TypeError, ValueError):
@@ -85,15 +93,26 @@ def _repeat_runtime_options(
     if capability is None:
         return None
     forward_ids = tuple(int(channel_id) for channel_id in capability.forward_to)
+    time_seconds = capability.time_autodelete_seconds
     views_threshold = capability.views_autodelete_threshold
     report = bool(capability.autodelete_report)
 
-    if views_threshold is None and "autodelete_report" in options:
+    if time_seconds is not None:
+        # First time-family stage is plain/silent repeat+time only. Pin/forward each need
+        # later independent composition proofs, and the generic parser keeps time+views
+        # mutually exclusive. Effective/generated timer keys are not admitted at all.
+        if "autodelete_seconds" not in options or _positive_int(
+            options.get("autodelete_seconds")
+        ) != int(time_seconds):
+            return None
+        if capability.pin_on or forward_ids:
+            return None
+    elif views_threshold is None and "autodelete_report" in options:
         # Report has no independent meaning. This stays explicit against future parser
         # widening even though the generic parser already rejects it.
         return None
 
-    return deepcopy(options), forward_ids, views_threshold, report
+    return deepcopy(options), forward_ids, time_seconds, views_threshold, report
 
 
 def _canonical_group_id(
@@ -173,17 +192,48 @@ def _legacy_views_intent_matches(
     return True
 
 
+def _legacy_time_intent_matches(
+    payload: Mapping[str, Any],
+    runtime_options: Mapping[str, Any],
+    *,
+    seconds: int | None,
+    report: bool,
+) -> bool:
+    if seconds is None:
+        return True
+
+    if (
+        "autodelete_seconds" not in payload
+        or payload.get("autodelete_seconds") != runtime_options.get("autodelete_seconds")
+        or _positive_int(payload.get("autodelete_seconds")) != int(seconds)
+    ):
+        return False
+
+    if "autodelete_report" in runtime_options:
+        if (
+            type(payload.get("autodelete_report")) is not bool
+            or payload.get("autodelete_report") is not report
+        ):
+            return False
+    elif payload.get("autodelete_report") not in (None, False):
+        return False
+
+    # Time and views stay mutually exclusive at parity as well as in the generic parser.
+    if payload.get("autodelete_views") not in _NEUTRAL_NUMBER_VALUES:
+        return False
+    return True
+
+
 class CanonicalPublicationLinkedRepeatParityService:
     """Read-only proof for pristine fixed-delay linked repeat handoff.
 
-    Pin and ordered-forward already have exact legacy parity, and views has independent
-    parity for each. This stage additionally recognizes their exact combined read-only
-    shape and emits `views_pin_forward_composed=True` only when views threshold, real pin
-    intent and a non-empty ordered forward target set are all simultaneously proven.
+    Existing pin/forward/views slices retain their exact parity. Plain/silent repeat+time
+    now has a read-only parity slice for queue-time `autodelete_seconds` and optional
+    report intent, while pin/forward time compositions remain closed for later stages.
 
-    The combined proof bit is evidence only. Existing strict/lifecycle/destructive facts
-    do not consume it and remain default-closed, so independent pin/forward authority can
-    never be mistaken for combined provider authority.
+    This is evidence only. #330 explicitly hard-closes every repeat+time strict claim until
+    the current ancestry converges with the durable per-message #281 destructive ledger.
+    No primary, timer materialization or Telegram DELETE authority is created here.
     """
 
     def prove(
@@ -229,7 +279,13 @@ class CanonicalPublicationLinkedRepeatParityService:
         expected = _expected_transport_payload(plan)
         if runtime_profile is None or current is None or expected is None:
             return None
-        runtime_options, forward_ids, views_threshold, autodelete_report = runtime_profile
+        (
+            runtime_options,
+            forward_ids,
+            time_seconds,
+            views_threshold,
+            autodelete_report,
+        ) = runtime_profile
         if any(key in current for key in _FORBIDDEN_EPHEMERAL_KEYS):
             return None
         if not _identity_markers_match(current, publication=publication, plan=plan):
@@ -253,6 +309,13 @@ class CanonicalPublicationLinkedRepeatParityService:
             current,
             runtime_options,
             threshold=views_threshold,
+            report=autodelete_report,
+        ):
+            return None
+        if not _legacy_time_intent_matches(
+            current,
+            runtime_options,
+            seconds=time_seconds,
             report=autodelete_report,
         ):
             return None
@@ -289,6 +352,9 @@ class CanonicalPublicationLinkedRepeatParityService:
         if views_threshold is not None:
             current_clean.pop("autodelete_views", None)
             current_clean.pop("autodelete_report", None)
+        if time_seconds is not None:
+            current_clean.pop("autodelete_seconds", None)
+            current_clean.pop("autodelete_report", None)
         stripped_current = _strip_neutral_effect_fields(current_clean)
         stripped_expected = _strip_neutral_effect_fields(deepcopy(expected))
         if (
@@ -307,6 +373,9 @@ class CanonicalPublicationLinkedRepeatParityService:
             root_occurrence=root_occurrence,
             pin_on=pin_on,
             forward_channel_ids=forward_ids,
+            time_autodelete_seconds=(
+                int(time_seconds) if time_seconds is not None else None
+            ),
             views_autodelete_threshold=views_threshold,
             autodelete_report=autodelete_report,
             views_pin_forward_composed=combined,
