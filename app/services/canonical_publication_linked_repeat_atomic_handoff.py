@@ -15,12 +15,18 @@ from app.services.canonical_publication_delivery_atomic_handoff_claim import (
     CanonicalPublicationAtomicHandoffClaimResult,
 )
 from app.services.canonical_publication_delivery_planner import CanonicalPublicationDeliveryPlanner
+from app.services.canonical_publication_delivery_runtime_capability import (
+    parse_canonical_publication_delivery_runtime_capability,
+)
 from app.services.canonical_publication_legacy_transport_handoff import (
     CUTOVER_META_KEY,
     _mapping,
 )
 from app.services.canonical_publication_linked_repeat_parity import (
     CanonicalPublicationLinkedRepeatParityService,
+)
+from app.services.canonical_publication_linked_repeat_time_pin_parity import (
+    CanonicalPublicationLinkedRepeatTimePinParityService,
 )
 from app.services.canonical_publication_repeat_capability_claim import (
     CanonicalPublicationRepeatCapabilityClaimService,
@@ -44,9 +50,10 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
     `sending + Attempt #1 + lease`.
 
     Plain repeat+time requires both the destructive time dependency and its dedicated
-    repeat+time composition fact. Neither is inferred from parity, configuration, nor a
-    generic repeat fact. Missing strict-claim authority rolls every prepared legacy
-    cutover mutation back atomically.
+    repeat+time composition fact. Repeat+time+pin additionally requires its independent
+    composition fact; exact time+pin intent is routed through a separate read-only parity
+    proof rather than weakening generic repeat parity. Missing strict-claim authority
+    rolls every prepared legacy cutover mutation back atomically.
 
     Repeat+views requires concrete views availability plus its dedicated composition fact.
     Views+pin and views+ordered-forward each require an additional independent fact;
@@ -80,6 +87,7 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
         allow_repeat: bool = False,
         allow_time_autodelete: bool = False,
         allow_repeat_time: bool = False,
+        allow_repeat_time_pin: bool = False,
         allow_views_autodelete: bool = False,
         allow_repeat_views: bool = False,
         allow_repeat_views_pin: bool = False,
@@ -231,7 +239,29 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
                     task_id,
                 )
 
-            parity = CanonicalPublicationLinkedRepeatParityService().prove(
+            try:
+                runtime_options = plan.runtime_options()
+            except (TypeError, ValueError):
+                runtime_options = None
+            capability = (
+                parse_canonical_publication_delivery_runtime_capability(runtime_options)
+                if isinstance(runtime_options, dict)
+                else None
+            )
+            exact_time_pin = bool(
+                capability is not None
+                and capability.time_autodelete_requested
+                and capability.pin_on
+                and not capability.forward_to
+                and not capability.views_autodelete_requested
+                and "pin_on" in runtime_options
+            )
+            parity_service = (
+                CanonicalPublicationLinkedRepeatTimePinParityService()
+                if exact_time_pin
+                else CanonicalPublicationLinkedRepeatParityService()
+            )
+            parity = parity_service.prove(
                 task=task,
                 publication=publication,
                 schedule=schedule,
@@ -307,6 +337,7 @@ class CanonicalPublicationLinkedRepeatAtomicHandoffService:
                 allow_repeat=True,
                 allow_time_autodelete=bool(allow_time_autodelete),
                 allow_repeat_time=bool(allow_repeat_time),
+                allow_repeat_time_pin=bool(allow_repeat_time_pin),
                 allow_views_autodelete=bool(allow_views_autodelete),
                 allow_repeat_views=bool(allow_repeat_views),
                 allow_repeat_views_pin=bool(allow_repeat_views_pin),
