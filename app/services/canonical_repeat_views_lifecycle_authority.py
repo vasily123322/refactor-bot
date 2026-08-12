@@ -19,7 +19,7 @@ from app.services.telegram_results import normalize_telegram_message_ids
 
 
 _REPEAT_VIEWS_RUNTIME_KEYS = frozenset(
-    {"silent", "autodelete_views", "autodelete_report"}
+    {"silent", "pin_on", "autodelete_views", "autodelete_report"}
 )
 
 
@@ -45,16 +45,16 @@ def _mapping(value: Any) -> dict[str, Any] | None:
 class CanonicalRepeatViewsLifecycleAuthorityService:
     """Lock and prove one terminal canonical repeat occurrence owns views lifecycle state.
 
-    This is a provider-free prerequisite. It composes the centralized repeat-continuation
-    authority proof from the TOCTOU fix instead of creating another repeat-origin policy.
-    The additional proof is intentionally limited to the first views slice: fixed-delay
-    repeat + optional silent + positive views threshold + optional report, with no
-    pin/forward/time composition.
+    This provider-free prerequisite composes the centralized repeat-continuation authority
+    proof from the TOCTOU fix instead of creating another repeat-origin policy. Plain/
+    silent repeat+views remains the default profile. The already-parity-proven views+pin
+    lifecycle can be inspected only with the explicit `allow_pin` proof fact; production
+    callers that do not pass it remain fail-closed.
 
-    The indexed views row is occurrence-local (`publication_id`) and is locked in the same
-    transaction. Exact source/Attempt Telegram message identity is also required so a
-    later repeat-aware destructive consumer can bind observations/deletes to the canonical
-    delivery that created this state.
+    Ordered forward and all time-autodelete compositions remain outside this proof. The
+    indexed views row is occurrence-local and locked in the same transaction, while exact
+    source/Attempt Telegram message identity is required before any later destructive
+    consumer can bind observations/deletes to this canonical delivery.
 
     No Telegram call, lease acquisition, candidate selection or destructive authority is
     granted by this service.
@@ -66,6 +66,8 @@ class CanonicalRepeatViewsLifecycleAuthorityService:
     async def lock_and_prove(
         self,
         publication_id: int,
+        *,
+        allow_pin: bool = False,
     ) -> CanonicalRepeatViewsLifecycleAuthority | None:
         authority = await CanonicalRepeatContinuationAuthorityService(
             self.session
@@ -84,8 +86,8 @@ class CanonicalRepeatViewsLifecycleAuthorityService:
             capability is None
             or capability.views_autodelete_threshold is None
             or capability.time_autodelete_requested
-            or capability.pin_on
             or capability.forward_to
+            or (capability.pin_on and not bool(allow_pin))
         ):
             return None
 
