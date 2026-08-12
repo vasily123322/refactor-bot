@@ -19,6 +19,9 @@ _REPEAT_VIEWS_RUNTIME_KEYS = frozenset(
     {"silent", "autodelete_views", "autodelete_report"}
 )
 _REPEAT_RUNTIME_KEYS = _ESTABLISHED_REPEAT_RUNTIME_KEYS | _REPEAT_VIEWS_RUNTIME_KEYS
+_REPEAT_TIME_RUNTIME_KEYS = frozenset(
+    {"autodelete_seconds", "autodelete_effective_seconds"}
+)
 
 
 def _positive_int(value: Any) -> int | None:
@@ -58,7 +61,17 @@ def _strict_repeat_runtime_options(
         options = plan.runtime_options()
     except (TypeError, ValueError):
         return None
-    if not isinstance(options, dict) or not set(options).issubset(_REPEAT_RUNTIME_KEYS):
+    if not isinstance(options, dict):
+        return None
+
+    # Repeat+time destructive authority stays explicitly hard-closed until the current
+    # migration ancestry converges with the durable per-message time action ledger. The
+    # generic non-repeat `allow_time_autodelete` fact must never bypass this repeat gate.
+    # Keep both queue-time and generated/effective timer keys closed so future key-shape
+    # widening cannot accidentally enable an older retryable DELETE path.
+    if any(key in options for key in _REPEAT_TIME_RUNTIME_KEYS):
+        return None
+    if not set(options).issubset(_REPEAT_RUNTIME_KEYS):
         return None
 
     capability = parse_canonical_publication_delivery_runtime_capability(options)
@@ -129,8 +142,10 @@ class CanonicalPublicationRepeatCapabilityClaimService(
     pin and forward fact set plus `allow_repeat_views_pin_forward`. Independent pin and
     forward facts can never implicitly compose into combined authority.
 
-    Time/dual-delete/unknown effects remain closed. Ordered target resolution and durable
-    Telegram destination snapshot remain owned by the parent capability claim.
+    Repeat+time is intentionally hard-closed until its destructive ledger ancestry is
+    converged. Time+views, unknown effects and all unproven compositions remain closed.
+    Ordered target resolution and durable Telegram destination snapshot remain owned by
+    the parent capability claim.
     """
 
     async def claim_supported(
