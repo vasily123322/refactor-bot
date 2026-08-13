@@ -675,6 +675,15 @@ class PostTaskRetentionService:
                     skipped_delivery_evidence += 1
                     continue
 
+                # Execution/destructive completion retires runtime authority, not the
+                # current compatibility/serialization B-seam. Until a separate durable
+                # compatibility-retirement fact exists, a Publication that still names
+                # this PostTask must keep both the link and the row.
+                if publication.legacy_post_task_id is not None:
+                    await self.session.rollback()
+                    skipped_content_linkage += 1
+                    continue
+
                 # Re-check the lease row while the candidate is locked. Terminal tasks
                 # should not normally acquire a fresh lease, but a late active lease
                 # must still block deletion. Expired leases are compatibility debris and
