@@ -15,11 +15,15 @@ from .tz import router as tz_commands
 from .sources import router as sources_commands
 from .moderation import router as moderation_commands
 from .ai_result_actions import router as ai_result_actions_commands
+from app.core.canonical_migration_control_middleware import (
+    CanonicalMigrationControlMiddleware,
+)
 from app.core.settings_channel_access import SettingsChannelOwnerMiddleware
 
 # Реестр роутеров: start/menu отдельно, остальное в main.py
 main_router = Router()
 main_router.callback_query.outer_middleware(SettingsChannelOwnerMiddleware())
+main_router.callback_query.outer_middleware(CanonicalMigrationControlMiddleware())
 main_router.include_router(start_commands)
 main_router.include_router(command_shortcuts)
 main_router.include_router(navigation_commands)
