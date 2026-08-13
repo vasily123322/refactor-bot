@@ -39,36 +39,74 @@ def canonical_publication_delivery_nonrepeat_forward_started() -> bool:
 
 
 def canonical_publication_delivery_nonrepeat_pin_forward_started() -> bool:
-    return bool(_PIN_FORWARD and canonical_publication_delivery_nonrepeat_pin_started() and canonical_publication_delivery_nonrepeat_forward_started())
+    return bool(
+        _PIN_FORWARD
+        and canonical_publication_delivery_nonrepeat_pin_started()
+        and canonical_publication_delivery_nonrepeat_forward_started()
+    )
 
 
 def canonical_publication_delivery_nonrepeat_time_started() -> bool:
-    return bool(_TIME and canonical_publication_delivery_primary_started() and canonical_publication_delivery_time_autodelete_started())
+    return bool(
+        _TIME
+        and canonical_publication_delivery_primary_started()
+        and canonical_publication_delivery_time_autodelete_started()
+    )
 
 
 def canonical_publication_delivery_nonrepeat_time_pin_started() -> bool:
-    return bool(_TIME_PIN and canonical_publication_delivery_nonrepeat_time_started() and canonical_publication_delivery_nonrepeat_pin_started())
+    return bool(
+        _TIME_PIN
+        and canonical_publication_delivery_nonrepeat_time_started()
+        and canonical_publication_delivery_nonrepeat_pin_started()
+    )
 
 
 def canonical_publication_delivery_nonrepeat_time_forward_started() -> bool:
-    return bool(_TIME_FORWARD and canonical_publication_delivery_nonrepeat_time_started() and canonical_publication_delivery_nonrepeat_forward_started())
+    return bool(
+        _TIME_FORWARD
+        and canonical_publication_delivery_nonrepeat_time_started()
+        and canonical_publication_delivery_nonrepeat_forward_started()
+    )
 
 
 def canonical_publication_delivery_nonrepeat_time_pin_forward_started() -> bool:
-    return bool(_TIME_PIN_FORWARD and canonical_publication_delivery_nonrepeat_time_pin_started() and canonical_publication_delivery_nonrepeat_time_forward_started() and canonical_publication_delivery_nonrepeat_pin_forward_started())
+    return bool(
+        _TIME_PIN_FORWARD
+        and canonical_publication_delivery_nonrepeat_time_pin_started()
+        and canonical_publication_delivery_nonrepeat_time_forward_started()
+        and canonical_publication_delivery_nonrepeat_pin_forward_started()
+    )
 
 
 def canonical_publication_delivery_nonrepeat_views_started() -> bool:
-    return bool(_VIEWS and canonical_publication_delivery_primary_started() and canonical_publication_delivery_views_autodelete_started())
+    return bool(
+        _VIEWS
+        and canonical_publication_delivery_primary_started()
+        and canonical_publication_delivery_views_autodelete_started()
+    )
 
 
 def canonical_publication_delivery_nonrepeat_views_pin_started() -> bool:
-    return bool(_VIEWS_PIN and canonical_publication_delivery_nonrepeat_views_started() and canonical_publication_delivery_nonrepeat_pin_started())
+    return bool(
+        _VIEWS_PIN
+        and canonical_publication_delivery_nonrepeat_views_started()
+        and canonical_publication_delivery_nonrepeat_pin_started()
+    )
 
 
 def canonical_publication_delivery_nonrepeat_views_forward_started() -> bool:
-    return bool(_VIEWS_FORWARD and canonical_publication_delivery_nonrepeat_views_started() and canonical_publication_delivery_nonrepeat_forward_started())
+    return bool(
+        _VIEWS_FORWARD
+        and canonical_publication_delivery_nonrepeat_views_started()
+        and canonical_publication_delivery_nonrepeat_forward_started()
+    )
 
 
 def canonical_publication_delivery_nonrepeat_views_pin_forward_started() -> bool:
-    return bool(_VIEWS_PIN_FORWARD and canonical_publication_delivery_nonrepeat_views_pin_started() and canonical_publication_delivery_nonrepeat_views_forward_started() and canonical_publication_delivery_nonrepeat_pin_forward_started())
+    return bool(
+        _VIEWS_PIN_FORWARD
+        and canonical_publication_delivery_nonrepeat_views_pin_started()
+        and canonical_publication_delivery_nonrepeat_views_forward_started()
+        and canonical_publication_delivery_nonrepeat_pin_forward_started()
+    )
