@@ -21,14 +21,9 @@ from app.services.canonical_publication_delivery_authority import (
     canonical_publication_delivery_repeat_views_pin_forward_started,
     canonical_publication_delivery_repeat_views_pin_started,
     canonical_publication_delivery_repeat_views_started,
-    canonical_publication_delivery_time_autodelete_started,
-    canonical_publication_delivery_views_autodelete_started,
 )
 from app.services.canonical_publication_delivery_planner import (
     CanonicalPublicationDeliveryPlanner,
-)
-from app.services.canonical_publication_legacy_transport_handoff import (
-    CanonicalPublicationLegacyTransportHandoffService,
 )
 from app.services.canonical_publication_linked_repeat_parity import (
     CanonicalPublicationLinkedRepeatParityService,
@@ -41,6 +36,9 @@ from app.services.canonical_publication_linked_repeat_time_pin_forward_parity im
 )
 from app.services.canonical_publication_linked_repeat_time_pin_parity import (
     CanonicalPublicationLinkedRepeatTimePinParityService,
+)
+from app.services.canonical_publication_nonrepeat_scheduler_proof import (
+    CanonicalPublicationNonrepeatSchedulerProofService,
 )
 from app.workers.canonical_recovery_scheduler import Scheduler as RecoveryScheduler
 from app.workers.canonical_repeat_continuation import CanonicalRepeatContinuationWorker
@@ -408,48 +406,25 @@ class Scheduler(RecoveryScheduler):
         )
         return True
 
-    async def _retire_transport_for_canonical_primary(
+    async def _yield_proven_nonrepeat_to_canonical_primary(
         self,
         session: AsyncSession,
         *,
         task_id: int,
     ) -> bool:
-        """Atomically hand an exact started-capability transport to canonical primary."""
+        """Yield one exact non-repeat profile without mutating cutover authority."""
 
-        if not canonical_publication_delivery_primary_started():
-            return False
-
-        publication_ids = list(
-            (
-                await session.execute(
-                    select(Publication.id)
-                    .where(Publication.legacy_post_task_id == int(task_id))
-                    .limit(2)
-                )
-            ).scalars().all()
-        )
-        if len(publication_ids) != 1:
-            return False
-
-        result = await CanonicalPublicationLegacyTransportHandoffService(
+        proof = await CanonicalPublicationNonrepeatSchedulerProofService(
             session
-        ).retire_for_canonical_delivery(
-            int(publication_ids[0]),
-            allow_time_autodelete=(
-                canonical_publication_delivery_time_autodelete_started()
-            ),
-            allow_views_autodelete=(
-                canonical_publication_delivery_views_autodelete_started()
-            ),
-            allow_forward=True,
-        )
-        if result.outcome != "retired":
+        ).prove_plain(task_id=int(task_id))
+        if proof is None:
             return False
 
         logger.info(
-            "Scheduler: retired legacy transport for canonical primary post_id={} publication_id={}",
+            "Scheduler: yielding exact nonrepeat to canonical primary post_id={} publication_id={} profile={}",
             int(task_id),
-            int(publication_ids[0]),
+            int(proof.publication_id),
+            proof.profile,
         )
         return True
 
@@ -458,7 +433,7 @@ class Scheduler(RecoveryScheduler):
         session: AsyncSession,
         items: list[PostTask],
     ) -> None:
-        """Yield/retire exact canonical work before inherited legacy lease claim."""
+        """Yield exact canonical work before inherited legacy lease claim."""
 
         if not items or not canonical_publication_delivery_primary_started():
             await super()._mark_processing(session, items)
@@ -474,7 +449,7 @@ class Scheduler(RecoveryScheduler):
                 )
                 if yielded_repeat:
                     continue
-                retired = await self._retire_transport_for_canonical_primary(
+                yielded_nonrepeat = await self._yield_proven_nonrepeat_to_canonical_primary(
                     session,
                     task_id=task_id,
                 )
@@ -483,13 +458,13 @@ class Scheduler(RecoveryScheduler):
             except Exception as exc:
                 await session.rollback()
                 logger.warning(
-                    "Scheduler: canonical authority retirement failed post_id={} type={}",
+                    "Scheduler: canonical authority proof failed post_id={} type={}",
                     task_id,
                     type(exc).__name__,
                 )
-                retired = False
+                yielded_nonrepeat = False
 
-            if retired:
+            if yielded_nonrepeat:
                 continue
 
             post = await session.get(PostTask, task_id, populate_existing=True)
