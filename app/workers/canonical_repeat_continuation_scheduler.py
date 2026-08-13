@@ -32,12 +32,12 @@ from app.workers.canonical_repeat_continuation import CanonicalRepeatContinuatio
 class Scheduler(RecoveryScheduler):
     """Recovery scheduler plus provider-free canonical repeat continuation lifecycle.
 
-    Exact plain/silent fixed-delay linked repeats plus exact pin-only and forward-only
-    variants may yield before the inherited legacy lease when a successfully started
-    canonical repeat primary is live. The scheduler performs no repeat cutover mutation
-    itself; the canonical primary remains the sole atomic handoff/claim owner. Combined
-    pin+forward and destructive repeat compositions continue through the inherited legacy
-    callback.
+    Exact non-destructive fixed-delay linked repeats may yield before the inherited legacy
+    lease when a successfully started canonical repeat primary is live. This includes
+    plain/silent, pin-only, forward-only, and pin+forward profiles. The scheduler performs
+    no repeat cutover mutation itself; the canonical primary remains the sole atomic
+    handoff/claim owner. Destructive repeat compositions continue through the inherited
+    legacy callback.
 
     Production constructs the scheduler with an async session factory. A single long-lived
     AsyncSession cannot safely back an independent polling worker, so continuation stays
@@ -147,7 +147,21 @@ class Scheduler(RecoveryScheduler):
             and not proof.pin_on
             and bool(proof.forward_channel_ids)
         )
-        if not (plain_profile or pin_profile or forward_profile):
+        pin_forward_profile = (
+            runtime_keys.issubset({"silent", "pin_on", "forward_to"})
+            and runtime_options.get("pin_on") is True
+            and "forward_to" in runtime_options
+            and isinstance(forward_value, list)
+            and bool(forward_value)
+            and proof.pin_on
+            and bool(proof.forward_channel_ids)
+        )
+        if not (
+            plain_profile
+            or pin_profile
+            or forward_profile
+            or pin_forward_profile
+        ):
             return False
         if (
             proof.time_autodelete_seconds is not None
