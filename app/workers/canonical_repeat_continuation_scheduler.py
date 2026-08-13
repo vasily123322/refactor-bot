@@ -14,6 +14,7 @@ from app.services.canonical_publication_delivery_authority import (
     canonical_publication_delivery_primary_started,
     canonical_publication_delivery_repeat_started,
     canonical_publication_delivery_repeat_time_forward_started,
+    canonical_publication_delivery_repeat_time_pin_forward_started,
     canonical_publication_delivery_repeat_time_pin_started,
     canonical_publication_delivery_repeat_time_started,
     canonical_publication_delivery_time_autodelete_started,
@@ -31,6 +32,9 @@ from app.services.canonical_publication_linked_repeat_parity import (
 from app.services.canonical_publication_linked_repeat_time_forward_parity import (
     CanonicalPublicationLinkedRepeatTimeForwardParityService,
 )
+from app.services.canonical_publication_linked_repeat_time_pin_forward_parity import (
+    CanonicalPublicationLinkedRepeatTimePinForwardParityService,
+)
 from app.services.canonical_publication_linked_repeat_time_pin_parity import (
     CanonicalPublicationLinkedRepeatTimePinParityService,
 )
@@ -43,16 +47,11 @@ class Scheduler(RecoveryScheduler):
 
     Exact fixed-delay linked repeats may yield before the inherited legacy lease when a
     successfully started canonical repeat primary is live. Established non-destructive
-    plain/silent, pin-only, forward-only and pin+forward profiles remain eligible. Exact
-    plain/silent repeat+time, repeat+time+pin, and repeat+time+ordered-forward may also
-    yield only while their dedicated canonical composition capabilities are live. The
-    scheduler performs no repeat cutover mutation itself; the canonical primary remains
-    the sole atomic handoff/claim owner. Other destructive repeat compositions continue
-    through the inherited legacy callback.
-
-    Production constructs the scheduler with an async session factory. A single long-lived
-    AsyncSession cannot safely back an independent polling worker, so continuation stays
-    unavailable in that unsupported construction shape rather than sharing a session.
+    profiles remain eligible. Exact repeat+time compositions may yield only while their
+    dedicated canonical composition capabilities are live, including the independently
+    proven combined pin+ordered-forward profile. Scheduler admission performs no cutover
+    mutation; the canonical primary remains the sole atomic handoff/claim owner. Views and
+    other unsupported destructive compositions continue through the inherited legacy path.
     """
 
     def __init__(
@@ -129,6 +128,23 @@ class Scheduler(RecoveryScheduler):
             return False
 
         runtime_keys = set(runtime_options)
+        forward_value = runtime_options.get("forward_to")
+        preliminary_time_pin_forward_profile = (
+            runtime_keys.issubset(
+                {
+                    "silent",
+                    "pin_on",
+                    "forward_to",
+                    "autodelete_seconds",
+                    "autodelete_report",
+                }
+            )
+            and runtime_options.get("pin_on") is True
+            and "forward_to" in runtime_options
+            and isinstance(forward_value, list)
+            and bool(forward_value)
+            and "autodelete_seconds" in runtime_options
+        )
         preliminary_time_pin_profile = (
             runtime_keys.issubset(
                 {"silent", "pin_on", "autodelete_seconds", "autodelete_report"}
@@ -136,7 +152,6 @@ class Scheduler(RecoveryScheduler):
             and runtime_options.get("pin_on") is True
             and "autodelete_seconds" in runtime_options
         )
-        forward_value = runtime_options.get("forward_to")
         preliminary_time_forward_profile = (
             runtime_keys.issubset(
                 {"silent", "forward_to", "autodelete_seconds", "autodelete_report"}
@@ -146,7 +161,9 @@ class Scheduler(RecoveryScheduler):
             and bool(forward_value)
             and "autodelete_seconds" in runtime_options
         )
-        if preliminary_time_pin_profile:
+        if preliminary_time_pin_forward_profile:
+            parity_service = CanonicalPublicationLinkedRepeatTimePinForwardParityService()
+        elif preliminary_time_pin_profile:
             parity_service = CanonicalPublicationLinkedRepeatTimePinParityService()
         elif preliminary_time_forward_profile:
             parity_service = CanonicalPublicationLinkedRepeatTimeForwardParityService()
@@ -230,11 +247,27 @@ class Scheduler(RecoveryScheduler):
             and not proof.views_pin_forward_composed
             and runtime_options.get("autodelete_report") in (None, False)
         )
+        time_pin_forward_profile = (
+            preliminary_time_pin_forward_profile
+            and positive_exact_time
+            and proof.pin_on
+            and bool(proof.forward_channel_ids)
+            and tuple(proof.forward_channel_ids) == tuple(forward_value)
+            and proof.views_autodelete_threshold is None
+            and not proof.autodelete_report
+            and not proof.views_pin_forward_composed
+            and runtime_options.get("autodelete_report") in (None, False)
+        )
         if time_profile and not canonical_publication_delivery_repeat_time_started():
             return False
         if time_pin_profile and not canonical_publication_delivery_repeat_time_pin_started():
             return False
         if time_forward_profile and not canonical_publication_delivery_repeat_time_forward_started():
+            return False
+        if (
+            time_pin_forward_profile
+            and not canonical_publication_delivery_repeat_time_pin_forward_started()
+        ):
             return False
         if not (
             plain_profile
@@ -244,12 +277,18 @@ class Scheduler(RecoveryScheduler):
             or time_profile
             or time_pin_profile
             or time_forward_profile
+            or time_pin_forward_profile
         ):
             return False
         if (
             (
                 proof.time_autodelete_seconds is not None
-                and not (time_profile or time_pin_profile or time_forward_profile)
+                and not (
+                    time_profile
+                    or time_pin_profile
+                    or time_forward_profile
+                    or time_pin_forward_profile
+                )
             )
             or proof.views_autodelete_threshold is not None
             or proof.autodelete_report
