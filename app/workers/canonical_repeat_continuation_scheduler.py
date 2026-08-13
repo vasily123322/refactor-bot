@@ -51,9 +51,10 @@ class Scheduler(RecoveryScheduler):
     Exact fixed-delay linked repeats may yield before the inherited legacy lease when a
     successfully started canonical repeat primary is live. Established non-destructive
     profiles and proven repeat+time compositions remain eligible. Exact repeat+views plain,
-    pin and ordered-forward profiles require their own started capabilities. Scheduler
-    admission performs no cutover mutation; canonical primary remains the sole atomic
-    handoff/claim owner. Combined views and time+views remain legacy.
+    pin and ordered-forward profiles may yield only while their dedicated started
+    capabilities are live. Scheduler admission performs no cutover mutation; canonical
+    primary remains the sole atomic handoff/claim owner. Combined views and time+views
+    remain on the inherited legacy path.
     """
 
     def __init__(
@@ -78,7 +79,9 @@ class Scheduler(RecoveryScheduler):
     def repeat_continuation_available(self) -> bool:
         return self._repeat_continuation_worker is not None
 
-    def _continuation_session_factory(self) -> async_sessionmaker[AsyncSession] | None:
+    def _continuation_session_factory(
+        self,
+    ) -> async_sessionmaker[AsyncSession] | None:
         factory = getattr(self, "session_factory", None)
         return factory if factory is not None else None
 
@@ -88,6 +91,8 @@ class Scheduler(RecoveryScheduler):
         *,
         task_id: int,
     ) -> bool:
+        """Yield one exact proven repeat profile without mutating authority."""
+
         if not canonical_publication_delivery_repeat_started():
             return False
 
@@ -129,9 +134,16 @@ class Scheduler(RecoveryScheduler):
         forward_value = runtime_options.get("forward_to")
         preliminary_time_pin_forward_profile = (
             runtime_keys.issubset(
-                {"silent", "pin_on", "forward_to", "autodelete_seconds", "autodelete_report"}
+                {
+                    "silent",
+                    "pin_on",
+                    "forward_to",
+                    "autodelete_seconds",
+                    "autodelete_report",
+                }
             )
             and runtime_options.get("pin_on") is True
+            and "forward_to" in runtime_options
             and isinstance(forward_value, list)
             and bool(forward_value)
             and "autodelete_seconds" in runtime_options
@@ -147,6 +159,7 @@ class Scheduler(RecoveryScheduler):
             runtime_keys.issubset(
                 {"silent", "forward_to", "autodelete_seconds", "autodelete_report"}
             )
+            and "forward_to" in runtime_options
             and isinstance(forward_value, list)
             and bool(forward_value)
             and "autodelete_seconds" in runtime_options
@@ -159,11 +172,20 @@ class Scheduler(RecoveryScheduler):
             parity_service = CanonicalPublicationLinkedRepeatTimeForwardParityService()
         else:
             parity_service = CanonicalPublicationLinkedRepeatParityService()
-        proof = parity_service.prove(task=task, publication=publication, schedule=schedule, plan=plan)
+        proof = parity_service.prove(
+            task=task,
+            publication=publication,
+            schedule=schedule,
+            plan=plan,
+        )
         if proof is None:
             return False
 
-        plain_profile = runtime_keys.issubset({"silent"}) and not proof.pin_on and not proof.forward_channel_ids
+        plain_profile = (
+            runtime_keys.issubset({"silent"})
+            and not proof.pin_on
+            and not proof.forward_channel_ids
+        )
         pin_profile = (
             runtime_keys.issubset({"silent", "pin_on"})
             and runtime_options.get("pin_on") is True
@@ -172,6 +194,7 @@ class Scheduler(RecoveryScheduler):
         )
         forward_profile = (
             runtime_keys.issubset({"silent", "forward_to"})
+            and "forward_to" in runtime_options
             and isinstance(forward_value, list)
             and bool(forward_value)
             and not proof.pin_on
@@ -180,6 +203,7 @@ class Scheduler(RecoveryScheduler):
         pin_forward_profile = (
             runtime_keys.issubset({"silent", "pin_on", "forward_to"})
             and runtime_options.get("pin_on") is True
+            and "forward_to" in runtime_options
             and isinstance(forward_value, list)
             and bool(forward_value)
             and proof.pin_on
@@ -187,13 +211,16 @@ class Scheduler(RecoveryScheduler):
         )
         time_value = runtime_options.get("autodelete_seconds")
         positive_exact_time = (
-            isinstance(time_value, int)
+            "autodelete_seconds" in runtime_options
+            and isinstance(time_value, int)
             and not isinstance(time_value, bool)
             and time_value > 0
             and proof.time_autodelete_seconds == time_value
         )
         time_profile = (
-            runtime_keys.issubset({"silent", "autodelete_seconds", "autodelete_report"})
+            runtime_keys.issubset(
+                {"silent", "autodelete_seconds", "autodelete_report"}
+            )
             and positive_exact_time
             and not proof.pin_on
             and not proof.forward_channel_ids
@@ -234,10 +261,10 @@ class Scheduler(RecoveryScheduler):
             and not proof.views_pin_forward_composed
             and runtime_options.get("autodelete_report") in (None, False)
         )
-
         views_value = runtime_options.get("autodelete_views")
         positive_exact_views = (
-            isinstance(views_value, int)
+            "autodelete_views" in runtime_options
+            and isinstance(views_value, int)
             and not isinstance(views_value, bool)
             and views_value > 0
             and proof.views_autodelete_threshold == views_value
@@ -253,7 +280,9 @@ class Scheduler(RecoveryScheduler):
             and runtime_options.get("autodelete_report") in (None, False)
         )
         views_pin_profile = (
-            runtime_keys.issubset({"silent", "pin_on", "autodelete_views", "autodelete_report"})
+            runtime_keys.issubset(
+                {"silent", "pin_on", "autodelete_views", "autodelete_report"}
+            )
             and runtime_options.get("pin_on") is True
             and positive_exact_views
             and proof.time_autodelete_seconds is None
@@ -264,7 +293,10 @@ class Scheduler(RecoveryScheduler):
             and runtime_options.get("autodelete_report") in (None, False)
         )
         views_forward_profile = (
-            runtime_keys.issubset({"silent", "forward_to", "autodelete_views", "autodelete_report"})
+            runtime_keys.issubset(
+                {"silent", "forward_to", "autodelete_views", "autodelete_report"}
+            )
+            and "forward_to" in runtime_options
             and isinstance(forward_value, list)
             and bool(forward_value)
             and positive_exact_views
@@ -276,23 +308,27 @@ class Scheduler(RecoveryScheduler):
             and not proof.views_pin_forward_composed
             and runtime_options.get("autodelete_report") in (None, False)
         )
-
         if time_profile and not canonical_publication_delivery_repeat_time_started():
             return False
         if time_pin_profile and not canonical_publication_delivery_repeat_time_pin_started():
             return False
         if time_forward_profile and not canonical_publication_delivery_repeat_time_forward_started():
             return False
-        if time_pin_forward_profile and not canonical_publication_delivery_repeat_time_pin_forward_started():
+        if (
+            time_pin_forward_profile
+            and not canonical_publication_delivery_repeat_time_pin_forward_started()
+        ):
             return False
         if views_profile and not canonical_publication_delivery_repeat_views_started():
             return False
         if views_pin_profile and not canonical_publication_delivery_repeat_views_pin_started():
             return False
-        if views_forward_profile and not canonical_publication_delivery_repeat_views_forward_started():
+        if (
+            views_forward_profile
+            and not canonical_publication_delivery_repeat_views_forward_started()
+        ):
             return False
-
-        allowed = (
+        if not (
             plain_profile
             or pin_profile
             or forward_profile
@@ -304,24 +340,36 @@ class Scheduler(RecoveryScheduler):
             or views_profile
             or views_pin_profile
             or views_forward_profile
-        )
-        if not allowed:
-            return False
-        if proof.time_autodelete_seconds is not None and not (
-            time_profile or time_pin_profile or time_forward_profile or time_pin_forward_profile
         ):
             return False
-        if proof.views_autodelete_threshold is not None and not (
-            views_profile or views_pin_profile or views_forward_profile
+        if (
+            (
+                proof.time_autodelete_seconds is not None
+                and not (
+                    time_profile
+                    or time_pin_profile
+                    or time_forward_profile
+                    or time_pin_forward_profile
+                )
+            )
+            or (
+                proof.views_autodelete_threshold is not None
+                and not (views_profile or views_pin_profile or views_forward_profile)
+            )
+            or proof.autodelete_report
+            or proof.views_pin_forward_composed
         ):
-            return False
-        if proof.autodelete_report or proof.views_pin_forward_composed:
             return False
 
         logger.info(
             "Scheduler: yielding exact repeat to canonical primary post_id={} publication_id={} repeat_group_id={} pin_on={} forward_targets={} time_autodelete_seconds={} views_autodelete_threshold={}",
-            int(task_id), int(publication.id), int(proof.repeat_group_id), bool(proof.pin_on),
-            len(proof.forward_channel_ids), proof.time_autodelete_seconds, proof.views_autodelete_threshold,
+            int(task_id),
+            int(publication.id),
+            int(proof.repeat_group_id),
+            bool(proof.pin_on),
+            len(proof.forward_channel_ids),
+            proof.time_autodelete_seconds,
+            proof.views_autodelete_threshold,
         )
         return True
 
@@ -331,52 +379,88 @@ class Scheduler(RecoveryScheduler):
         *,
         task_id: int,
     ) -> bool:
+        """Atomically hand an exact started-capability transport to canonical primary."""
+
         if not canonical_publication_delivery_primary_started():
             return False
-        publication_ids = list((await session.execute(
-            select(Publication.id).where(Publication.legacy_post_task_id == int(task_id)).limit(2)
-        )).scalars().all())
+
+        publication_ids = list(
+            (
+                await session.execute(
+                    select(Publication.id)
+                    .where(Publication.legacy_post_task_id == int(task_id))
+                    .limit(2)
+                )
+            ).scalars().all()
+        )
         if len(publication_ids) != 1:
             return False
-        result = await CanonicalPublicationLegacyTransportHandoffService(session).retire_for_canonical_delivery(
+
+        result = await CanonicalPublicationLegacyTransportHandoffService(
+            session
+        ).retire_for_canonical_delivery(
             int(publication_ids[0]),
-            allow_time_autodelete=canonical_publication_delivery_time_autodelete_started(),
-            allow_views_autodelete=canonical_publication_delivery_views_autodelete_started(),
+            allow_time_autodelete=(
+                canonical_publication_delivery_time_autodelete_started()
+            ),
+            allow_views_autodelete=(
+                canonical_publication_delivery_views_autodelete_started()
+            ),
             allow_forward=True,
         )
         if result.outcome != "retired":
             return False
+
         logger.info(
             "Scheduler: retired legacy transport for canonical primary post_id={} publication_id={}",
-            int(task_id), int(publication_ids[0]),
+            int(task_id),
+            int(publication_ids[0]),
         )
         return True
 
-    async def _mark_processing(self, session: AsyncSession, items: list[PostTask]) -> None:
+    async def _mark_processing(
+        self,
+        session: AsyncSession,
+        items: list[PostTask],
+    ) -> None:
+        """Yield/retire exact canonical work before inherited legacy lease claim."""
+
         if not items or not canonical_publication_delivery_primary_started():
             await super()._mark_processing(session, items)
             return
+
         selected_ids = [int(post.id) for post in items]
         legacy_candidates: list[PostTask] = []
         for task_id in selected_ids:
             try:
-                if await self._yield_proven_repeat_to_canonical_primary(session, task_id=task_id):
+                yielded_repeat = await self._yield_proven_repeat_to_canonical_primary(
+                    session,
+                    task_id=task_id,
+                )
+                if yielded_repeat:
                     continue
-                retired = await self._retire_transport_for_canonical_primary(session, task_id=task_id)
+                retired = await self._retire_transport_for_canonical_primary(
+                    session,
+                    task_id=task_id,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 await session.rollback()
                 logger.warning(
                     "Scheduler: canonical authority retirement failed post_id={} type={}",
-                    task_id, type(exc).__name__,
+                    task_id,
+                    type(exc).__name__,
                 )
                 retired = False
+
             if retired:
                 continue
+
             post = await session.get(PostTask, task_id, populate_existing=True)
             if post is not None:
                 legacy_candidates.append(post)
+
         items[:] = legacy_candidates
         await super()._mark_processing(session, items)
 
@@ -384,10 +468,14 @@ class Scheduler(RecoveryScheduler):
         await super().start()
         if not self._repeat_continuation_enabled:
             return
+
         session_factory = self._continuation_session_factory()
         if session_factory is None:
-            logger.warning("Canonical repeat continuation requested but scheduler has no session factory")
+            logger.warning(
+                "Canonical repeat continuation requested but scheduler has no session factory"
+            )
             return
+
         worker = self._continuation_worker_factory(session_factory=session_factory)
         try:
             await worker.start()
@@ -395,7 +483,9 @@ class Scheduler(RecoveryScheduler):
             try:
                 await worker.stop()
             except Exception:
-                logger.exception("Boot: failed to clean up canonical repeat continuation worker after startup failure")
+                logger.exception(
+                    "Boot: failed to clean up canonical repeat continuation worker after startup failure"
+                )
             await super().stop()
             raise
         self._repeat_continuation_worker = worker
