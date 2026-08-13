@@ -57,20 +57,6 @@ class _Profile:
     views_threshold: int | None
 
 
-_PROFILE_FACTS = {
-    "plain": canonical_publication_delivery_nonrepeat_plain_started,
-    "pin": canonical_publication_delivery_nonrepeat_pin_started,
-    "forward": canonical_publication_delivery_nonrepeat_forward_started,
-    "pin_forward": canonical_publication_delivery_nonrepeat_pin_forward_started,
-    "time": canonical_publication_delivery_nonrepeat_time_started,
-    "time_pin": canonical_publication_delivery_nonrepeat_time_pin_started,
-    "time_forward": canonical_publication_delivery_nonrepeat_time_forward_started,
-    "time_pin_forward": canonical_publication_delivery_nonrepeat_time_pin_forward_started,
-    "views": canonical_publication_delivery_nonrepeat_views_started,
-    "views_pin": canonical_publication_delivery_nonrepeat_views_pin_started,
-    "views_forward": canonical_publication_delivery_nonrepeat_views_forward_started,
-    "views_pin_forward": canonical_publication_delivery_nonrepeat_views_pin_forward_started,
-}
 _ALLOWED_RUNTIME_KEYS = frozenset(
     {
         "silent",
@@ -81,6 +67,34 @@ _ALLOWED_RUNTIME_KEYS = frozenset(
         "autodelete_report",
     }
 )
+
+
+def _profile_started(name: str) -> bool:
+    if name == "plain":
+        return canonical_publication_delivery_nonrepeat_plain_started()
+    if name == "pin":
+        return canonical_publication_delivery_nonrepeat_pin_started()
+    if name == "forward":
+        return canonical_publication_delivery_nonrepeat_forward_started()
+    if name == "pin_forward":
+        return canonical_publication_delivery_nonrepeat_pin_forward_started()
+    if name == "time":
+        return canonical_publication_delivery_nonrepeat_time_started()
+    if name == "time_pin":
+        return canonical_publication_delivery_nonrepeat_time_pin_started()
+    if name == "time_forward":
+        return canonical_publication_delivery_nonrepeat_time_forward_started()
+    if name == "time_pin_forward":
+        return canonical_publication_delivery_nonrepeat_time_pin_forward_started()
+    if name == "views":
+        return canonical_publication_delivery_nonrepeat_views_started()
+    if name == "views_pin":
+        return canonical_publication_delivery_nonrepeat_views_pin_started()
+    if name == "views_forward":
+        return canonical_publication_delivery_nonrepeat_views_forward_started()
+    if name == "views_pin_forward":
+        return canonical_publication_delivery_nonrepeat_views_pin_forward_started()
+    return False
 
 
 def _strict_positive(value: Any) -> int | None:
@@ -157,7 +171,6 @@ def _classify(options: dict[str, Any]) -> _Profile | None:
     else:
         name = stem
 
-    # Keep plain exact: neutral effect keys are a compatibility shape, not authority.
     expected_keys = {"silent"}
     if pin_on:
         expected_keys.add("pin_on")
@@ -296,10 +309,7 @@ class CanonicalPublicationNonrepeatSchedulerProofService:
         if not isinstance(runtime_options, dict):
             return None
         profile = _classify(runtime_options)
-        if profile is None:
-            return None
-        started = _PROFILE_FACTS.get(profile.name)
-        if started is None or not started():
+        if profile is None or not _profile_started(profile.name):
             return None
 
         if profile.forward_ids:
