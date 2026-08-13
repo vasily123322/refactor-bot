@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,14 +14,30 @@ from app.domain.scheduler import SchedulerTaskLease
 from app.services.canonical_publication_delivery_planner import (
     CanonicalPublicationDeliveryPlanner,
 )
+from app.services.canonical_publication_delivery_runtime_capability import (
+    parse_canonical_publication_delivery_runtime_capability,
+)
 from app.services.canonical_publication_legacy_transport_handoff import (
-    _legacy_intent_matches,
+    _authority_intent_matches,
     _mapping,
     _nonrepeat,
-    _supported_runtime_options,
+)
+from app.services.canonical_publication_linked_forward_parity import (
+    CanonicalPublicationLinkedForwardParityService,
 )
 from app.services.canonical_publication_nonrepeat_authority import (
+    canonical_publication_delivery_nonrepeat_forward_started,
+    canonical_publication_delivery_nonrepeat_pin_forward_started,
+    canonical_publication_delivery_nonrepeat_pin_started,
     canonical_publication_delivery_nonrepeat_plain_started,
+    canonical_publication_delivery_nonrepeat_time_forward_started,
+    canonical_publication_delivery_nonrepeat_time_pin_forward_started,
+    canonical_publication_delivery_nonrepeat_time_pin_started,
+    canonical_publication_delivery_nonrepeat_time_started,
+    canonical_publication_delivery_nonrepeat_views_forward_started,
+    canonical_publication_delivery_nonrepeat_views_pin_forward_started,
+    canonical_publication_delivery_nonrepeat_views_pin_started,
+    canonical_publication_delivery_nonrepeat_views_started,
 )
 
 
@@ -31,13 +48,146 @@ class CanonicalPublicationNonrepeatSchedulerProof:
     profile: str
 
 
+@dataclass(frozen=True, slots=True)
+class _Profile:
+    name: str
+    pin_on: bool
+    forward_ids: tuple[int, ...]
+    time_seconds: int | None
+    views_threshold: int | None
+
+
+_PROFILE_FACTS = {
+    "plain": canonical_publication_delivery_nonrepeat_plain_started,
+    "pin": canonical_publication_delivery_nonrepeat_pin_started,
+    "forward": canonical_publication_delivery_nonrepeat_forward_started,
+    "pin_forward": canonical_publication_delivery_nonrepeat_pin_forward_started,
+    "time": canonical_publication_delivery_nonrepeat_time_started,
+    "time_pin": canonical_publication_delivery_nonrepeat_time_pin_started,
+    "time_forward": canonical_publication_delivery_nonrepeat_time_forward_started,
+    "time_pin_forward": canonical_publication_delivery_nonrepeat_time_pin_forward_started,
+    "views": canonical_publication_delivery_nonrepeat_views_started,
+    "views_pin": canonical_publication_delivery_nonrepeat_views_pin_started,
+    "views_forward": canonical_publication_delivery_nonrepeat_views_forward_started,
+    "views_pin_forward": canonical_publication_delivery_nonrepeat_views_pin_forward_started,
+}
+_ALLOWED_RUNTIME_KEYS = frozenset(
+    {
+        "silent",
+        "pin_on",
+        "forward_to",
+        "autodelete_seconds",
+        "autodelete_views",
+        "autodelete_report",
+    }
+)
+
+
+def _strict_positive(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return int(value)
+
+
+def _classify(options: dict[str, Any]) -> _Profile | None:
+    if not set(options).issubset(_ALLOWED_RUNTIME_KEYS):
+        return None
+    if "silent" in options and type(options.get("silent")) is not bool:
+        return None
+    if "pin_on" in options and type(options.get("pin_on")) is not bool:
+        return None
+    if options.get("pin_on") is False:
+        return None
+
+    report = options.get("autodelete_report", False)
+    if type(report) is not bool or report:
+        return None
+
+    pin_on = options.get("pin_on") is True
+    forward_ids: tuple[int, ...] = ()
+    if "forward_to" in options:
+        raw_forward = options.get("forward_to")
+        if not isinstance(raw_forward, list) or not raw_forward:
+            return None
+        normalized: list[int] = []
+        for raw in raw_forward:
+            if isinstance(raw, bool):
+                return None
+            try:
+                channel_id = int(raw)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if channel_id <= 0:
+                return None
+            normalized.append(channel_id)
+        forward_ids = tuple(normalized)
+
+    time_seconds = None
+    if "autodelete_seconds" in options:
+        time_seconds = _strict_positive(options.get("autodelete_seconds"))
+        if time_seconds is None:
+            return None
+    views_threshold = None
+    if "autodelete_views" in options:
+        views_threshold = _strict_positive(options.get("autodelete_views"))
+        if views_threshold is None:
+            return None
+    if time_seconds is not None and views_threshold is not None:
+        return None
+
+    if time_seconds is not None:
+        stem = "time"
+    elif views_threshold is not None:
+        stem = "views"
+    else:
+        stem = ""
+
+    suffix = ""
+    if pin_on and forward_ids:
+        suffix = "pin_forward"
+    elif pin_on:
+        suffix = "pin"
+    elif forward_ids:
+        suffix = "forward"
+
+    if not stem:
+        name = suffix or "plain"
+    elif suffix:
+        name = f"{stem}_{suffix}"
+    else:
+        name = stem
+
+    # Keep plain exact: neutral effect keys are a compatibility shape, not authority.
+    expected_keys = {"silent"}
+    if pin_on:
+        expected_keys.add("pin_on")
+    if forward_ids:
+        expected_keys.add("forward_to")
+    if time_seconds is not None:
+        expected_keys.add("autodelete_seconds")
+    if views_threshold is not None:
+        expected_keys.add("autodelete_views")
+    if "autodelete_report" in options:
+        expected_keys.add("autodelete_report")
+    if set(options) - expected_keys:
+        return None
+
+    return _Profile(
+        name=name,
+        pin_on=pin_on,
+        forward_ids=forward_ids,
+        time_seconds=time_seconds,
+        views_threshold=views_threshold,
+    )
+
+
 class CanonicalPublicationNonrepeatSchedulerProofService:
     """Read-only proof that one pending legacy task may yield to canonical primary.
 
-    This service deliberately owns no cutover mutation. It never takes a scheduler or
-    canonical lease, never changes PostTask/Publication/ScheduleEntry, never commits,
-    and never calls a provider. The canonical worker must independently win the atomic
-    handoff/claim after the legacy scheduler has yielded.
+    This service owns no cutover mutation: no provider call, lease acquisition, row write,
+    commit or rollback. The canonical worker independently wins the atomic handoff/claim
+    after scheduler yield. Future profile classifiers may exist here while their dedicated
+    started facts remain False; those branches therefore stay fail-closed.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -49,8 +199,8 @@ class CanonicalPublicationNonrepeatSchedulerProofService:
         task_id: int,
         at: datetime | None = None,
     ) -> CanonicalPublicationNonrepeatSchedulerProof | None:
-        if not canonical_publication_delivery_nonrepeat_plain_started():
-            return None
+        """Compatibility entrypoint for the scheduler; prove any enabled exact profile."""
+
         try:
             safe_task_id = int(task_id)
         except (TypeError, ValueError, OverflowError):
@@ -86,8 +236,6 @@ class CanonicalPublicationNonrepeatSchedulerProofService:
         if task is None or str(task.status) != "pending":
             return None
 
-        # Any historical scheduler lease, including an expired one, is a recovery
-        # authority barrier. Read-only admission must not race or reinterpret it.
         scheduler_lease = (
             await self.session.execute(
                 select(SchedulerTaskLease).where(
@@ -141,19 +289,55 @@ class CanonicalPublicationNonrepeatSchedulerProofService:
             or not _nonrepeat(plan)
         ):
             return None
-
-        runtime_options = _supported_runtime_options(plan)
-        if runtime_options is None or set(runtime_options) - {"silent"}:
+        try:
+            runtime_options = plan.runtime_options()
+        except (TypeError, ValueError):
             return None
-        if not _legacy_intent_matches(
+        if not isinstance(runtime_options, dict):
+            return None
+        profile = _classify(runtime_options)
+        if profile is None:
+            return None
+        started = _PROFILE_FACTS.get(profile.name)
+        if started is None or not started():
+            return None
+
+        if profile.forward_ids:
+            parity = await CanonicalPublicationLinkedForwardParityService(
+                self.session
+            ).prove(
+                task=task,
+                publication=publication,
+                plan=plan,
+            )
+            if (
+                parity is None
+                or tuple(parity.forward_channel_ids) != profile.forward_ids
+                or bool(parity.pin_on) is not profile.pin_on
+                or parity.time_autodelete_seconds != profile.time_seconds
+                or parity.views_autodelete_threshold != profile.views_threshold
+                or bool(parity.autodelete_report)
+            ):
+                return None
+            capability = parse_canonical_publication_delivery_runtime_capability(
+                runtime_options
+            )
+            if capability is None:
+                return None
+            combined_views = profile.name == "views_pin_forward"
+            if bool(capability.views_pin_forward_composed) is not combined_views:
+                return None
+        elif not _authority_intent_matches(
             task=task,
             publication=publication,
             plan=plan,
+            allow_time_autodelete=profile.time_seconds is not None,
+            allow_views_autodelete=profile.views_threshold is not None,
         ):
             return None
 
         return CanonicalPublicationNonrepeatSchedulerProof(
             publication_id=int(publication.id),
             legacy_post_task_id=safe_task_id,
-            profile="plain",
+            profile=profile.name,
         )
