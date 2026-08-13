@@ -32,12 +32,13 @@ from app.workers.canonical_repeat_continuation import CanonicalRepeatContinuatio
 class Scheduler(RecoveryScheduler):
     """Recovery scheduler plus provider-free canonical repeat continuation lifecycle.
 
-    Exact non-destructive fixed-delay linked repeats may yield before the inherited legacy
-    lease when a successfully started canonical repeat primary is live. This includes
-    plain/silent, pin-only, forward-only, and pin+forward profiles. The scheduler performs
-    no repeat cutover mutation itself; the canonical primary remains the sole atomic
-    handoff/claim owner. Destructive repeat compositions continue through the inherited
-    legacy callback.
+    Exact fixed-delay linked repeats may yield before the inherited legacy lease when a
+    successfully started canonical repeat primary is live. Established non-destructive
+    plain/silent, pin-only, forward-only and pin+forward profiles remain eligible. Exact
+    plain/silent repeat+time may also yield only while the started canonical time-autodelete
+    capability is live. The scheduler performs no repeat cutover mutation itself; the
+    canonical primary remains the sole atomic handoff/claim owner. Other destructive repeat
+    compositions continue through the inherited legacy callback.
 
     Production constructs the scheduler with an async session factory. A single long-lived
     AsyncSession cannot safely back an independent polling worker, so continuation stays
@@ -78,7 +79,7 @@ class Scheduler(RecoveryScheduler):
         *,
         task_id: int,
     ) -> bool:
-        """Yield one exact proven non-destructive repeat without mutating authority."""
+        """Yield one exact proven repeat profile without mutating authority."""
 
         if not canonical_publication_delivery_repeat_started():
             return False
@@ -156,15 +157,35 @@ class Scheduler(RecoveryScheduler):
             and proof.pin_on
             and bool(proof.forward_channel_ids)
         )
+        time_value = runtime_options.get("autodelete_seconds")
+        time_profile = (
+            runtime_keys.issubset(
+                {"silent", "autodelete_seconds", "autodelete_report"}
+            )
+            and "autodelete_seconds" in runtime_options
+            and isinstance(time_value, int)
+            and not isinstance(time_value, bool)
+            and time_value > 0
+            and proof.time_autodelete_seconds == time_value
+            and not proof.pin_on
+            and not proof.forward_channel_ids
+            and proof.views_autodelete_threshold is None
+            and not proof.autodelete_report
+            and not proof.views_pin_forward_composed
+            and runtime_options.get("autodelete_report") in (None, False)
+        )
+        if time_profile and not canonical_publication_delivery_time_autodelete_started():
+            return False
         if not (
             plain_profile
             or pin_profile
             or forward_profile
             or pin_forward_profile
+            or time_profile
         ):
             return False
         if (
-            proof.time_autodelete_seconds is not None
+            (proof.time_autodelete_seconds is not None and not time_profile)
             or proof.views_autodelete_threshold is not None
             or proof.autodelete_report
             or proof.views_pin_forward_composed
@@ -172,12 +193,13 @@ class Scheduler(RecoveryScheduler):
             return False
 
         logger.info(
-            "Scheduler: yielding exact repeat to canonical primary post_id={} publication_id={} repeat_group_id={} pin_on={} forward_targets={}",
+            "Scheduler: yielding exact repeat to canonical primary post_id={} publication_id={} repeat_group_id={} pin_on={} forward_targets={} time_autodelete_seconds={}",
             int(task_id),
             int(publication.id),
             int(proof.repeat_group_id),
             bool(proof.pin_on),
             len(proof.forward_channel_ids),
+            proof.time_autodelete_seconds,
         )
         return True
 
