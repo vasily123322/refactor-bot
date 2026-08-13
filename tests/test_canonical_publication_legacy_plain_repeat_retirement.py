@@ -181,6 +181,78 @@ def test_scheduler_yields_plain_repeat_then_canonical_atomic_handoff_claims(tmp_
     asyncio.run(run())
 
 
+def test_scheduler_yields_pin_repeat_then_canonical_atomic_handoff_claims(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'pin-repeat-yield.db'}"
+        )
+        primary = _PrimaryWorker()
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            publication_id, task_id = await _seed(
+                Session,
+                seed=20,
+                runtime_options={"silent": True, "pin_on": True},
+            )
+            set_canonical_publication_delivery_primary_worker(
+                primary,
+                repeat_continuation_available=True,
+                repeat_owner_policy_enforced=True,
+            )
+            scheduler = Scheduler(
+                Session,
+                SimpleNamespace(),
+                repeat_continuation_enabled=False,
+            )
+
+            async with Session() as scheduler_session:
+                task = await scheduler_session.get(PostTask, task_id)
+                assert task is not None
+                items = [task]
+                await scheduler._mark_processing(scheduler_session, items)
+                assert items == []
+                task_after = await scheduler_session.get(
+                    PostTask,
+                    task_id,
+                    populate_existing=True,
+                )
+                publication = await scheduler_session.get(
+                    Publication,
+                    publication_id,
+                    populate_existing=True,
+                )
+                assert task_after is not None and task_after.status == "pending"
+                assert publication is not None
+                assert publication.status == "queued"
+                assert publication.legacy_post_task_id == task_id
+
+            async with Session() as canonical_session:
+                transfer = await CanonicalPublicationLinkedRepeatAtomicHandoffService(
+                    canonical_session
+                ).claim_linked_repeat(
+                    publication_id,
+                    holder="pin-repeat-retirement",
+                    ttl_seconds=180,
+                    allow_repeat=True,
+                )
+                assert transfer.outcome == "claimed"
+                assert transfer.claim is not None
+
+            async with Session() as check_session:
+                assert await check_session.get(PostTask, task_id) is None
+                publication = await check_session.get(Publication, publication_id)
+                assert publication is not None
+                assert publication.status == "sending"
+                assert publication.legacy_post_task_id is None
+        finally:
+            set_canonical_publication_delivery_primary_worker(None)
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_scheduler_keeps_plain_repeat_on_legacy_without_live_repeat_fact(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
@@ -224,7 +296,90 @@ def test_scheduler_keeps_plain_repeat_on_legacy_without_live_repeat_fact(tmp_pat
     asyncio.run(run())
 
 
-def test_scheduler_keeps_effectful_repeat_profiles_on_legacy(tmp_path) -> None:
+def test_scheduler_keeps_pin_repeat_on_legacy_without_live_repeat_fact(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'pin-repeat-fallback.db'}"
+        )
+        primary = _PrimaryWorker()
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            _, task_id = await _seed(
+                Session,
+                seed=21,
+                runtime_options={"pin_on": True},
+            )
+            set_canonical_publication_delivery_primary_worker(primary)
+            scheduler = Scheduler(
+                Session,
+                SimpleNamespace(),
+                repeat_continuation_enabled=False,
+            )
+
+            async with Session() as scheduler_session:
+                task = await scheduler_session.get(PostTask, task_id)
+                assert task is not None
+                items = [task]
+                await scheduler._mark_processing(scheduler_session, items)
+                assert len(items) == 1
+                assert items[0].status == "processing"
+        finally:
+            set_canonical_publication_delivery_primary_worker(None)
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_scheduler_keeps_pin_repeat_on_legacy_when_parity_drifts(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'pin-repeat-drift.db'}"
+        )
+        primary = _PrimaryWorker()
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            _, task_id = await _seed(
+                Session,
+                seed=22,
+                runtime_options={"pin_on": True},
+            )
+            async with Session() as drift_session:
+                task = await drift_session.get(PostTask, task_id)
+                assert task is not None
+                payload = dict(task.payload or {})
+                payload["pin_on"] = False
+                task.payload = payload
+                await drift_session.commit()
+
+            set_canonical_publication_delivery_primary_worker(
+                primary,
+                repeat_continuation_available=True,
+                repeat_owner_policy_enforced=True,
+            )
+            scheduler = Scheduler(
+                Session,
+                SimpleNamespace(),
+                repeat_continuation_enabled=False,
+            )
+            async with Session() as scheduler_session:
+                task = await scheduler_session.get(PostTask, task_id)
+                assert task is not None
+                items = [task]
+                await scheduler._mark_processing(scheduler_session, items)
+                assert len(items) == 1
+                assert items[0].status == "processing"
+        finally:
+            set_canonical_publication_delivery_primary_worker(None)
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_scheduler_keeps_unretired_repeat_profiles_on_legacy(tmp_path) -> None:
     async def assert_legacy(*, seed: int, runtime_options: dict, suffix: str) -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / f'plain-repeat-{suffix}.db'}"
@@ -263,31 +418,46 @@ def test_scheduler_keeps_effectful_repeat_profiles_on_legacy(tmp_path) -> None:
     async def run() -> None:
         await assert_legacy(
             seed=3,
-            runtime_options={"pin_on": True},
-            suffix="pin",
-        )
-        await assert_legacy(
-            seed=4,
             runtime_options={"_with_forward_target": True},
             suffix="forward",
         )
         await assert_legacy(
-            seed=5,
+            seed=4,
             runtime_options={"autodelete_seconds": 60},
             suffix="time",
         )
         await assert_legacy(
-            seed=6,
+            seed=5,
             runtime_options={"autodelete_views": 100},
             suffix="views",
         )
         await assert_legacy(
-            seed=7,
+            seed=6,
             runtime_options={
                 "autodelete_views": 100,
                 "autodelete_report": True,
             },
             suffix="views-report",
+        )
+        await assert_legacy(
+            seed=23,
+            runtime_options={"pin_on": True, "_with_forward_target": True},
+            suffix="pin-forward",
+        )
+        await assert_legacy(
+            seed=24,
+            runtime_options={"pin_on": True, "autodelete_seconds": 60},
+            suffix="pin-time",
+        )
+        await assert_legacy(
+            seed=25,
+            runtime_options={"pin_on": True, "autodelete_views": 100},
+            suffix="pin-views",
+        )
+        await assert_legacy(
+            seed=26,
+            runtime_options={"pin_on": False},
+            suffix="neutral-pin-key",
         )
 
     asyncio.run(run())
