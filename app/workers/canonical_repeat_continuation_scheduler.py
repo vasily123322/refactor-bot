@@ -32,11 +32,12 @@ from app.workers.canonical_repeat_continuation import CanonicalRepeatContinuatio
 class Scheduler(RecoveryScheduler):
     """Recovery scheduler plus provider-free canonical repeat continuation lifecycle.
 
-    Exact plain/silent fixed-delay linked repeats and exact pin variants may now yield
-    before the inherited legacy lease when a successfully started canonical repeat
-    primary is live. The scheduler performs no repeat cutover mutation itself; the
-    canonical primary remains the sole atomic handoff/claim owner. Forward and destructive
-    repeat compositions continue through the inherited legacy callback.
+    Exact plain/silent fixed-delay linked repeats plus exact pin-only and forward-only
+    variants may yield before the inherited legacy lease when a successfully started
+    canonical repeat primary is live. The scheduler performs no repeat cutover mutation
+    itself; the canonical primary remains the sole atomic handoff/claim owner. Combined
+    pin+forward and destructive repeat compositions continue through the inherited legacy
+    callback.
 
     Production constructs the scheduler with an async session factory. A single long-lived
     AsyncSession cannot safely back an independent polling worker, so continuation stays
@@ -77,7 +78,7 @@ class Scheduler(RecoveryScheduler):
         *,
         task_id: int,
     ) -> bool:
-        """Yield one exact plain/silent or pin repeat without mutating authority."""
+        """Yield one exact proven non-destructive repeat without mutating authority."""
 
         if not canonical_publication_delivery_repeat_started():
             return False
@@ -126,17 +127,30 @@ class Scheduler(RecoveryScheduler):
             return False
 
         runtime_keys = set(runtime_options)
-        plain_profile = runtime_keys.issubset({"silent"}) and not proof.pin_on
+        plain_profile = (
+            runtime_keys.issubset({"silent"})
+            and not proof.pin_on
+            and not proof.forward_channel_ids
+        )
         pin_profile = (
             runtime_keys.issubset({"silent", "pin_on"})
             and runtime_options.get("pin_on") is True
             and proof.pin_on
+            and not proof.forward_channel_ids
         )
-        if not (plain_profile or pin_profile):
+        forward_value = runtime_options.get("forward_to")
+        forward_profile = (
+            runtime_keys.issubset({"silent", "forward_to"})
+            and "forward_to" in runtime_options
+            and isinstance(forward_value, list)
+            and bool(forward_value)
+            and not proof.pin_on
+            and bool(proof.forward_channel_ids)
+        )
+        if not (plain_profile or pin_profile or forward_profile):
             return False
         if (
-            proof.forward_channel_ids
-            or proof.time_autodelete_seconds is not None
+            proof.time_autodelete_seconds is not None
             or proof.views_autodelete_threshold is not None
             or proof.autodelete_report
             or proof.views_pin_forward_composed
@@ -144,11 +158,12 @@ class Scheduler(RecoveryScheduler):
             return False
 
         logger.info(
-            "Scheduler: yielding exact repeat to canonical primary post_id={} publication_id={} repeat_group_id={} pin_on={}",
+            "Scheduler: yielding exact repeat to canonical primary post_id={} publication_id={} repeat_group_id={} pin_on={} forward_targets={}",
             int(task_id),
             int(publication.id),
             int(proof.repeat_group_id),
             bool(proof.pin_on),
+            len(proof.forward_channel_ids),
         )
         return True
 
