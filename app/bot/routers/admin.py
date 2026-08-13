@@ -27,6 +27,28 @@ def _is_admin(message: Message) -> bool:
         return False
 
 
+@router.message(Command("remove_allrepeat"))
+async def cmd_remove_allrepeat_disabled(message: Message):
+    """Block the legacy PostTask-only bulk mutation during canonical migration.
+
+    The historical handler in ``main.py`` rewrites every PostTask repeat/delete field
+    without updating canonical ScheduleEntry/Publication authority. Retired canonical
+    occurrences may already have no PostTask at all, so that command can neither stop
+    the canonical repeat series nor safely cancel canonical destructive intent. Keep an
+    earlier admin-router handler as a fail-closed guard until a canonical-aware control
+    plane can atomically operate on both authority domains.
+    """
+
+    if not _is_admin(message):
+        return await message.answer("Недоступно")
+    return await message.answer(
+        "Команда /remove_allrepeat временно отключена: legacy bulk-изменение PostTask "
+        "не является authority для уже переведённых canonical публикаций. "
+        "Используйте точечное управление публикациями; автоматическая массовая "
+        "мутация repeat/autodelete не выполнялась."
+    )
+
+
 @router.message(Command("panel"))
 async def cmd_panel(message: Message):
     if not _is_admin(message):
