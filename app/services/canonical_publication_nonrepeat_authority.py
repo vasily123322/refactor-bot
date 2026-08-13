@@ -14,7 +14,7 @@ _PLAIN = True
 _PIN = True
 _FORWARD = True
 _PIN_FORWARD = True
-_TIME = False
+_TIME = True
 _TIME_PIN = False
 _TIME_FORWARD = False
 _TIME_PIN_FORWARD = False
@@ -29,12 +29,10 @@ def canonical_publication_delivery_nonrepeat_plain_started() -> bool:
 
 
 def canonical_publication_delivery_nonrepeat_pin_started() -> bool:
-    # Pin action execution is intrinsic to the successfully started primary runtime.
     return bool(_PIN and canonical_publication_delivery_primary_started())
 
 
 def canonical_publication_delivery_nonrepeat_forward_started() -> bool:
-    # Forward action execution is intrinsic to the successfully started primary runtime.
     return bool(_FORWARD and canonical_publication_delivery_primary_started())
 
 
