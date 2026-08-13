@@ -29,10 +29,12 @@ def canonical_publication_delivery_nonrepeat_plain_started() -> bool:
 
 
 def canonical_publication_delivery_nonrepeat_pin_started() -> bool:
+    # Pin action execution is intrinsic to the successfully started primary runtime.
     return bool(_PIN and canonical_publication_delivery_primary_started())
 
 
 def canonical_publication_delivery_nonrepeat_forward_started() -> bool:
+    # Forward action execution is intrinsic to the successfully started primary runtime.
     return bool(_FORWARD and canonical_publication_delivery_primary_started())
 
 
