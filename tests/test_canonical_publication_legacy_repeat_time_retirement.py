@@ -14,6 +14,7 @@ from app.domain.models import Channel, Client, PostTask
 from app.domain.publishing.models import Publication
 from app.repositories.content import ContentRepo
 from app.services.canonical_publication_delivery_authority import (
+    canonical_publication_delivery_repeat_time_started,
     set_canonical_publication_delivery_primary_worker,
 )
 from app.services.canonical_publication_linked_repeat_atomic_handoff import (
@@ -91,12 +92,14 @@ def _publish_primary(
     primary: _PrimaryWorker,
     *,
     time_autodelete_available: bool,
+    repeat_time_available: bool = True,
 ) -> None:
     set_canonical_publication_delivery_primary_worker(
         primary,
         time_autodelete_available=time_autodelete_available,
         repeat_continuation_available=True,
         repeat_owner_policy_enforced=True,
+        repeat_time_available=repeat_time_available,
     )
 
 
@@ -112,6 +115,28 @@ async def _mark_one(Session, task_id: int) -> list[PostTask]:
         items = [task]
         await scheduler._mark_processing(session, items)
         return items
+
+
+def test_repeat_time_authority_requires_dedicated_started_dependency() -> None:
+    primary = _PrimaryWorker()
+    try:
+        set_canonical_publication_delivery_primary_worker(
+            primary,
+            time_autodelete_available=True,
+            repeat_continuation_available=True,
+            repeat_owner_policy_enforced=True,
+        )
+        assert canonical_publication_delivery_repeat_time_started() is False
+
+        _publish_primary(
+            primary,
+            time_autodelete_available=True,
+            repeat_time_available=True,
+        )
+        assert canonical_publication_delivery_repeat_time_started() is True
+    finally:
+        set_canonical_publication_delivery_primary_worker(None)
+    assert canonical_publication_delivery_repeat_time_started() is False
 
 
 def test_scheduler_yields_repeat_time_only_with_live_time_fact_and_strict_claim_flags(
@@ -210,6 +235,7 @@ def test_scheduler_keeps_repeat_time_on_legacy_without_live_repeat_fact(tmp_path
             set_canonical_publication_delivery_primary_worker(
                 primary,
                 time_autodelete_available=True,
+                repeat_time_available=True,
             )
             items = await _mark_one(Session, task_id)
             assert len(items) == 1
@@ -237,6 +263,38 @@ def test_scheduler_keeps_repeat_time_on_legacy_without_live_time_fact(tmp_path) 
                 runtime_options={"autodelete_seconds": 120},
             )
             _publish_primary(primary, time_autodelete_available=False)
+            items = await _mark_one(Session, task_id)
+            assert len(items) == 1
+            assert items[0].status == "processing"
+        finally:
+            set_canonical_publication_delivery_primary_worker(None)
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_scheduler_keeps_repeat_time_on_legacy_without_dedicated_repeat_time_fact(
+    tmp_path,
+) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'repeat-time-no-dedicated.db'}"
+        )
+        primary = _PrimaryWorker()
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            _, task_id = await _seed(
+                Session,
+                seed=6,
+                runtime_options={"autodelete_seconds": 120},
+            )
+            _publish_primary(
+                primary,
+                time_autodelete_available=True,
+                repeat_time_available=False,
+            )
             items = await _mark_one(Session, task_id)
             assert len(items) == 1
             assert items[0].status == "processing"
