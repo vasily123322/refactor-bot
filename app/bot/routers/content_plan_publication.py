@@ -11,7 +11,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.fsm.states import PostFSM
+from app.core.callbacks import CB
 from app.core.db import AsyncSessionLocal
+from app.services.canonical_repeat_series_control import (
+    CanonicalRepeatSeriesControlService,
+)
 from app.services.content import LegacyPayloadError
 from app.services.publication_editor import (
     load_owned_publication_editor_view,
@@ -60,6 +64,52 @@ def _status_label(status: str) -> str:
         "skipped": "Пропущен ⏭",
         "cancelled": "Отменён 🚫",
     }.get(str(status or "").lower(), html.escape(str(status or "—")))
+
+
+@router.callback_query(F.data.startswith(f"{CB.CP_REPEAT_OFF}:"))
+async def cb_cp_repeat_off_canonical(callback: CallbackQuery, state: FSMContext):
+    """Stop future repeat continuation before the legacy PostTask-only handler."""
+
+    try:
+        _, raw_group = str(callback.data).split(":", 1)
+        repeat_group_id = int(raw_group)
+        user_id = int(callback.from_user.id)
+    except (TypeError, ValueError, OverflowError):
+        return await callback.answer("Ошибка данных", show_alert=False)
+
+    async with AsyncSessionLocal() as session:
+        result = await CanonicalRepeatSeriesControlService(session).stop_owned_series(
+            repeat_group_id=repeat_group_id,
+            tg_user_id=user_id,
+        )
+
+    if result.outcome == "not_found":
+        return await callback.answer("Серия не найдена или нет доступа", show_alert=True)
+    if result.outcome != "stopped":
+        return await callback.answer(
+            "Не удалось безопасно отключить автоповтор", show_alert=True
+        )
+
+    # Refresh the same content-plan day. This handler lives in the earlier canonical
+    # router, so the historical PostTask-only callback in content_plan.py is never run.
+    try:
+        data = await state.get_data()
+        channel_id = int(data.get("cp_channel_id") or 0)
+        center_iso = data.get("cp_center")
+        if channel_id and center_iso:
+            from datetime import datetime
+
+            from app.bot.routers.content_plan import _render_content_plan
+
+            await _render_content_plan(
+                callback,
+                state,
+                channel_id,
+                datetime.fromisoformat(str(center_iso)),
+            )
+    except Exception:
+        pass
+    return await callback.answer("Автоповтор отключён")
 
 
 @router.callback_query(F.data.startswith("cp_open_pub:"))
