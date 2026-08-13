@@ -21,7 +21,7 @@ _TIME_PIN_FORWARD = True
 _VIEWS = True
 _VIEWS_PIN = True
 _VIEWS_FORWARD = True
-_VIEWS_PIN_FORWARD = False
+_VIEWS_PIN_FORWARD = True
 
 
 def canonical_publication_delivery_nonrepeat_plain_started() -> bool:
