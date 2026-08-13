@@ -5,11 +5,12 @@ from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
 from app.domain.models import Channel, Client, GrabSource, PostTask
+from app.domain.publishing.models import ScheduleEntry
 
 
 _DIRECT_CHANNEL_PATTERNS = (
@@ -45,11 +46,12 @@ _POST_TASK_PATTERNS = (
         r"^cp_(?:open_post|edit_post|delete_post):(?P<post_task_id>\d+):"
         r"\d{4}-\d{2}-\d{2}$"
     ),
-    # repeat_group_id is currently the legacy root PostTask id. Repeat transport is
-    # intentionally not retained yet, so resolving the root row is fail-closed and
-    # remains valid until canonical repeat lineage replaces this compatibility seam.
+    # Kept for compatibility with helpers/tests that historically interpreted the
+    # repeat group as the root PostTask id. Runtime middleware resolves repeat groups
+    # through the dedicated canonical-aware path first.
     re.compile(r"^cp_repeat_off:(?P<post_task_id>\d+)$"),
 )
+_REPEAT_GROUP_PATTERN = re.compile(r"^cp_repeat_off:(?P<repeat_group_id>\d+)$")
 
 
 def _direct_channel_id_from_callback(data: str | None) -> int | None:
@@ -87,6 +89,13 @@ def _post_task_id_from_callback(data: str | None) -> int | None:
     return None
 
 
+def _repeat_group_id_from_callback(data: str | None) -> int | None:
+    if not data:
+        return None
+    match = _REPEAT_GROUP_PATTERN.fullmatch(data)
+    return int(match.group("repeat_group_id")) if match else None
+
+
 async def _resolve_grab_source_target(
     session: AsyncSession, source_ref: tuple[int, int | None]
 ) -> int | None:
@@ -113,6 +122,55 @@ async def _resolve_post_task_target(
     return channel_id if channel_id > 0 else None
 
 
+async def _resolve_repeat_group_target(
+    session: AsyncSession, repeat_group_id: int
+) -> int | None:
+    """Resolve one repeat lineage even after its root compatibility row was retired."""
+
+    try:
+        group_id = int(repeat_group_id)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if group_id <= 0:
+        return None
+
+    task_channels = list(
+        (
+            await session.execute(
+                select(PostTask.channel_id)
+                .where(
+                    or_(
+                        PostTask.id == group_id,
+                        PostTask.payload["repeat_group_id"].as_integer() == group_id,
+                    )
+                )
+                .limit(20)
+            )
+        ).scalars().all()
+    )
+    canonical_channels = list(
+        (
+            await session.execute(
+                select(ScheduleEntry.channel_id)
+                .where(
+                    ScheduleEntry.meta["repeat_group_id"].as_integer() == group_id
+                )
+                .limit(20)
+            )
+        ).scalars().all()
+    )
+    channel_ids: set[int] = set()
+    for raw in [*task_channels, *canonical_channels]:
+        try:
+            channel_id = int(raw)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if channel_id <= 0:
+            return None
+        channel_ids.add(channel_id)
+    return next(iter(channel_ids)) if len(channel_ids) == 1 else None
+
+
 async def _resolve_channel_target(
     session: AsyncSession, callback_data: str | None
 ) -> tuple[bool, int | None]:
@@ -120,6 +178,10 @@ async def _resolve_channel_target(
     source_ref = _grab_source_ref_from_callback(callback_data)
     if source_ref is not None:
         return True, await _resolve_grab_source_target(session, source_ref)
+
+    repeat_group_id = _repeat_group_id_from_callback(callback_data)
+    if repeat_group_id is not None:
+        return True, await _resolve_repeat_group_target(session, repeat_group_id)
 
     post_task_id = _post_task_id_from_callback(callback_data)
     if post_task_id is not None:
@@ -154,16 +216,26 @@ class SettingsChannelOwnerMiddleware(BaseMiddleware):
         callback_data = getattr(event, "data", None)
         source_ref = _grab_source_ref_from_callback(callback_data)
         direct_channel_id = _direct_channel_id_from_callback(callback_data)
+        repeat_group_id = _repeat_group_id_from_callback(callback_data)
         post_task_id = _post_task_id_from_callback(callback_data)
 
         # This middleware is installed on the root router. Avoid touching the DB
         # for the overwhelming majority of callbacks with no tenant-scoped identity.
-        if source_ref is None and direct_channel_id is None and post_task_id is None:
+        if (
+            source_ref is None
+            and direct_channel_id is None
+            and repeat_group_id is None
+            and post_task_id is None
+        ):
             return await handler(event, data)
 
         async with AsyncSessionLocal() as session:
             if source_ref is not None:
                 channel_id = await _resolve_grab_source_target(session, source_ref)
+            elif repeat_group_id is not None:
+                channel_id = await _resolve_repeat_group_target(
+                    session, repeat_group_id
+                )
             elif post_task_id is not None:
                 channel_id = await _resolve_post_task_target(session, post_task_id)
             else:
