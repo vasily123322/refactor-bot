@@ -132,5 +132,6 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
         repeat_views_available=repeat_views_available,
         repeat_views_pin_available=repeat_views_pin_available,
         repeat_views_forward_available=repeat_views_forward_available,
+        repeat_views_pin_forward_available=repeat_views_pin_forward_available,
     )
     return worker
