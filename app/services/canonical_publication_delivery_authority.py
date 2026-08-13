@@ -54,13 +54,19 @@ def canonical_publication_delivery_repeat_time_started() -> bool:
 def canonical_publication_delivery_repeat_time_pin_started() -> bool:
     """Return the dedicated live repeat+time+pin composition fact."""
 
-    return canonical_publication_delivery_repeat_time_started() and _repeat_time_pin_available
+    return (
+        canonical_publication_delivery_repeat_time_started()
+        and _repeat_time_pin_available
+    )
 
 
 def canonical_publication_delivery_repeat_time_forward_started() -> bool:
     """Return the dedicated live repeat+time+forward composition fact."""
 
-    return canonical_publication_delivery_repeat_time_started() and _repeat_time_forward_available
+    return (
+        canonical_publication_delivery_repeat_time_started()
+        and _repeat_time_forward_available
+    )
 
 
 def set_canonical_publication_delivery_primary_worker(
@@ -79,13 +85,24 @@ def set_canonical_publication_delivery_primary_worker(
     global _primary_worker_ref
     global _time_autodelete_available, _views_autodelete_available
     global _repeat_continuation_available, _repeat_owner_policy_enforced
-    global _repeat_time_available, _repeat_time_pin_available, _repeat_time_forward_available
+    global _repeat_time_available, _repeat_time_pin_available
+    global _repeat_time_forward_available
 
     _primary_worker_ref = None if worker is None else weakref.ref(worker)
-    _time_autodelete_available = bool(worker is not None and time_autodelete_available)
-    _views_autodelete_available = bool(worker is not None and views_autodelete_available)
-    _repeat_continuation_available = bool(worker is not None and repeat_continuation_available)
-    _repeat_owner_policy_enforced = bool(worker is not None and repeat_owner_policy_enforced)
+    _time_autodelete_available = bool(
+        worker is not None and time_autodelete_available
+    )
+    _views_autodelete_available = bool(
+        worker is not None and views_autodelete_available
+    )
+    _repeat_continuation_available = bool(
+        worker is not None and repeat_continuation_available
+    )
+    _repeat_owner_policy_enforced = bool(
+        worker is not None and repeat_owner_policy_enforced
+    )
     _repeat_time_available = bool(worker is not None and repeat_time_available)
     _repeat_time_pin_available = bool(worker is not None and repeat_time_pin_available)
-    _repeat_time_forward_available = bool(worker is not None and repeat_time_forward_available)
+    _repeat_time_forward_available = bool(
+        worker is not None and repeat_time_forward_available
+    )
