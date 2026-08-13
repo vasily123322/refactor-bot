@@ -13,6 +13,7 @@ from app.domain.publishing.models import Publication, PublicationAttempt
 from app.repositories.content import ContentRepo
 from app.services.post_task_retention import PostTaskRetentionService, _RepeatHandoff
 from app.services.publication_bridge import LegacyPublicationBridge
+from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
 
 
 async def _seed(
@@ -53,13 +54,19 @@ async def _seed(
             )
         ).scalar_one()
         attempt.finished_at = now - timedelta(days=120)
-        if channel_id in {932, 933}:
+        if channel_id in {932, 933, 934}:
+            runtime_options = (
+                {"autodelete_seconds": 60}
+                if channel_id in {932, 934}
+                else {"autodelete_seconds": 60, "autodelete_views": 10}
+            )
             publication.meta = {
                 **dict(publication.meta or {}),
-                "runtime_options": (
-                    {"autodelete_seconds": 60}
-                    if channel_id == 932
-                    else {"autodelete_seconds": 60, "autodelete_views": 10}
+                "runtime_options": runtime_options,
+                **(
+                    {AUTODELETE_RUNTIME_META_KEY: {"deleted": True}}
+                    if channel_id == 934
+                    else {}
                 ),
             }
         await session.commit()
@@ -90,6 +97,12 @@ def test_advanced_proofs_keep_link_and_time_views_fallback(tmp_path, monkeypatch
                     now=now,
                     payload_updates={"autodelete_seconds": 60, "autodelete_views": 10},
                 ),
+                await _seed(
+                    Session,
+                    channel_id=934,
+                    now=now,
+                    payload_updates={"autodelete_seconds": 60},
+                ),
             ]
 
             async with Session() as session:
@@ -114,12 +127,12 @@ def test_advanced_proofs_keep_link_and_time_views_fallback(tmp_path, monkeypatch
                 monkeypatch.setattr(service, "_successful_repeat_handoff", prove_successor)
                 monkeypatch.setattr(service, "_pending_autodelete_is_canonical", prove_pending)
                 tick = await service.run_once(now=now)
-                assert tick.selected == 3
+                assert tick.selected == 4
                 assert tick.eligible == 0
                 assert tick.deleted == 0
                 assert tick.skipped_repeat == 0
                 assert tick.skipped_canonical_delivery == 0
-                assert tick.skipped_content_linkage == 2
+                assert tick.skipped_content_linkage == 3
                 assert tick.skipped_pending_autodelete == 1
 
             async with Session() as session:
