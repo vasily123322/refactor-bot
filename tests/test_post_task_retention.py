@@ -55,7 +55,7 @@ async def _seed_terminal(
         return int(task.id), int(publication.id), int(attempt.id), int(schedule.id)
 
 
-def test_retention_deletes_only_old_unsuccessful_non_repeat_transport(tmp_path) -> None:
+def test_retention_fail_closes_current_linked_non_repeat_transport(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'retention-safe.db'}"
@@ -83,21 +83,20 @@ def test_retention_deletes_only_old_unsuccessful_non_repeat_transport(tmp_path) 
                     batch_size=10,
                 ).run_once(now=now)
                 assert tick.selected == 1
-                assert tick.eligible == 1
-                assert tick.deleted == 1
+                assert tick.eligible == 0
+                assert tick.deleted == 0
+                assert tick.skipped_content_linkage == 1
                 assert tick.failures == 0
 
             async with Session() as session:
-                assert await session.get(PostTask, task_id) is None
+                assert await session.get(PostTask, task_id) is not None
                 publication = await session.get(Publication, publication_id)
                 attempt = await session.get(PublicationAttempt, attempt_id)
                 schedule = await session.get(ScheduleEntry, schedule_id)
                 assert publication is not None
                 assert publication.status == "failed"
-                assert publication.legacy_post_task_id is None
-                retention = publication.meta["legacy_transport_retention"]
-                assert retention["retired"] is True
-                assert retention["terminal_status"] == "failed"
+                assert publication.legacy_post_task_id == task_id
+                assert "legacy_transport_retention" not in dict(publication.meta or {})
                 assert attempt is not None and attempt.status == "failed"
                 assert schedule is not None and schedule.status == "failed"
         finally:
@@ -220,7 +219,7 @@ def test_retention_skips_active_lease_and_recent_or_published_rows(tmp_path) -> 
     asyncio.run(run())
 
 
-def test_retention_ignores_expired_scheduler_lease(tmp_path) -> None:
+def test_retention_does_not_mutate_expired_lease_behind_current_link(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'retention-expired-lease.db'}"
@@ -244,7 +243,7 @@ def test_retention_ignores_expired_scheduler_lease(tmp_path) -> None:
                     SchedulerTaskLease(
                         task_id=task_id,
                         lease_token="retention-expired-lease",
-                        holder="dead-worker",
+                        holder="test-worker",
                         expires_at=now - timedelta(hours=1),
                     )
                 )
@@ -256,20 +255,17 @@ def test_retention_ignores_expired_scheduler_lease(tmp_path) -> None:
                     batch_size=10,
                 ).run_once(now=now)
                 assert tick.selected == 1
-                assert tick.eligible == 1
-                assert tick.deleted == 1
+                assert tick.eligible == 0
+                assert tick.deleted == 0
+                assert tick.skipped_content_linkage == 1
                 assert tick.failures == 0
 
             async with Session() as session:
-                assert await session.get(PostTask, task_id) is None
-                # This engine intentionally does not enable SQLite FK enforcement.
-                # Retention must remove the expired lease explicitly rather than rely
-                # on ON DELETE CASCADE, otherwise later Alembic adoption would fail
-                # its foreign-key integrity audit on an orphan lease row.
-                assert await session.get(SchedulerTaskLease, task_id) is None
+                assert await session.get(PostTask, task_id) is not None
+                assert await session.get(SchedulerTaskLease, task_id) is not None
                 publication = await session.get(Publication, publication_id)
                 assert publication is not None
-                assert publication.legacy_post_task_id is None
+                assert publication.legacy_post_task_id == task_id
         finally:
             await engine.dispose()
 
