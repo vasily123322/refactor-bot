@@ -13,6 +13,7 @@ from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.canonical_publication_delivery_authority import (
     canonical_publication_delivery_primary_started,
     canonical_publication_delivery_repeat_started,
+    canonical_publication_delivery_repeat_time_pin_started,
     canonical_publication_delivery_repeat_time_started,
     canonical_publication_delivery_time_autodelete_started,
     canonical_publication_delivery_views_autodelete_started,
@@ -26,6 +27,9 @@ from app.services.canonical_publication_legacy_transport_handoff import (
 from app.services.canonical_publication_linked_repeat_parity import (
     CanonicalPublicationLinkedRepeatParityService,
 )
+from app.services.canonical_publication_linked_repeat_time_pin_parity import (
+    CanonicalPublicationLinkedRepeatTimePinParityService,
+)
 from app.workers.canonical_recovery_scheduler import Scheduler as RecoveryScheduler
 from app.workers.canonical_repeat_continuation import CanonicalRepeatContinuationWorker
 
@@ -36,10 +40,10 @@ class Scheduler(RecoveryScheduler):
     Exact fixed-delay linked repeats may yield before the inherited legacy lease when a
     successfully started canonical repeat primary is live. Established non-destructive
     plain/silent, pin-only, forward-only and pin+forward profiles remain eligible. Exact
-    plain/silent repeat+time may also yield only while the dedicated canonical repeat-time
-    capability is live. The scheduler performs no repeat cutover mutation itself; the
-    canonical primary remains the sole atomic handoff/claim owner. Other destructive repeat
-    compositions continue through the inherited legacy callback.
+    plain/silent repeat+time and repeat+time+pin may also yield only while their dedicated
+    canonical composition capabilities are live. The scheduler performs no repeat cutover
+    mutation itself; the canonical primary remains the sole atomic handoff/claim owner.
+    Other destructive repeat compositions continue through the inherited legacy callback.
 
     Production constructs the scheduler with an async session factory. A single long-lived
     AsyncSession cannot safely back an independent polling worker, so continuation stays
@@ -119,7 +123,20 @@ class Scheduler(RecoveryScheduler):
         if not isinstance(runtime_options, dict):
             return False
 
-        proof = CanonicalPublicationLinkedRepeatParityService().prove(
+        runtime_keys = set(runtime_options)
+        preliminary_time_pin_profile = (
+            runtime_keys.issubset(
+                {"silent", "pin_on", "autodelete_seconds", "autodelete_report"}
+            )
+            and runtime_options.get("pin_on") is True
+            and "autodelete_seconds" in runtime_options
+        )
+        parity_service = (
+            CanonicalPublicationLinkedRepeatTimePinParityService()
+            if preliminary_time_pin_profile
+            else CanonicalPublicationLinkedRepeatParityService()
+        )
+        proof = parity_service.prove(
             task=task,
             publication=publication,
             schedule=schedule,
@@ -128,7 +145,6 @@ class Scheduler(RecoveryScheduler):
         if proof is None:
             return False
 
-        runtime_keys = set(runtime_options)
         plain_profile = (
             runtime_keys.issubset({"silent"})
             and not proof.pin_on
@@ -159,16 +175,29 @@ class Scheduler(RecoveryScheduler):
             and bool(proof.forward_channel_ids)
         )
         time_value = runtime_options.get("autodelete_seconds")
-        time_profile = (
-            runtime_keys.issubset(
-                {"silent", "autodelete_seconds", "autodelete_report"}
-            )
-            and "autodelete_seconds" in runtime_options
+        positive_exact_time = (
+            "autodelete_seconds" in runtime_options
             and isinstance(time_value, int)
             and not isinstance(time_value, bool)
             and time_value > 0
             and proof.time_autodelete_seconds == time_value
+        )
+        time_profile = (
+            runtime_keys.issubset(
+                {"silent", "autodelete_seconds", "autodelete_report"}
+            )
+            and positive_exact_time
             and not proof.pin_on
+            and not proof.forward_channel_ids
+            and proof.views_autodelete_threshold is None
+            and not proof.autodelete_report
+            and not proof.views_pin_forward_composed
+            and runtime_options.get("autodelete_report") in (None, False)
+        )
+        time_pin_profile = (
+            preliminary_time_pin_profile
+            and positive_exact_time
+            and proof.pin_on
             and not proof.forward_channel_ids
             and proof.views_autodelete_threshold is None
             and not proof.autodelete_report
@@ -177,16 +206,22 @@ class Scheduler(RecoveryScheduler):
         )
         if time_profile and not canonical_publication_delivery_repeat_time_started():
             return False
+        if time_pin_profile and not canonical_publication_delivery_repeat_time_pin_started():
+            return False
         if not (
             plain_profile
             or pin_profile
             or forward_profile
             or pin_forward_profile
             or time_profile
+            or time_pin_profile
         ):
             return False
         if (
-            (proof.time_autodelete_seconds is not None and not time_profile)
+            (
+                proof.time_autodelete_seconds is not None
+                and not (time_profile or time_pin_profile)
+            )
             or proof.views_autodelete_threshold is not None
             or proof.autodelete_report
             or proof.views_pin_forward_composed
