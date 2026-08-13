@@ -13,6 +13,7 @@ from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.canonical_publication_delivery_authority import (
     canonical_publication_delivery_primary_started,
     canonical_publication_delivery_repeat_started,
+    canonical_publication_delivery_repeat_time_started,
     canonical_publication_delivery_time_autodelete_started,
     canonical_publication_delivery_views_autodelete_started,
 )
@@ -35,7 +36,7 @@ class Scheduler(RecoveryScheduler):
     Exact fixed-delay linked repeats may yield before the inherited legacy lease when a
     successfully started canonical repeat primary is live. Established non-destructive
     plain/silent, pin-only, forward-only and pin+forward profiles remain eligible. Exact
-    plain/silent repeat+time may also yield only while the started canonical time-autodelete
+    plain/silent repeat+time may also yield only while the dedicated canonical repeat-time
     capability is live. The scheduler performs no repeat cutover mutation itself; the
     canonical primary remains the sole atomic handoff/claim owner. Other destructive repeat
     compositions continue through the inherited legacy callback.
@@ -174,7 +175,7 @@ class Scheduler(RecoveryScheduler):
             and not proof.views_pin_forward_composed
             and runtime_options.get("autodelete_report") in (None, False)
         )
-        if time_profile and not canonical_publication_delivery_time_autodelete_started():
+        if time_profile and not canonical_publication_delivery_repeat_time_started():
             return False
         if not (
             plain_profile
