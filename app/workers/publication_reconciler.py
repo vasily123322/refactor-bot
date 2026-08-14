@@ -4,7 +4,9 @@ from loguru import logger
 
 from app.core.db import AsyncSessionLocal
 from app.core.runner import PollingLoop
-from app.services.legacy_content_mirror import mirror_unlinked_legacy_tasks
+from app.services.legacy_terminal_content_mirror import (
+    mirror_unlinked_terminal_legacy_tasks,
+)
 from app.services.publication_autodelete_views_backfill import (
     PublicationAutodeleteViewsBackfillService,
 )
@@ -58,7 +60,7 @@ class PublicationReconcilerWorker:
         views_backfill_cleared = 0
         views_backfill_invalid = 0
         async with AsyncSessionLocal() as session:
-            mirrored, skipped = await mirror_unlinked_legacy_tasks(
+            mirrored, skipped = await mirror_unlinked_terminal_legacy_tasks(
                 session, limit=self.batch_size
             )
 
