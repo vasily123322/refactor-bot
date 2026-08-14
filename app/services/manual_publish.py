@@ -28,7 +28,9 @@ class ManualPublishService:
     canonical-continuation owned.
 
     Provider failure/ambiguity is fail-closed for repeat creation: no future root is
-    scheduled unless ``send_now`` returns concrete Telegram message ids.
+    scheduled unless ``send_now`` returns concrete Telegram message ids. Once the
+    primary provider send is proven successful, a later repeat-bridge failure must not
+    rewrite that already-observed provider outcome as a failed send.
     """
 
     def __init__(self, bot, session_factory) -> None:
@@ -105,12 +107,16 @@ class ManualPublishService:
             repeat_payload["repeat_on"] = True
             repeat_payload["repeat_seconds"] = seconds
             repeat_payload.pop("autodelete_at", None)
-            task = await posting.schedule(
-                primary,
-                repeat_payload,
-                current + timedelta(seconds=seconds),
-            )
-            repeat_task_id = int(task.id)
+            try:
+                task = await posting.schedule(
+                    primary,
+                    repeat_payload,
+                    current + timedelta(seconds=seconds),
+                )
+            except Exception:
+                task = None
+            if task is not None:
+                repeat_task_id = int(task.id)
 
         return ManualPublishResult(
             sent=True,
