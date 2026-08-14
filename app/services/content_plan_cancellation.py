@@ -170,6 +170,10 @@ class ContentPlanCancellationService:
                     outcome="cannot_cancel", reason=reason
                 )
 
+            publication_id = int(publication.id)
+            schedule_entry_id = int(schedule.id)
+            task_id = int(post.id)
+
             if publication.status == "cancelled":
                 if schedule.status != "cancelled" or post.status != "cancelled":
                     await session.rollback()
@@ -179,9 +183,9 @@ class ContentPlanCancellationService:
                     )
                 await session.rollback()
                 return _CanonicalCancellation(
-                    publication_id=int(publication.id),
-                    schedule_entry_id=int(schedule.id),
-                    post_task_id=int(post.id),
+                    publication_id=publication_id,
+                    schedule_entry_id=schedule_entry_id,
+                    post_task_id=task_id,
                 )
 
             if publication.status != "queued":
@@ -206,13 +210,12 @@ class ContentPlanCancellationService:
             publication_cas = await session.execute(
                 update(Publication)
                 .where(
-                    Publication.id == int(publication.id),
+                    Publication.id == publication_id,
                     Publication.legacy_post_task_id == int(post_task_id),
                     Publication.status == "queued",
                     Publication.attempt_count == 0,
                     Publication.result_link.is_(None),
                     Publication.last_error.is_(None),
-                    Publication.telegram_message_ids.is_(None),
                 )
                 .values(status="cancelled")
                 .execution_options(synchronize_session=False)
@@ -226,7 +229,7 @@ class ContentPlanCancellationService:
             schedule_cas = await session.execute(
                 update(ScheduleEntry)
                 .where(
-                    ScheduleEntry.id == int(schedule.id),
+                    ScheduleEntry.id == schedule_entry_id,
                     ScheduleEntry.status == "pending",
                 )
                 .values(status="cancelled")
@@ -243,7 +246,7 @@ class ContentPlanCancellationService:
             post_cas = await session.execute(
                 update(PostTask)
                 .where(
-                    PostTask.id == int(post.id),
+                    PostTask.id == task_id,
                     PostTask.status == "pending",
                 )
                 .values(status="cancelled")
@@ -257,9 +260,9 @@ class ContentPlanCancellationService:
 
             await session.commit()
             return _CanonicalCancellation(
-                publication_id=int(publication.id),
-                schedule_entry_id=int(schedule.id),
-                post_task_id=int(post.id),
+                publication_id=publication_id,
+                schedule_entry_id=schedule_entry_id,
+                post_task_id=task_id,
             )
 
     async def _execution_barrier_reason(
@@ -275,7 +278,7 @@ class ContentPlanCancellationService:
             return "publication_result"
         if publication.last_error is not None:
             return "publication_error"
-        if publication.telegram_message_ids is not None:
+        if publication.telegram_message_ids not in (None, []):
             return "publication_provider_result"
 
         attempt_id = await session.scalar(
