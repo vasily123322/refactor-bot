@@ -5,12 +5,12 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardBut
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
 from contextlib import suppress
-from datetime import timedelta
 
 from app.core.callbacks import CB
 from app.bot.fsm.states import PostFSM
 from app.bot.bot_instance import bot as tg_bot
 from app.core.db import AsyncSessionLocal
+from app.services.manual_publish import ManualPublishService
 from app.services.posting import PostingService
 from app.bot.routers.shared import safe_answer as _safe_answer
 from app.bot.keyboards.posting import settings_menu_kb
@@ -21,7 +21,6 @@ from app.bot.routers.utils.post_payload import (
     clip_text_len as _clip_text_len,
     edit_text_with_fallback as _edit_text_with_fallback,
     edit_media_with_fallback as _edit_media_with_fallback,
-    apply_album_autosign_entities as _apply_album_autosign_entities,
     _iso_to_datetime,
     _apply_repeat_flags_from_state_to_payload,
     _set_autodelete_effective,
@@ -227,70 +226,54 @@ async def cb_post_send(callback: CallbackQuery, state: FSMContext):
                         await callback.answer()
                 except Exception:
                     pass
-            else:
-                with suppress(TelegramBadRequest):
-                    await callback.answer("Готово")
-                await state.clear()
                 return
+            with suppress(TelegramBadRequest):
+                await callback.answer("Готово")
+            await state.clear()
+            return
         except TelegramBadRequest as e:
             return await callback.answer(
                 f"Не удалось отредактировать: {e}", show_alert=True
             )
-        if payload.get("type") == "album":
-            payload = await _apply_album_autosign_entities(payload, data)
-        from app.services.posting import PostingService as _PS
 
-        payload = _PS.apply_autosign_to_payload(
-            payload, (data.get("autosign_text") or "")
-        )
+    # Немедленная публикация выполняется ровно один раз. Если включён Pro repeat,
+    # успешная provider отправка мостится максимум в один будущий canonical root.
+    data2 = await state.get_data()
+    chan_id2 = int(data2.get("channel_id", 0) or 0)
+    payload2: dict = dict(data2.get("payload") or {})
+    if not chan_id2 or not payload2:
+        return await callback.answer("Нет данных поста", show_alert=True)
 
-    # Иначе — немедленная отправка с учётом повтора (если Pro)
-    try:
-        data2 = await state.get_data()
-        from app.domain.models import Client as _Client
-        from app.repositories.channels import ChannelsRepo as _ChRepo
+    _apply_repeat_flags_from_state_to_payload(data2, payload2)
+    _set_autodelete_effective(payload2)
+    await _gate_short_autodelete_in_payload(chan_id2, payload2)
+    payload2 = await _apply_autosign_if_enabled(chan_id2, data2, payload2)
+    payload2 = _add_author_meta_from_user(callback.from_user, payload2)
 
-        chan_id2 = int(data2.get("channel_id", 0) or 0)
-        is_pro2 = False
-        if chan_id2:
-            async with AsyncSessionLocal() as _s4:
-                _ch = await _ChRepo(_s4).get_by_id(chan_id2)
-                if _ch:
-                    owner = await _s4.get(_Client, int(getattr(_ch, "owner_id", 0)))
-                    is_pro2 = (
-                        bool(getattr(owner, "is_premium", False)) if owner else False
-                    )
-        if (
-            is_pro2
-            and bool(data2.get("repeat_on", False))
-            and int(data2.get("repeat_seconds") or 0) > 0
-        ):
-            payload2: dict = dict(data2.get("payload") or {})
-            secs_rep = int(data2.get("repeat_seconds") or 0)
-            if chan_id2 and payload2 and secs_rep > 0:
-                from datetime import datetime as _dt
-                from datetime import timezone as _tz
+    from app.domain.models import Client as _Client
+    from app.repositories.channels import ChannelsRepo as _ChRepo
 
-                payload2["repeat_on"] = True
-                payload2["repeat_seconds"] = secs_rep
-                try:
-                    ad_base = int(
-                        payload2.get("autodelete_seconds")
-                        or payload2.get("autodelete_effective_seconds")
-                        or 0
-                    )
-                    if ad_base > 0:
-                        payload2["autodelete_seconds"] = ad_base
-                        payload2.pop("autodelete_at", None)
-                except Exception:
-                    pass
-                next_when = _dt.now(_tz.utc) + timedelta(seconds=secs_rep)
-                async with AsyncSessionLocal() as session:
-                    service2 = PostingService(tg_bot, session)
-                    await service2.schedule(chan_id2, payload2, next_when)
-    except Exception:
-        pass
-    return await cb_post_send(callback, state)
+    is_pro2 = False
+    async with AsyncSessionLocal() as session:
+        channel = await _ChRepo(session).get_by_id(chan_id2)
+        if channel:
+            owner = await session.get(_Client, int(getattr(channel, "owner_id", 0)))
+            is_pro2 = bool(getattr(owner, "is_premium", False)) if owner else False
+
+    result = await ManualPublishService(tg_bot, AsyncSessionLocal).publish(
+        channel_id=chan_id2,
+        payload=payload2,
+        forward_to=list(data2.get("forward_to") or []),
+        notify_on=bool(data2.get("notify_on", True)),
+        repeat_on=bool(data2.get("repeat_on", False)),
+        repeat_seconds=int(data2.get("repeat_seconds") or 0),
+        repeat_allowed=is_pro2,
+    )
+    if not result.sent:
+        return await callback.answer("Не удалось опубликовать", show_alert=True)
+
+    await state.clear()
+    return await callback.answer("Опубликовано")
 
 
 @router.callback_query(F.data == CB.POST_SETTINGS_PUBLISH)
