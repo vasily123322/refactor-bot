@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
+from app.domain.models import Channel
 from app.services.posting import PostingService
 
 
@@ -18,11 +19,13 @@ class ManualPublishResult:
 class ManualPublishService:
     """Execute one manual provider send and optionally bridge into one repeat root.
 
-    The immediate provider send has no canonical source Publication today. Therefore
-    this service may create exactly one future repeat root *after* a proven provider
-    success. That root is created through ``PostingService.schedule()``, so supported
-    work is atomically linked before its first committed executable state and all later
-    successors remain canonical-continuation owned.
+    UI state carries database ``Channel.id`` values while the provider requires
+    Telegram chat ids. This service keeps that identity conversion explicit. The
+    immediate provider send has no canonical source Publication today, so after a
+    proven provider success it may create exactly one future repeat root through
+    ``PostingService.schedule()``. Supported work is therefore atomically linked before
+    its first committed executable state and all later successors remain
+    canonical-continuation owned.
 
     Provider failure/ambiguity is fail-closed for repeat creation: no future root is
     scheduled unless ``send_now`` returns concrete Telegram message ids.
@@ -45,6 +48,13 @@ class ManualPublishService:
             ordered.append(target)
         return tuple(ordered)
 
+    async def _telegram_chat_id(self, channel_id: int) -> int | None:
+        async with self.session_factory() as session:
+            channel = await session.get(Channel, int(channel_id))
+            if channel is None:
+                return None
+            return int(channel.tg_chat_id)
+
     async def publish(
         self,
         *,
@@ -65,14 +75,20 @@ class ManualPublishService:
         outbound = dict(payload)
         outbound["silent"] = not bool(notify_on)
 
-        primary_ids = await posting.send_now(primary, outbound)
+        primary_chat_id = await self._telegram_chat_id(primary)
+        if primary_chat_id is None:
+            return ManualPublishResult(sent=False)
+        primary_ids = await posting.send_now(primary_chat_id, outbound)
         if not primary_ids:
             return ManualPublishResult(sent=False)
 
         forwarded: list[int] = []
         targets = self._targets(primary, forward_to)
         for target in targets[1:]:
-            ids = await posting.send_now(target, outbound)
+            target_chat_id = await self._telegram_chat_id(target)
+            if target_chat_id is None:
+                continue
+            ids = await posting.send_now(target_chat_id, outbound)
             if ids:
                 forwarded.append(target)
 
