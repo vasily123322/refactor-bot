@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, JSON, String, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, DateTime, Integer, JSON, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -22,11 +22,7 @@ class LegacyTimeViewsDeleteAction(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    post_task_id: Mapped[int] = mapped_column(
-        Integer,
-        ForeignKey("post_tasks.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    post_task_id: Mapped[int] = mapped_column(Integer, nullable=False)
     chat_id: Mapped[int] = mapped_column(nullable=False)
     message_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False)
     target_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
