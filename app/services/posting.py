@@ -16,6 +16,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from app.domain.models import PostTask
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.repositories.posts import PostsRepo
+from app.services.legacy_content_mirror import mirror_legacy_post_task
 import os
 import asyncio
 import re as _re
@@ -153,40 +154,38 @@ class PostingService:
         when: datetime | None,
         dedupe_key: str | None = None,
     ) -> PostTask:
+        async def _schedule_in_session(session: AsyncSession) -> PostTask:
+            repo = PostsRepo(session)
+            if dedupe_key:
+                dup = await repo.get_by_dedupe(dedupe_key)
+                if dup:
+                    return dup
+            post = PostTask(
+                channel_id=channel_id,
+                payload=payload,
+                dedupe_key=dedupe_key,
+                scheduled_at=when,
+            )
+            session.add(post)
+            try:
+                # The executable legacy row and supported canonical mirror become
+                # visible together. Unsupported payloads intentionally return None
+                # from the mirror helper and remain on the explicit legacy fallback.
+                await session.flush()
+                await mirror_legacy_post_task(session, post, commit=False)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+            await session.refresh(post)
+            return post
+
         # Если передана фабрика сессий — откроем короткоживущую сессию
         if self.session_factory is not None:
             async with self.session_factory() as session:
-                repo = PostsRepo(session)
-                if dedupe_key:
-                    dup = await repo.get_by_dedupe(dedupe_key)
-                    if dup:
-                        return dup
-                post = PostTask(
-                    channel_id=channel_id,
-                    payload=payload,
-                    dedupe_key=dedupe_key,
-                    scheduled_at=when,
-                )
-                session.add(post)
-                await session.commit()
-                await session.refresh(post)
-                return post
+                return await _schedule_in_session(session)
         # Иначе используем переданную долгоживущую сессию (обратная совместимость)
-        repo = PostsRepo(self.session)  # type: ignore[arg-type]
-        if dedupe_key:
-            dup = await repo.get_by_dedupe(dedupe_key)
-            if dup:
-                return dup
-        post = PostTask(
-            channel_id=channel_id,
-            payload=payload,
-            dedupe_key=dedupe_key,
-            scheduled_at=when,
-        )
-        self.session.add(post)  # type: ignore[union-attr]
-        await self.session.commit()  # type: ignore[union-attr]
-        await self.session.refresh(post)  # type: ignore[union-attr]
-        return post
+        return await _schedule_in_session(self.session)  # type: ignore[arg-type]
 
     def _build_reply_markup(self, payload: dict) -> InlineKeyboardMarkup | None:
         buttons = payload.get("buttons")
