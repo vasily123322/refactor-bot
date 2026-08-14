@@ -8,7 +8,7 @@ from .chats import router as chats_commands
 from .post_editor import router as post_editor_commands
 from .posting_publish import router as posting_publish_commands
 from .content_plan_publication import router as content_plan_publication_commands
-from .content_plan import router as content_plan_commands
+from .content_plan_cancellation import router as content_plan_commands
 from .settings import router as settings_commands
 from .admin import router as admin_commands
 from .tz import router as tz_commands
