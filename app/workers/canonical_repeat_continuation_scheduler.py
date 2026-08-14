@@ -429,6 +429,38 @@ class Scheduler(RecoveryScheduler):
         )
         return True
 
+    async def _linked_after_canonical_proof_error(
+        self,
+        session: AsyncSession,
+        *,
+        task_id: int,
+    ) -> bool:
+        """Fail closed when a proof error leaves linked ownership uncertain.
+
+        Unlinked rows remain intentional legacy fallback. A linked row belongs to an
+        existing canonical occurrence even when the profile proof itself failed, so the
+        legacy scheduler must not claim or mutate it until ownership can be proven. If
+        even the linkage lookup fails, ownership is unknown and therefore blocked too.
+        """
+
+        try:
+            publication_id = await session.scalar(
+                select(Publication.id)
+                .where(Publication.legacy_post_task_id == int(task_id))
+                .limit(1)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await session.rollback()
+            logger.warning(
+                "Scheduler: canonical linkage lookup failed after proof error post_id={} type={}",
+                int(task_id),
+                type(exc).__name__,
+            )
+            return True
+        return publication_id is not None
+
     async def _legacy_repeat_boot_mutation_protected(
         self,
         session: AsyncSession,
@@ -453,7 +485,10 @@ class Scheduler(RecoveryScheduler):
                 int(task_id),
                 type(exc).__name__,
             )
-            return False
+            return await self._linked_after_canonical_proof_error(
+                session,
+                task_id=int(task_id),
+            )
 
     async def _boot_cleanup_repeats(
         self,
@@ -578,6 +613,11 @@ class Scheduler(RecoveryScheduler):
                     task_id,
                     type(exc).__name__,
                 )
+                if await self._linked_after_canonical_proof_error(
+                    session,
+                    task_id=task_id,
+                ):
+                    continue
                 yielded_nonrepeat = False
 
             if yielded_nonrepeat:
