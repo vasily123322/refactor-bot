@@ -82,6 +82,7 @@ async def _backfill_repeat_group_metadata(
     channel_id: int,
     payload: dict[str, Any],
     publication: Publication,
+    commit: bool = True,
 ) -> None:
     """Idempotently add a canonical repeat anchor to an already mirrored occurrence."""
     group_id = _repeat_group_id(payload, task_id=task_id)
@@ -116,8 +117,10 @@ async def _backfill_repeat_group_metadata(
         schedule.meta = schedule_meta
         changed = True
     if changed:
-        await session.commit()
-        await session.refresh(publication)
+        await session.flush()
+        if commit:
+            await session.commit()
+            await session.refresh(publication)
 
 
 def _content_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -251,6 +254,8 @@ async def _repeat_root_content(
 async def mirror_legacy_post_task(
     session: AsyncSession,
     task: PostTask,
+    *,
+    commit: bool = True,
 ) -> Publication | None:
     """Idempotently mirror one legacy PostTask into the new content domain.
 
@@ -258,6 +263,10 @@ async def mirror_legacy_post_task(
     failure must never alter task status or prevent the existing scheduler from
     processing it. Repeat tasks may reuse immutable ContentItem/ContentRevision
     provenance, but every delivery occurrence gets a distinct Publication.
+
+    With ``commit=False`` the caller owns the transaction boundary. This is used by
+    creators that must make the executable PostTask and its canonical linkage visible
+    atomically; existing callers keep the historical commit-on-success behavior.
     """
     task_id = int(task.id)
     channel_id = int(task.channel_id)
@@ -274,6 +283,7 @@ async def mirror_legacy_post_task(
             channel_id=channel_id,
             payload=payload,
             publication=existing,
+            commit=commit,
         )
         return existing
 
@@ -287,6 +297,7 @@ async def mirror_legacy_post_task(
                 channel_id=channel_id,
                 payload=payload,
                 publication=marked,
+                commit=commit,
             )
             return marked
     if "_publication_id" in payload:
@@ -457,11 +468,14 @@ async def mirror_legacy_post_task(
         payload.pop("_content_channel_id", None)
         payload.pop("_publication_id", None)
         task.payload = payload
-        await session.commit()
-        await session.refresh(publication)
+        await session.flush()
+        if commit:
+            await session.commit()
+            await session.refresh(publication)
         return publication
     except Exception:
-        await session.rollback()
+        if commit:
+            await session.rollback()
         raise
 
 
