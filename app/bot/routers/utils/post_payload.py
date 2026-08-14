@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from datetime import datetime as _dt, timedelta
+from datetime import datetime as _dt
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -304,40 +304,14 @@ async def _apply_autosign_if_enabled(
 async def _schedule_next_repeat_if_pro(
     service, chan_id: int, payload: dict, state_data: dict, when: _dt
 ) -> None:
-    try:
-        is_pro = await _is_channel_pro(chan_id)
-        secs_rep = int(state_data.get("repeat_seconds") or 0)
-        if not (is_pro and bool(state_data.get("repeat_on", False)) and secs_rep > 0):
-            return
-        next_when = when + timedelta(seconds=secs_rep)
-        pl2 = dict(payload)
-        pl2["repeat_on"] = True
-        pl2["repeat_seconds"] = secs_rep
-        try:
-            if payload.get("type") == "text":
-                tx = str(pl2.get("text") or "")
-                async with AsyncSessionLocal() as session:
-                    repo = ChannelSettingsRepo(session)
-                    st3 = await repo.get_by_channel_id(chan_id)
-                au = ((st3.autosign or "").strip()) if st3 else ""
-                if au:
-                    mark = "\n\n" + au
-                    if tx.endswith(mark):
-                        tx = tx[: -len(mark)]
-                    elif tx.endswith(au):
-                        tx = tx[: -len(au)]
-                pl2["text"] = tx
-            pl2.pop("autosign_applied", None)
-        except Exception:
-            pass
-        try:
-            if payload.get("meta") and not pl2.get("meta"):
-                pl2["meta"] = dict(payload["meta"])
-        except Exception:
-            pass
-        await service.schedule(chan_id, pl2, next_when)
-    except Exception:
-        pass
+    """Compatibility no-op: canonical continuation owns deferred repeat successors.
+
+    A deferred repeat root is already atomically mirrored by ``PostingService.schedule``.
+    Pre-seeding another task here independently decided a second occurrence and, when
+    ``repeat_group_id`` was absent, created a second canonical repeat root. Keep the
+    helper temporarily for import compatibility while removing its execution authority.
+    """
+    return None
 
 
 async def _build_scheduled_confirmation(chan_id: int, defer_iso: str):
