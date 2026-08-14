@@ -57,6 +57,14 @@ async def _channel(Session, suffix: int, *, premium: bool = True) -> Channel:
         return channel
 
 
+def _same_instant(left: datetime, right: datetime) -> bool:
+    if left.tzinfo is None:
+        left = left.replace(tzinfo=timezone.utc)
+    if right.tzinfo is None:
+        right = right.replace(tzinfo=timezone.utc)
+    return left.astimezone(timezone.utc) == right.astimezone(timezone.utc)
+
+
 def test_manual_publish_sends_once_and_creates_one_linked_repeat_root() -> None:
     async def run() -> None:
         engine, Session = await _new_db()
@@ -93,7 +101,10 @@ def test_manual_publish_sends_once_and_creates_one_linked_repeat_root() -> None:
                 assert int(task.id) == int(result.repeat_post_task_id)
                 assert task.channel_id == int(channel.id)
                 assert task.status == "pending"
-                assert task.scheduled_at == now + timedelta(seconds=3600)
+                assert _same_instant(
+                    task.scheduled_at,
+                    now + timedelta(seconds=3600),
+                )
                 assert publication.legacy_post_task_id == int(task.id)
                 assert publication.status == "queued"
                 assert publication.schedule_entry_id == int(schedule.id)
