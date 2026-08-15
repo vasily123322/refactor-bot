@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import inspect
-from contextlib import asynccontextmanager
 
 import pytest
 
