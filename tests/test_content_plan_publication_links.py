@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
+from inspect import signature
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -10,13 +12,15 @@ from app.domain.models import Channel, Client, PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.repositories.content import ContentRepo
 from app.services.content_plan_publication_links import (
-    content_plan_open_callback,
-    published_publication_ids_for_legacy_tasks,
+    legacy_content_plan_open_callback,
+    list_linked_content_plan_publications,
 )
 from app.services.publication_bridge import LegacyPublicationBridge
+from app.services.publication_editor import publication_open_callback
 
 
-async def _seed(Session) -> tuple[int, int, int, int, int]:
+async def _seed(Session, *, published: bool = True) -> tuple[int, int, int, int, int]:
+    scheduled = datetime(2026, 8, 10, 12, 30, tzinfo=timezone.utc)
     async with Session() as session:
         owner = Client(
             tg_user_id=74001,
@@ -43,7 +47,8 @@ async def _seed(Session) -> tuple[int, int, int, int, int]:
             created_by_tg_user_id=74001,
         )
         publication = await LegacyPublicationBridge(session).queue(
-            content_item_id=int(item.id)
+            content_item_id=int(item.id),
+            scheduled_at=scheduled,
         )
         task_id = int(publication.legacy_post_task_id or 0)
         schedule_id = int(publication.schedule_entry_id or 0)
@@ -51,14 +56,20 @@ async def _seed(Session) -> tuple[int, int, int, int, int]:
         task = await session.get(PostTask, task_id)
         schedule = await session.get(ScheduleEntry, schedule_id)
         assert task is not None and schedule is not None
-        task.status = "done"
-        publication.status = "published"
-        schedule.status = "completed"
+        if published:
+            task.status = "done"
+            publication.status = "published"
+            schedule.status = "completed"
         await session.commit()
         return int(channel.id), task_id, publication_id, schedule_id, int(item.id)
 
 
-def test_proven_published_link_emits_publication_callback(tmp_path) -> None:
+def _window() -> tuple[datetime, datetime]:
+    start = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    return start, start + timedelta(days=1) - timedelta(microseconds=1)
+
+
+def test_linked_published_occurrence_is_loaded_canonical_first(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'content-plan-links.db'}"
@@ -68,27 +79,65 @@ def test_proven_published_link_emits_publication_callback(tmp_path) -> None:
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             channel_id, task_id, publication_id, _, _ = await _seed(Session)
+            start, end = _window()
 
             async with Session() as session:
-                links = await published_publication_ids_for_legacy_tasks(
+                links = await list_linked_content_plan_publications(
                     session,
                     channel_id=channel_id,
-                    post_task_ids=[task_id],
+                    start_at=start,
+                    end_at=end,
                 )
 
-            assert links == {task_id: publication_id}
-            assert content_plan_open_callback(
-                post_task_id=task_id,
-                date_iso="2026-08-10",
-                published_publication_ids=links,
+            assert [(row.publication_id, row.legacy_post_task_id) for row in links] == [
+                (publication_id, task_id)
+            ]
+            assert publication_open_callback(
+                links[0].publication_id,
+                "2026-08-10",
             ) == f"cp_open_pub:{publication_id}:2026-08-10"
+            assert "post_task_ids" not in signature(
+                list_linked_content_plan_publications
+            ).parameters
         finally:
             await engine.dispose()
 
     asyncio.run(run())
 
 
-def test_incomplete_canonical_linkage_keeps_legacy_callback(tmp_path) -> None:
+def test_linked_queued_occurrence_is_loaded_canonical_first(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'content-plan-links-queued.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            channel_id, task_id, publication_id, _, _ = await _seed(
+                Session,
+                published=False,
+            )
+            start, end = _window()
+
+            async with Session() as session:
+                links = await list_linked_content_plan_publications(
+                    session,
+                    channel_id=channel_id,
+                    start_at=start,
+                    end_at=end,
+                )
+
+            assert [(row.publication_id, row.legacy_post_task_id) for row in links] == [
+                (publication_id, task_id)
+            ]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_incomplete_canonical_linkage_is_not_promoted(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'content-plan-links-incomplete.db'}"
@@ -98,6 +147,7 @@ def test_incomplete_canonical_linkage_keeps_legacy_callback(tmp_path) -> None:
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             channel_id, task_id, _, schedule_id, _ = await _seed(Session)
+            start, end = _window()
 
             async with Session() as session:
                 schedule = await session.get(ScheduleEntry, schedule_id)
@@ -105,17 +155,17 @@ def test_incomplete_canonical_linkage_keeps_legacy_callback(tmp_path) -> None:
                 schedule.status = "pending"
                 await session.commit()
 
-                links = await published_publication_ids_for_legacy_tasks(
+                links = await list_linked_content_plan_publications(
                     session,
                     channel_id=channel_id,
-                    post_task_ids=[task_id],
+                    start_at=start,
+                    end_at=end,
                 )
 
-            assert links == {}
-            assert content_plan_open_callback(
+            assert links == []
+            assert legacy_content_plan_open_callback(
                 post_task_id=task_id,
                 date_iso="2026-08-10",
-                published_publication_ids=links,
             ) == f"cp_open_post:{task_id}:2026-08-10"
         finally:
             await engine.dispose()
@@ -133,6 +183,7 @@ def test_cross_channel_or_stale_transport_status_is_not_promoted(tmp_path) -> No
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             channel_id, task_id, publication_id, schedule_id, _ = await _seed(Session)
+            start, end = _window()
 
             async with Session() as session:
                 task = await session.get(PostTask, task_id)
@@ -140,12 +191,13 @@ def test_cross_channel_or_stale_transport_status_is_not_promoted(tmp_path) -> No
                 task.status = "pending"
                 await session.commit()
                 assert (
-                    await published_publication_ids_for_legacy_tasks(
+                    await list_linked_content_plan_publications(
                         session,
                         channel_id=channel_id,
-                        post_task_ids=[task_id],
+                        start_at=start,
+                        end_at=end,
                     )
-                    == {}
+                    == []
                 )
 
                 task.status = "done"
@@ -156,12 +208,13 @@ def test_cross_channel_or_stale_transport_status_is_not_promoted(tmp_path) -> No
                 schedule.channel_id = channel_id + 999
                 await session.commit()
                 assert (
-                    await published_publication_ids_for_legacy_tasks(
+                    await list_linked_content_plan_publications(
                         session,
                         channel_id=channel_id,
-                        post_task_ids=[task_id],
+                        start_at=start,
+                        end_at=end,
                     )
-                    == {}
+                    == []
                 )
         finally:
             await engine.dispose()
