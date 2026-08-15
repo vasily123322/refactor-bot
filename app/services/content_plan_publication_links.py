@@ -27,10 +27,10 @@ async def list_linked_content_plan_publications(
     """Load canonical linked occurrences without looking Publication up by PostTask id.
 
     New content-plan producers start from Publication/ScheduleEntry identity for the
-    requested channel/time window. ``legacy_post_task_id`` is returned only so the
-    renderer can suppress the duplicate compatibility transport row while that row still
-    exists. Historical/unlinked PostTask rows are deliberately absent from this result
-    and remain eligible for the legacy callback fallback.
+    requested channel/time window. ``legacy_post_task_id`` is returned only to correlate
+    that canonical identity with an existing compatibility transport row; it is never an
+    input used to discover Publication. Historical/unlinked PostTask rows are absent from
+    this result and remain eligible for the explicit legacy callback fallback.
     """
     try:
         safe_channel_id = int(channel_id)

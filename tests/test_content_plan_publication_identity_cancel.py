@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from datetime import datetime, timezone
 
 import pytest
 
@@ -11,9 +12,9 @@ from app.services.content_plan_publication_cancellation import (
     ContentPlanPublicationCancellationService,
 )
 from app.services.content_plan_publication_links import (
-    content_plan_open_callback,
-    published_publication_ids_for_legacy_tasks,
+    list_linked_content_plan_publications,
 )
+from app.services.publication_editor import publication_open_callback
 
 
 class _RowsResult:
@@ -56,20 +57,16 @@ class _Factory:
 
 
 @pytest.mark.asyncio
-async def test_linked_content_plan_row_promotes_to_publication_callback():
-    links = await published_publication_ids_for_legacy_tasks(
-        _Session([(41, 91)]),
+async def test_linked_content_plan_row_uses_canonical_publication_identity():
+    links = await list_linked_content_plan_publications(
+        _Session([(91, 41)]),
         channel_id=7,
-        post_task_ids=[41],
+        start_at=datetime(2026, 8, 15, tzinfo=timezone.utc),
+        end_at=datetime(2026, 8, 16, tzinfo=timezone.utc),
     )
-    assert links == {41: 91}
-    assert (
-        content_plan_open_callback(
-            post_task_id=41,
-            date_iso="2026-08-15",
-            published_publication_ids=links,
-        )
-        == "cp_open_pub:91:2026-08-15"
+    assert [(row.publication_id, row.legacy_post_task_id) for row in links] == [(91, 41)]
+    assert publication_open_callback(links[0].publication_id, "2026-08-15") == (
+        "cp_open_pub:91:2026-08-15"
     )
 
 
