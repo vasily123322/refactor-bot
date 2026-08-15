@@ -8,7 +8,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.db import Base
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, PublicationAttempt
-from app.services.legacy_content_mirror import mirror_unlinked_legacy_tasks
+from app.services.legacy_terminal_content_mirror import (
+    mirror_unlinked_terminal_legacy_tasks,
+)
 from app.services.scheduler_errors import GENERIC_SCHEDULER_ERROR
 
 
@@ -44,7 +46,7 @@ def test_legacy_mirror_redacts_untrusted_terminal_transport_fields() -> None:
                 await session.refresh(task)
                 task_id = int(task.id)
 
-                mirrored, skipped = await mirror_unlinked_legacy_tasks(session)
+                mirrored, skipped = await mirror_unlinked_terminal_legacy_tasks(session)
                 assert mirrored == 1
                 assert skipped == 0
 
@@ -106,7 +108,7 @@ def test_legacy_mirror_preserves_valid_scheduler_results() -> None:
                 session.add(task)
                 await session.commit()
 
-                mirrored, skipped = await mirror_unlinked_legacy_tasks(session)
+                mirrored, skipped = await mirror_unlinked_terminal_legacy_tasks(session)
                 assert mirrored == 1
                 assert skipped == 0
 
