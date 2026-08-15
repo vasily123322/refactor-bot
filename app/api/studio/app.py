@@ -375,11 +375,6 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
                 if publication.schedule_entry_id is not None
                 else None
             ),
-            legacy_post_task_id=(
-                int(publication.legacy_post_task_id)
-                if publication.legacy_post_task_id is not None
-                else None
-            ),
         )
 
     return app
