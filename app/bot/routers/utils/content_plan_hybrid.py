@@ -57,7 +57,7 @@ def canonical_published_button_row(
     tz_code: str | None,
 ) -> TimedContentPlanButtonRow | None:
     """Render only the first retention-safe canonical-only published slice."""
-    if row.legacy_post_task_id is not None or row.repeat_enabled:
+    if row.has_legacy_post_task_link or row.repeat_enabled:
         return None
 
     badge = None
