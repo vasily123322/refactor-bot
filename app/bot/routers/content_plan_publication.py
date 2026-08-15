@@ -13,6 +13,9 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from app.bot.fsm.states import PostFSM
 from app.core.db import AsyncSessionLocal
 from app.services.content import LegacyPayloadError
+from app.services.content_plan_publication_cancellation import (
+    ContentPlanPublicationCancellationService,
+)
 from app.services.publication_editor import (
     load_owned_publication_editor_view,
     publication_edit_callback,
@@ -104,6 +107,15 @@ async def cb_cp_open_publication(callback: CallbackQuery, state: FSMContext):
                 )
             ]
         )
+    elif view.status == "queued":
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Удалить",
+                    callback_data=f"cp_delete_pub:{view.publication_id}:{date_iso}",
+                )
+            ]
+        )
     rows.append(
         [
             InlineKeyboardButton(
@@ -139,6 +151,56 @@ async def cb_cp_open_publication(callback: CallbackQuery, state: FSMContext):
                 disable_web_page_preview=True,
             )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("cp_delete_pub:"))
+async def cb_cp_delete_publication(callback: CallbackQuery, state: FSMContext):
+    parsed = _parse_callback(callback.data, "cp_delete_pub")
+    if parsed is None:
+        return await callback.answer("Ошибка данных", show_alert=True)
+    publication_id, date_iso = parsed
+
+    async with AsyncSessionLocal() as session:
+        view = await load_owned_publication_editor_view(
+            session,
+            publication_id=publication_id,
+            tg_user_id=int(callback.from_user.id),
+        )
+    if view is None:
+        return await callback.answer("Публикация не найдена или нет доступа", show_alert=True)
+    if view.status != "queued":
+        return await callback.answer(
+            "Публикацию сейчас нельзя безопасно отменить",
+            show_alert=True,
+        )
+
+    try:
+        result = await ContentPlanPublicationCancellationService(
+            AsyncSessionLocal
+        ).delete(publication_id)
+    except Exception:
+        return await callback.answer("Не удалось удалить", show_alert=True)
+    if result.outcome == "cannot_cancel":
+        return await callback.answer(
+            "Публикацию сейчас нельзя безопасно отменить",
+            show_alert=True,
+        )
+
+    await state.update_data(cp_channel_id=view.channel_id, cp_center=date_iso)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="← Назад",
+                    callback_data=f"cp_open_cal:{view.channel_id}:{date_iso}",
+                )
+            ]
+        ]
+    )
+    with suppress(TelegramBadRequest):
+        await callback.message.edit_text("Публикация отменена 🚫", reply_markup=kb)
+    with suppress(TelegramBadRequest):
+        await callback.answer("🗑 Удалено", show_alert=False)
 
 
 @router.callback_query(F.data.startswith("cp_edit_pub:"))
