@@ -72,8 +72,37 @@ class ContentPlanCancellationService:
         self.session_factory = session_factory
 
     async def delete(self, post_task_id: int) -> ContentPlanDeleteResult:
+        """Preserve the historical PostTask-id entrypoint for legacy callbacks."""
         task_id = int(post_task_id)
         cancellation = await self._cancel_or_delete_legacy(task_id)
+        return await self._complete_cancellation(cancellation)
+
+    async def delete_publication(self, publication_id: int) -> ContentPlanDeleteResult:
+        """Cancel linked canonical work by Publication identity.
+
+        ``PostTask`` remains a compatibility scheduler fence and retirement target, but
+        it is no longer the primary identity for canonical content-plan cancellation.
+        """
+        try:
+            safe_publication_id = int(publication_id)
+        except (TypeError, ValueError, OverflowError):
+            return ContentPlanDeleteResult(
+                outcome="cannot_cancel",
+                reason="invalid_publication_id",
+            )
+        if safe_publication_id <= 0:
+            return ContentPlanDeleteResult(
+                outcome="cannot_cancel",
+                reason="invalid_publication_id",
+            )
+
+        cancellation = await self._cancel_by_publication(safe_publication_id)
+        return await self._complete_cancellation(cancellation)
+
+    async def _complete_cancellation(
+        self,
+        cancellation: ContentPlanDeleteResult | _CanonicalCancellation,
+    ) -> ContentPlanDeleteResult:
         if isinstance(cancellation, ContentPlanDeleteResult):
             return cancellation
 
@@ -126,144 +155,198 @@ class ContentPlanCancellationService:
                     compatibility_retired=True,
                 )
 
-            schedule_id = publication.schedule_entry_id
-            if schedule_id is None:
-                await session.rollback()
-                return ContentPlanDeleteResult(
-                    outcome="cannot_cancel", reason="missing_schedule_entry"
-                )
-
-            schedule = (
-                await session.execute(
-                    select(ScheduleEntry)
-                    .where(ScheduleEntry.id == int(schedule_id))
-                    .with_for_update()
-                )
-            ).scalar_one_or_none()
-            post = (
-                await session.execute(
-                    select(PostTask)
-                    .where(PostTask.id == int(post_task_id))
-                    .with_for_update()
-                )
-            ).scalar_one_or_none()
-            if schedule is None or post is None:
-                await session.rollback()
-                return ContentPlanDeleteResult(
-                    outcome="cannot_cancel", reason="incomplete_compatibility_link"
-                )
-
-            if _is_legacy_mixed_time_views(post.payload):
-                await session.rollback()
-                return ContentPlanDeleteResult(
-                    outcome="cannot_cancel", reason="legacy_mixed_time_views_owner"
-                )
-
-            reason = await self._execution_barrier_reason(
+            return await self._cancel_linked_locked(
                 session,
                 publication=publication,
                 post_task_id=int(post_task_id),
             )
-            if reason is not None:
-                await session.rollback()
-                return ContentPlanDeleteResult(
-                    outcome="cannot_cancel", reason=reason
+
+    async def _cancel_by_publication(
+        self, publication_id: int
+    ) -> ContentPlanDeleteResult | _CanonicalCancellation:
+        async with self.session_factory() as session:
+            publication = (
+                await session.execute(
+                    select(Publication)
+                    .where(Publication.id == int(publication_id))
+                    .with_for_update()
                 )
-
-            publication_id = int(publication.id)
-            schedule_entry_id = int(schedule.id)
-            task_id = int(post.id)
-
-            if publication.status == "cancelled":
-                if schedule.status != "cancelled" or post.status != "cancelled":
-                    await session.rollback()
-                    return ContentPlanDeleteResult(
-                        outcome="cannot_cancel",
-                        reason="partial_terminal_cancellation",
-                    )
+            ).scalar_one_or_none()
+            if publication is None:
                 await session.rollback()
-                return _CanonicalCancellation(
-                    publication_id=publication_id,
-                    schedule_entry_id=schedule_entry_id,
-                    post_task_id=task_id,
-                )
+                return ContentPlanDeleteResult(outcome="already_absent")
 
-            if publication.status != "queued":
+            raw_task_id = publication.legacy_post_task_id
+            if raw_task_id is None:
                 await session.rollback()
                 return ContentPlanDeleteResult(
                     outcome="cannot_cancel",
-                    reason=f"publication_{publication.status or 'unknown'}",
+                    reason="compatibility_transport_absent",
                 )
-            if schedule.status != "pending":
+            try:
+                post_task_id = int(raw_task_id)
+            except (TypeError, ValueError, OverflowError):
                 await session.rollback()
                 return ContentPlanDeleteResult(
                     outcome="cannot_cancel",
-                    reason=f"schedule_{schedule.status or 'unknown'}",
+                    reason="invalid_compatibility_transport",
                 )
-            if post.status != "pending":
+            if post_task_id <= 0:
                 await session.rollback()
                 return ContentPlanDeleteResult(
                     outcome="cannot_cancel",
-                    reason=f"post_task_{post.status or 'unknown'}",
+                    reason="invalid_compatibility_transport",
                 )
 
-            publication_cas = await session.execute(
-                update(Publication)
-                .where(
-                    Publication.id == publication_id,
-                    Publication.legacy_post_task_id == int(post_task_id),
-                    Publication.status == "queued",
-                    Publication.attempt_count == 0,
-                    Publication.result_link.is_(None),
-                    Publication.last_error.is_(None),
-                )
-                .values(status="cancelled")
-                .execution_options(synchronize_session=False)
+            return await self._cancel_linked_locked(
+                session,
+                publication=publication,
+                post_task_id=post_task_id,
             )
-            if int(publication_cas.rowcount or 0) != 1:
+
+    async def _cancel_linked_locked(
+        self,
+        session: AsyncSession,
+        *,
+        publication: Publication,
+        post_task_id: int,
+    ) -> ContentPlanDeleteResult | _CanonicalCancellation:
+        schedule_id = publication.schedule_entry_id
+        if schedule_id is None:
+            await session.rollback()
+            return ContentPlanDeleteResult(
+                outcome="cannot_cancel", reason="missing_schedule_entry"
+            )
+
+        schedule = (
+            await session.execute(
+                select(ScheduleEntry)
+                .where(ScheduleEntry.id == int(schedule_id))
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        post = (
+            await session.execute(
+                select(PostTask)
+                .where(PostTask.id == int(post_task_id))
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if schedule is None or post is None:
+            await session.rollback()
+            return ContentPlanDeleteResult(
+                outcome="cannot_cancel", reason="incomplete_compatibility_link"
+            )
+
+        if _is_legacy_mixed_time_views(post.payload):
+            await session.rollback()
+            return ContentPlanDeleteResult(
+                outcome="cannot_cancel", reason="legacy_mixed_time_views_owner"
+            )
+
+        reason = await self._execution_barrier_reason(
+            session,
+            publication=publication,
+            post_task_id=int(post_task_id),
+        )
+        if reason is not None:
+            await session.rollback()
+            return ContentPlanDeleteResult(outcome="cannot_cancel", reason=reason)
+
+        publication_id = int(publication.id)
+        schedule_entry_id = int(schedule.id)
+        task_id = int(post.id)
+
+        if publication.status == "cancelled":
+            if schedule.status != "cancelled" or post.status != "cancelled":
                 await session.rollback()
                 return ContentPlanDeleteResult(
-                    outcome="cannot_cancel", reason="publication_claim_race"
+                    outcome="cannot_cancel",
+                    reason="partial_terminal_cancellation",
                 )
-
-            schedule_cas = await session.execute(
-                update(ScheduleEntry)
-                .where(
-                    ScheduleEntry.id == schedule_entry_id,
-                    ScheduleEntry.status == "pending",
-                )
-                .values(status="cancelled")
-                .execution_options(synchronize_session=False)
-            )
-            if int(schedule_cas.rowcount or 0) != 1:
-                await session.rollback()
-                return ContentPlanDeleteResult(
-                    outcome="cannot_cancel", reason="schedule_claim_race"
-                )
-
-            # Fence the compatibility transport in the same durable transaction.
-            # Physical deletion remains a separate second phase after this commit.
-            post_cas = await session.execute(
-                update(PostTask)
-                .where(
-                    PostTask.id == task_id,
-                    PostTask.status == "pending",
-                )
-                .values(status="cancelled")
-                .execution_options(synchronize_session=False)
-            )
-            if int(post_cas.rowcount or 0) != 1:
-                await session.rollback()
-                return ContentPlanDeleteResult(
-                    outcome="cannot_cancel", reason="legacy_scheduler_claim_race"
-                )
-
-            await session.commit()
+            await session.rollback()
             return _CanonicalCancellation(
                 publication_id=publication_id,
                 schedule_entry_id=schedule_entry_id,
                 post_task_id=task_id,
             )
+
+        if publication.status != "queued":
+            await session.rollback()
+            return ContentPlanDeleteResult(
+                outcome="cannot_cancel",
+                reason=f"publication_{publication.status or 'unknown'}",
+            )
+        if schedule.status != "pending":
+            await session.rollback()
+            return ContentPlanDeleteResult(
+                outcome="cannot_cancel",
+                reason=f"schedule_{schedule.status or 'unknown'}",
+            )
+        if post.status != "pending":
+            await session.rollback()
+            return ContentPlanDeleteResult(
+                outcome="cannot_cancel",
+                reason=f"post_task_{post.status or 'unknown'}",
+            )
+
+        publication_cas = await session.execute(
+            update(Publication)
+            .where(
+                Publication.id == publication_id,
+                Publication.legacy_post_task_id == int(post_task_id),
+                Publication.status == "queued",
+                Publication.attempt_count == 0,
+                Publication.result_link.is_(None),
+                Publication.last_error.is_(None),
+            )
+            .values(status="cancelled")
+            .execution_options(synchronize_session=False)
+        )
+        if int(publication_cas.rowcount or 0) != 1:
+            await session.rollback()
+            return ContentPlanDeleteResult(
+                outcome="cannot_cancel", reason="publication_claim_race"
+            )
+
+        schedule_cas = await session.execute(
+            update(ScheduleEntry)
+            .where(
+                ScheduleEntry.id == schedule_entry_id,
+                ScheduleEntry.status == "pending",
+            )
+            .values(status="cancelled")
+            .execution_options(synchronize_session=False)
+        )
+        if int(schedule_cas.rowcount or 0) != 1:
+            await session.rollback()
+            return ContentPlanDeleteResult(
+                outcome="cannot_cancel", reason="schedule_claim_race"
+            )
+
+        # Fence the compatibility transport in the same durable transaction.
+        # Physical deletion remains a separate second phase after this commit.
+        post_cas = await session.execute(
+            update(PostTask)
+            .where(
+                PostTask.id == task_id,
+                PostTask.status == "pending",
+            )
+            .values(status="cancelled")
+            .execution_options(synchronize_session=False)
+        )
+        if int(post_cas.rowcount or 0) != 1:
+            await session.rollback()
+            return ContentPlanDeleteResult(
+                outcome="cannot_cancel", reason="legacy_scheduler_claim_race"
+            )
+
+        await session.commit()
+        return _CanonicalCancellation(
+            publication_id=publication_id,
+            schedule_entry_id=schedule_entry_id,
+            post_task_id=task_id,
+        )
 
     async def _execution_barrier_reason(
         self,

@@ -23,12 +23,6 @@ class _RowsResult:
     def all(self):
         return list(self._rows)
 
-    def one_or_none(self):
-        if not self._rows:
-            return None
-        assert len(self._rows) == 1
-        return self._rows[0]
-
 
 class _Session:
     def __init__(self, rows):
@@ -36,23 +30,6 @@ class _Session:
 
     async def execute(self, _statement):
         return _RowsResult(self._rows)
-
-
-class _Factory:
-    def __init__(self, rows):
-        self.rows = rows
-
-    def __call__(self):
-        session = _Session(self.rows)
-
-        class _Context:
-            async def __aenter__(self):
-                return session
-
-            async def __aexit__(self, _exc_type, _exc, _tb):
-                return False
-
-        return _Context()
 
 
 @pytest.mark.asyncio
@@ -74,15 +51,15 @@ async def test_linked_content_plan_row_promotes_to_publication_callback():
 
 
 @pytest.mark.asyncio
-async def test_publication_cancel_adapter_hides_post_task_identity(monkeypatch):
+async def test_publication_cancel_facade_keeps_post_task_identity_inside_core(monkeypatch):
     calls = []
 
     class _CancellationService:
         def __init__(self, _factory):
             pass
 
-        async def delete(self, post_task_id):
-            calls.append(post_task_id)
+        async def delete_publication(self, publication_id):
+            calls.append(publication_id)
             return ContentPlanDeleteResult(outcome="cancelled")
 
     monkeypatch.setattr(
@@ -90,20 +67,9 @@ async def test_publication_cancel_adapter_hides_post_task_identity(monkeypatch):
         "ContentPlanCancellationService",
         _CancellationService,
     )
-    result = await ContentPlanPublicationCancellationService(
-        _Factory([("queued", 41)])
-    ).delete(91)
+    result = await ContentPlanPublicationCancellationService(object()).delete(91)
     assert result.outcome == "cancelled"
-    assert calls == [41]
-
-
-@pytest.mark.asyncio
-async def test_publication_cancel_without_compatibility_transport_fails_closed():
-    result = await ContentPlanPublicationCancellationService(
-        _Factory([("queued", None)])
-    ).delete(91)
-    assert result.outcome == "cannot_cancel"
-    assert result.reason == "compatibility_transport_absent"
+    assert calls == [91]
 
 
 def test_queued_publication_card_exposes_publication_id_delete_callback():
