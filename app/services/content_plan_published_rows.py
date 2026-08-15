@@ -18,7 +18,7 @@ from app.services.scheduling import as_utc
 @dataclass(frozen=True, slots=True)
 class PublishedContentPlanRow:
     publication_id: int
-    legacy_post_task_id: int | None
+    has_legacy_post_task_link: bool
     scheduled_at: datetime
     title: str
     autodeleted: bool
@@ -136,11 +136,6 @@ async def list_published_content_plan_rows(
     for publication, schedule, item, revision in rows:
         try:
             publication_id = int(publication.id)
-            legacy_id = (
-                int(publication.legacy_post_task_id)
-                if publication.legacy_post_task_id is not None
-                else None
-            )
             scheduled_at = as_utc(schedule.scheduled_at)
         except (TypeError, ValueError, OverflowError):
             continue
@@ -149,7 +144,7 @@ async def list_published_content_plan_rows(
         result.append(
             PublishedContentPlanRow(
                 publication_id=publication_id,
-                legacy_post_task_id=legacy_id,
+                has_legacy_post_task_link=publication.legacy_post_task_id is not None,
                 scheduled_at=scheduled_at,
                 title=_title(item, revision),
                 autodeleted=deleted,
