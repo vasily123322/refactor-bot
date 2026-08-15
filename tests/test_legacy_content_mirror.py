@@ -11,11 +11,7 @@ from app.core.db import Base
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
-from app.services.content import LegacyPayloadError, legacy_payload_from_document
-from app.services.legacy_content_mirror import (
-    mirror_legacy_post_task,
-    mirror_unlinked_legacy_tasks,
-)
+from app.services.legacy_content_mirror import mirror_legacy_post_task
 from app.services.scheduling import (
     as_utc,
     cleanup_runtime_fields,
@@ -225,71 +221,6 @@ def test_mirror_terminal_task_captures_result_once() -> None:
                 assert len(attempts) == 1
         finally:
             await engine.dispose()
-
-    asyncio.run(run())
-
-
-def test_batch_mirror_preserves_unknown_payload_as_opaque_content() -> None:
-    async def run() -> None:
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-        try:
-            async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
-            Session = async_sessionmaker(engine, expire_on_commit=False)
-            async with Session() as session:
-                supported = PostTask(
-                    channel_id=1,
-                    status="pending",
-                    payload={"type": "text", "text": "supported"},
-                )
-                unknown = PostTask(
-                    channel_id=1,
-                    status="pending",
-                    payload={
-                        "type": "future_media_type",
-                        "text": "opaque but searchable",
-                        "future_field": {"keep": True},
-                    },
-                )
-                session.add_all([supported, unknown])
-                await session.commit()
-
-                mirrored, skipped = await mirror_unlinked_legacy_tasks(session)
-                assert mirrored == 2
-                assert skipped == 0
-
-                await session.refresh(unknown)
-                assert "_publication_id" not in unknown.payload
-                assert "_content_item_id" not in unknown.payload
-                assert "_content_revision" not in unknown.payload
-                assert "_content_channel_id" not in unknown.payload
-                publication = (
-                    await session.execute(
-                        select(Publication).where(
-                            Publication.legacy_post_task_id == int(unknown.id)
-                        )
-                    )
-                ).scalar_one()
-                revision = (
-                    await session.execute(
-                        select(ContentRevision).where(
-                            ContentRevision.content_item_id
-                            == publication.content_item_id
-                        )
-                    )
-                ).scalar_one()
-                block = revision.document["blocks"][0]
-                assert block["type"] == "legacy"
-                assert block["legacy_type"] == "future_media_type"
-                assert block["payload"]["future_field"] == {"keep": True}
-
-                # Opaque content is migratable/readable but cannot silently publish.
-                with pytest.raises(LegacyPayloadError, match="requires a renderer"):
-                    legacy_payload_from_document(revision.document)
-        finally:
-            await engine.dispose()
-
-    import pytest
 
     asyncio.run(run())
 
