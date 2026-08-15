@@ -133,7 +133,9 @@ def _exact_report_fallback_profile(options: dict[str, Any]) -> str | None:
     without_report = dict(options)
     without_report["autodelete_report"] = False
     profile = _classify_supported_profile(without_report)
-    return profile.name if profile is not None else None
+    if profile is None or not profile.name.startswith(("time", "views")):
+        return None
+    return profile.name
 
 
 def _repeat_profile_started(profile: str) -> bool:
