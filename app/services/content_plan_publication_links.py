@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content.models import ContentItem, ContentRevision
@@ -17,12 +17,13 @@ async def published_publication_ids_for_legacy_tasks(
     channel_id: int,
     post_task_ids: Iterable[int],
 ) -> dict[int, int]:
-    """Return only canonical published links safe for new content-plan callbacks.
+    """Return linked Publication identities safe for new content-plan callbacks.
 
-    Historical/unmirrored/inconsistent rows are deliberately omitted so callers can
-    keep emitting the legacy callback during the staged migration. Canonical lookup
-    itself is fail-soft: a read failure returns no promoted links, preserving the
-    legacy callback producer instead of hiding the content-plan row.
+    The historical function name is retained for call-site compatibility. Promotion now
+    covers both a fully queued linked occurrence and a fully published linked occurrence;
+    inconsistent state is deliberately omitted so callers keep the legacy callback.
+    Canonical lookup itself remains fail-soft: a read failure returns no promoted links
+    and never hides the content-plan row.
     """
     try:
         safe_channel_id = int(channel_id)
@@ -52,7 +53,6 @@ async def published_publication_ids_for_legacy_tasks(
                     and_(
                         PostTask.id == Publication.legacy_post_task_id,
                         PostTask.channel_id == Publication.channel_id,
-                        PostTask.status == "done",
                     ),
                 )
                 .join(
@@ -80,9 +80,19 @@ async def published_publication_ids_for_legacy_tasks(
                 )
                 .where(
                     Publication.channel_id == safe_channel_id,
-                    Publication.status == "published",
-                    ScheduleEntry.status == "completed",
                     Publication.legacy_post_task_id.in_(safe_task_ids),
+                    or_(
+                        and_(
+                            Publication.status == "queued",
+                            ScheduleEntry.status == "pending",
+                            PostTask.status == "pending",
+                        ),
+                        and_(
+                            Publication.status == "published",
+                            ScheduleEntry.status == "completed",
+                            PostTask.status == "done",
+                        ),
+                    ),
                 )
             )
         ).all()
