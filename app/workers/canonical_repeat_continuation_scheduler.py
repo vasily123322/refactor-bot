@@ -12,7 +12,6 @@ from app.core.config import settings
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.canonical_publication_delivery_authority import (
-    canonical_publication_delivery_primary_started,
     canonical_publication_delivery_repeat_started,
     canonical_publication_delivery_repeat_time_forward_started,
     canonical_publication_delivery_repeat_time_pin_forward_started,
@@ -40,6 +39,10 @@ from app.services.canonical_publication_linked_repeat_time_pin_parity import (
 )
 from app.services.canonical_publication_nonrepeat_scheduler_proof import (
     CanonicalPublicationNonrepeatSchedulerProofService,
+)
+from app.services.canonical_scheduler_admission import (
+    CanonicalSchedulerAdmissionKind,
+    CanonicalSchedulerAdmissionService,
 )
 from app.workers.canonical_recovery_scheduler import Scheduler as RecoveryScheduler
 from app.workers.canonical_repeat_continuation import CanonicalRepeatContinuationWorker
@@ -429,50 +432,38 @@ class Scheduler(RecoveryScheduler):
         )
         return True
 
-    async def _linked_after_canonical_proof_error(
-        self,
-        session: AsyncSession,
-        *,
-        task_id: int,
-    ) -> bool:
-        """Fail closed when a proof error leaves linked ownership uncertain.
-
-        Unlinked rows remain intentional legacy fallback. A linked row belongs to an
-        existing canonical occurrence even when the profile proof itself failed, so the
-        legacy scheduler must not claim or mutate it until ownership can be proven. If
-        even the linkage lookup fails, ownership is unknown and therefore blocked too.
-        """
-
-        try:
-            publication_id = await session.scalar(
-                select(Publication.id)
-                .where(Publication.legacy_post_task_id == int(task_id))
-                .limit(1)
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            await session.rollback()
-            logger.warning(
-                "Scheduler: canonical linkage lookup failed after proof error post_id={} type={}",
-                int(task_id),
-                type(exc).__name__,
-            )
-            return True
-        return publication_id is not None
-
     async def _legacy_repeat_boot_mutation_protected(
         self,
         session: AsyncSession,
         *,
         task_id: int,
     ) -> bool:
-        """Return whether a retired repeat profile must bypass legacy boot mutation."""
+        """Protect canonical or ambiguous linked repeats from legacy boot mutation."""
 
-        if not canonical_publication_delivery_repeat_started():
-            return False
         try:
-            return await self._yield_proven_repeat_to_canonical_primary(
+            admission = await CanonicalSchedulerAdmissionService(session).classify(
+                task_id=int(task_id)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await session.rollback()
+            logger.warning(
+                "Scheduler: repeat boot admission classification failed post_id={} type={}",
+                int(task_id),
+                type(exc).__name__,
+            )
+            return True
+
+        if admission.legacy_allowed:
+            return False
+        if admission.kind is CanonicalSchedulerAdmissionKind.FAIL_CLOSED:
+            return True
+        if admission.repeat is not True:
+            return True
+
+        try:
+            yielded = await self._yield_proven_repeat_to_canonical_primary(
                 session,
                 task_id=int(task_id),
             )
@@ -485,10 +476,14 @@ class Scheduler(RecoveryScheduler):
                 int(task_id),
                 type(exc).__name__,
             )
-            return await self._linked_after_canonical_proof_error(
-                session,
-                task_id=int(task_id),
+            return True
+        if not yielded:
+            logger.warning(
+                "Scheduler: repeat boot canonical proof conflict post_id={} profile={}",
+                int(task_id),
+                admission.profile,
             )
+        return True
 
     async def _boot_cleanup_repeats(
         self,
@@ -497,7 +492,7 @@ class Scheduler(RecoveryScheduler):
     ) -> list[PostTask]:
         """Exclude canonical-owned repeat occurrences from legacy boot creators."""
 
-        if not items or not canonical_publication_delivery_repeat_started():
+        if not items:
             return await super()._boot_cleanup_repeats(session, items)
 
         protected_ids: set[int] = set()
@@ -532,7 +527,7 @@ class Scheduler(RecoveryScheduler):
     ) -> None:
         """Keep legacy overflow cleanup away from canonical-owned repeat occurrences."""
 
-        if not items or not canonical_publication_delivery_repeat_started():
+        if not items:
             await super()._prevent_repeat_overflow(session, items)
             return
 
@@ -584,9 +579,9 @@ class Scheduler(RecoveryScheduler):
         session: AsyncSession,
         items: list[PostTask],
     ) -> None:
-        """Yield exact canonical work before inherited legacy lease claim."""
+        """Apply explicit admission before inherited legacy lease claim."""
 
-        if not items or not canonical_publication_delivery_primary_started():
+        if not items:
             await super()._mark_processing(session, items)
             return
 
@@ -594,16 +589,46 @@ class Scheduler(RecoveryScheduler):
         legacy_candidates: list[PostTask] = []
         for task_id in selected_ids:
             try:
-                yielded_repeat = await self._yield_proven_repeat_to_canonical_primary(
-                    session,
-                    task_id=task_id,
+                admission = await CanonicalSchedulerAdmissionService(session).classify(
+                    task_id=task_id
                 )
-                if yielded_repeat:
-                    continue
-                yielded_nonrepeat = await self._yield_proven_nonrepeat_to_canonical_primary(
-                    session,
-                    task_id=task_id,
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await session.rollback()
+                logger.warning(
+                    "Scheduler: admission classification failed post_id={} type={}",
+                    task_id,
+                    type(exc).__name__,
                 )
+                continue
+
+            if admission.legacy_allowed:
+                post = await session.get(PostTask, task_id, populate_existing=True)
+                if post is not None:
+                    legacy_candidates.append(post)
+                continue
+
+            if admission.kind is CanonicalSchedulerAdmissionKind.FAIL_CLOSED:
+                logger.warning(
+                    "Scheduler: linked occurrence failed closed before legacy claim post_id={}",
+                    task_id,
+                )
+                continue
+
+            try:
+                if admission.repeat is True:
+                    yielded = await self._yield_proven_repeat_to_canonical_primary(
+                        session,
+                        task_id=task_id,
+                    )
+                elif admission.repeat is False:
+                    yielded = await self._yield_proven_nonrepeat_to_canonical_primary(
+                        session,
+                        task_id=task_id,
+                    )
+                else:
+                    yielded = False
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -613,19 +638,15 @@ class Scheduler(RecoveryScheduler):
                     task_id,
                     type(exc).__name__,
                 )
-                if await self._linked_after_canonical_proof_error(
-                    session,
-                    task_id=task_id,
-                ):
-                    continue
-                yielded_nonrepeat = False
-
-            if yielded_nonrepeat:
                 continue
 
-            post = await session.get(PostTask, task_id, populate_existing=True)
-            if post is not None:
-                legacy_candidates.append(post)
+            if not yielded:
+                logger.warning(
+                    "Scheduler: canonical proof conflict failed closed post_id={} profile={} repeat={}",
+                    task_id,
+                    admission.profile,
+                    admission.repeat,
+                )
 
         items[:] = legacy_candidates
         await super()._mark_processing(session, items)
