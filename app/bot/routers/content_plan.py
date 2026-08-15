@@ -924,43 +924,6 @@ async def cb_cp_open_post(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("cp_delete_post:"))
-async def cb_cp_delete_post(callback: CallbackQuery, state: FSMContext):
-    # Формат: cp_delete_post:post_id:YYYY-MM-DD
-    parts = callback.data.split(":")
-    if len(parts) != 3:
-        return await callback.answer()
-    _, post_id_str, date_iso = parts
-    try:
-        post_id = int(post_id_str)
-    except Exception:
-        return await callback.answer("Ошибка данных", show_alert=True)
-    from app.domain.models import PostTask
-
-    async with AsyncSessionLocal() as session:
-        post = await session.get(PostTask, post_id)
-        if not post:
-            return await callback.answer("Пост не найден", show_alert=True)
-        try:
-            await session.delete(post)
-            await session.commit()
-        except Exception:
-            return await callback.answer("Не удалось удалить", show_alert=True)
-    # После удаления вернёмся к списку постов на ту же дату
-    try:
-        cid = int((await state.get_data()).get("cp_channel_id") or 0)
-        if not cid:
-            return await callback.answer("Удалено", show_alert=False)
-        from datetime import datetime as _dt
-
-        center = _dt.fromisoformat(date_iso)
-        await _render_content_plan(callback, state, cid, center)
-        with suppress(TelegramBadRequest):
-            await callback.answer("🗑 Удалено", show_alert=False)
-    except Exception:
-        await callback.answer("🗑 Удалено", show_alert=False)
-
-
 @router.callback_query(F.data.startswith("cp_edit_post:"))
 async def cb_cp_edit_post(callback: CallbackQuery, state: FSMContext):
     # Формат: cp_edit_post:post_id:YYYY-MM-DD — открыть редактор для опубликованного поста
