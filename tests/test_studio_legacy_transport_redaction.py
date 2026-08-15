@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from datetime import datetime, timezone
 
 from app.api.studio.app import create_studio_app
@@ -57,3 +58,7 @@ def test_studio_public_contract_hides_legacy_post_task_id() -> None:
     schemas = create_studio_app(_config()).openapi()["components"]["schemas"]
     assert "legacy_post_task_id" not in schemas["PublicationResponse"]["properties"]
     assert "legacy_post_task_id" not in schemas["PlannerEntryResponse"]["properties"]
+
+
+def test_studio_schedule_response_does_not_read_compatibility_task_identity() -> None:
+    assert "legacy_post_task_id" not in inspect.getsource(create_studio_app)
