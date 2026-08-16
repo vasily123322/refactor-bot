@@ -58,18 +58,17 @@ def canonical_published_button_row(
     date_iso: str,
     tz_code: str | None,
 ) -> TimedContentPlanButtonRow | None:
-    """Render published rows canonically while repeat remains on compatibility UI."""
-    if row.repeat_enabled:
-        return None
-
-    badge = None
+    """Render published canonical identity without requiring compatibility transport."""
+    badges: list[str] = []
     if row.autodelete_views:
-        badge = f"👁 {_views_label(row.autodelete_views)}"
+        badges.append(f"👁 {_views_label(row.autodelete_views)}")
     elif row.autodelete_seconds:
-        badge = f"🗑️ {_humanize_seconds(row.autodelete_seconds)}"
+        badges.append(f"🗑️ {_humanize_seconds(row.autodelete_seconds)}")
+    if row.repeat_enabled and row.repeat_seconds:
+        badges.append(f"🔁 {_humanize_seconds(row.repeat_seconds)}")
 
     status = "🗑️" if row.autodeleted else "✅"
-    suffix = f"  {badge}" if badge else ""
+    suffix = "".join(f"  {badge}" for badge in badges)
     text = f"{_local_hm(row.scheduled_at, tz_code)} {status} {row.title[:40]}{suffix}"
     callback_identity = publication_open_callback(row.publication_id, date_iso)
     return TimedContentPlanButtonRow(
@@ -93,7 +92,7 @@ async def canonical_only_published_button_rows(
     date_iso: str,
     tz_code: str | None,
 ) -> list[TimedContentPlanButtonRow]:
-    """Load canonical published presentation rows without changing legacy authority."""
+    """Load canonical published presentation rows without legacy transport authority."""
     try:
         rows = await list_published_content_plan_rows(
             session,
@@ -116,11 +115,20 @@ async def canonical_only_published_button_rows(
     return rendered
 
 
-def _single_callback_identity(row: TimedContentPlanButtonRow) -> str | None:
-    if len(row.buttons) != 1:
+def _row_callback_identity(row: TimedContentPlanButtonRow) -> str | None:
+    if row.canonical_presentation_identity is not None:
+        return row.canonical_presentation_identity
+    if not row.buttons:
         return None
     callback_data = row.buttons[0].callback_data
-    return callback_data if isinstance(callback_data, str) else None
+    if not isinstance(callback_data, str):
+        return None
+    # A linked compatibility row may carry an extra legacy repeat-off button. Its first
+    # button already has exact canonical Publication identity, so the entire compatibility
+    # row can disappear once the one canonical presentation row is present.
+    if callback_data.startswith("cp_open_pub:"):
+        return callback_data
+    return callback_data if len(row.buttons) == 1 else None
 
 
 def merge_timed_content_plan_rows(
@@ -135,12 +143,12 @@ def merge_timed_content_plan_rows(
     legacy_identity_counts = Counter(
         identity
         for row in legacy_rows
-        if (identity := _single_callback_identity(row)) is not None
+        if (identity := _row_callback_identity(row)) is not None
     )
 
     filtered_legacy_rows: list[TimedContentPlanButtonRow] = []
     for row in legacy_rows:
-        identity = _single_callback_identity(row)
+        identity = _row_callback_identity(row)
         if (
             identity is not None
             and canonical_identity_counts[identity] == 1
