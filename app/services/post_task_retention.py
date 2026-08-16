@@ -621,6 +621,8 @@ class PostTaskRetentionService:
             )
             return stale_view_state is None
 
+        # Views execution must have the durable indexed row that the views worker
+        # selects after PostTask is removed. Any leftover time runtime is ambiguous.
         if runtime.get("scheduled_at") is not None or runtime.get("effective_seconds") is not None:
             return False
         if payload.get("autodelete_at") is not None or payload.get(
@@ -647,6 +649,8 @@ class PostTaskRetentionService:
         current = _utc(now)
         cutoff = current - timedelta(days=self.retention_days)
 
+        # Overscan is bounded so Python-side conservative filters do not let one
+        # repeat series permanently starve unrelated safe candidates.
         candidate_ids = [
             int(value)
             for value in (
@@ -811,6 +815,11 @@ class PostTaskRetentionService:
                         skipped_content_linkage += 1
                         continue
 
+                # Re-check the lease row while the candidate is locked. Terminal tasks
+                # should not normally acquire a fresh lease, but a late active lease
+                # must still block deletion. Expired leases are compatibility debris and
+                # are deleted explicitly so unmanaged SQLite (FK enforcement may be off)
+                # cannot retain an orphan after the PostTask row is retired.
                 lease = (
                     await self.session.execute(
                         select(SchedulerTaskLease)
