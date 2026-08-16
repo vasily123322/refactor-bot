@@ -60,9 +60,14 @@ def _canonical_row(
     *,
     publication_id: int = 42,
     scheduled_at: datetime = BASE_TIME,
+    repeat_enabled: bool = False,
 ) -> TimedContentPlanButtonRow:
     rendered = canonical_published_button_row(
-        _published_row(publication_id=publication_id, scheduled_at=scheduled_at),
+        _published_row(
+            publication_id=publication_id,
+            scheduled_at=scheduled_at,
+            repeat_enabled=repeat_enabled,
+        ),
         date_iso=DATE_ISO,
         tz_code="UTC",
     )
@@ -155,26 +160,28 @@ def test_ambiguous_identity_does_not_fall_back_to_text_or_time_heuristics() -> N
     ]
 
 
-def test_repeat_enabled_linked_row_stays_on_legacy_rendering() -> None:
-    canonical = canonical_published_button_row(
-        _published_row(publication_id=42, linked=True, repeat_enabled=True),
-        date_iso=DATE_ISO,
-        tz_code="UTC",
-    )
-    legacy = _timed_row(
-        publication_open_callback(42, DATE_ISO),
+def test_repeat_enabled_row_has_posttask_free_canonical_presentation() -> None:
+    canonical = _canonical_row(publication_id=42, repeat_enabled=True)
+
+    assert canonical.buttons[0].callback_data == publication_open_callback(42, DATE_ISO)
+    assert "🔁" in canonical.buttons[0].text
+    assert canonical.canonical_presentation_identity == publication_open_callback(42, DATE_ISO)
+
+
+def test_repeat_compatibility_row_is_suppressed_by_exact_canonical_identity() -> None:
+    identity = publication_open_callback(42, DATE_ISO)
+    canonical = _canonical_row(publication_id=42, repeat_enabled=True)
+    compatibility = _timed_row(
+        identity,
         text="repeat compatibility",
-        extra_callbacks=("cp_repeat:42",),
+        extra_callbacks=("cp_repeat_off:42",),
     )
 
-    merged = merge_timed_content_plan_rows([legacy], [])
+    merged = merge_timed_content_plan_rows([compatibility], [canonical])
 
-    assert canonical is None
     assert len(merged) == 1
-    assert [button.callback_data for button in merged[0]] == [
-        publication_open_callback(42, DATE_ISO),
-        "cp_repeat:42",
-    ]
+    assert [button.callback_data for button in merged[0]] == [identity]
+    assert "🔁" in merged[0][0].text
 
 
 def test_merge_keeps_existing_scheduled_ordering() -> None:
