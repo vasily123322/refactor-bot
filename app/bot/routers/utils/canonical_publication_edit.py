@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import date
+from typing import Literal, TypedDict
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -28,12 +30,41 @@ from app.services.publication_edit_persistence import (
     PublicationEditConflictError,
     PublicationEditPersistenceError,
 )
+from app.services.queued_canonical_publication_edit import (
+    QueuedCanonicalPublicationEditCoordinator,
+)
 from app.services.telegram_edit_outcome import TelegramEditFailed
 
 
-def _canonical_identity(data: dict) -> tuple[int, int] | None:
+CanonicalEditMode = Literal["queued", "published"]
+
+
+class CanonicalEditContext(TypedDict):
+    mode: CanonicalEditMode
+    publication_id: int
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class _CanonicalEditIdentity:
+    mode: CanonicalEditMode
+    publication_id: int
+    expected_revision: int
+
+
+def _canonical_identity(data: dict) -> _CanonicalEditIdentity | None:
     context = data.get("canonical_edit_context")
     if not isinstance(context, dict):
+        return None
+    raw_mode = context.get("mode")
+    # Existing in-flight published editor states predate the typed discriminator.
+    # Only that historical shape is accepted implicitly; every new state writes mode.
+    mode: CanonicalEditMode
+    if raw_mode is None:
+        mode = "published"
+    elif raw_mode in {"queued", "published"}:
+        mode = raw_mode
+    else:
         return None
     try:
         publication_id = int(context.get("publication_id") or 0)
@@ -42,7 +73,11 @@ def _canonical_identity(data: dict) -> tuple[int, int] | None:
         return None
     if publication_id <= 0 or expected_revision <= 0:
         return None
-    return publication_id, expected_revision
+    return _CanonicalEditIdentity(
+        mode=mode,
+        publication_id=publication_id,
+        expected_revision=expected_revision,
+    )
 
 
 def _canonical_return(data: dict, publication_id: int) -> str | None:
@@ -64,22 +99,31 @@ async def _canonical_result(
     callback: CallbackQuery,
     data: dict,
     payload: dict,
-    publication_id: int,
-    expected_revision: int,
+    identity: _CanonicalEditIdentity,
 ):
+    user_id = int(callback.from_user.id)
+    if identity.mode == "queued":
+        return await QueuedCanonicalPublicationEditCoordinator(
+            session_factory=AsyncSessionLocal,
+        ).edit_and_persist(
+            publication_id=identity.publication_id,
+            tg_user_id=user_id,
+            expected_revision=identity.expected_revision,
+            payload=payload,
+        )
+
     coordinator = CanonicalPublicationEditCoordinator(
         provider=tg_bot,
         session_factory=AsyncSessionLocal,
     )
     payload_type = str(payload.get("type") or "")
-    user_id = int(callback.from_user.id)
 
     if payload_type == "text":
         text0 = await maybe_append_autosign(payload.get("text", ""), data)
         return await coordinator.edit_text_and_persist(
-            publication_id=publication_id,
+            publication_id=identity.publication_id,
             tg_user_id=user_id,
-            expected_revision=expected_revision,
+            expected_revision=identity.expected_revision,
             payload=payload,
             text=clip_text_len(text0, 4096),
         )
@@ -94,9 +138,9 @@ async def _canonical_result(
             show_caption_above_media=(str(payload.get("media_pos")) == "bottom"),
         )
         return await coordinator.edit_media_and_persist(
-            publication_id=publication_id,
+            publication_id=identity.publication_id,
             tg_user_id=user_id,
-            expected_revision=expected_revision,
+            expected_revision=identity.expected_revision,
             payload=payload,
             media=media,
         )
@@ -111,9 +155,9 @@ async def _canonical_result(
             show_caption_above_media=(str(payload.get("media_pos")) == "bottom"),
         )
         return await coordinator.edit_media_and_persist(
-            publication_id=publication_id,
+            publication_id=identity.publication_id,
             tg_user_id=user_id,
-            expected_revision=expected_revision,
+            expected_revision=identity.expected_revision,
             payload=payload,
             media=media,
         )
@@ -125,9 +169,9 @@ async def _canonical_result(
             parse_mode="Markdown",
         )
         return await coordinator.edit_media_and_persist(
-            publication_id=publication_id,
+            publication_id=identity.publication_id,
             tg_user_id=user_id,
-            expected_revision=expected_revision,
+            expected_revision=identity.expected_revision,
             payload=payload,
             media=media,
         )
@@ -139,9 +183,9 @@ async def _canonical_result(
             parse_mode="Markdown",
         )
         return await coordinator.edit_media_and_persist(
-            publication_id=publication_id,
+            publication_id=identity.publication_id,
             tg_user_id=user_id,
-            expected_revision=expected_revision,
+            expected_revision=identity.expected_revision,
             payload=payload,
             media=media,
         )
@@ -160,15 +204,13 @@ async def handle_canonical_publication_edit(
     if identity is None:
         await callback.answer("Ошибка canonical edit state", show_alert=True)
         return
-    publication_id, expected_revision = identity
 
     try:
         result = await _canonical_result(
             callback=callback,
             data=data,
             payload=payload,
-            publication_id=publication_id,
-            expected_revision=expected_revision,
+            identity=identity,
         )
     except PublicationEditConflictError:
         await callback.answer(
@@ -208,14 +250,16 @@ async def handle_canonical_publication_edit(
         await callback.answer("Не удалось сохранить изменение", show_alert=True)
         return
 
-    if bool(data.get("pin_on", False)):
+    # Queued canonical edits are persistence-only and must never create a provider
+    # side effect. Published edits keep the existing provider/pin behavior.
+    if identity.mode == "published" and bool(data.get("pin_on", False)):
         with suppress(Exception):
             await tg_bot.pin_chat_message(
                 chat_id=result.tg_chat_id,
                 message_id=result.message_id,
             )
 
-    date_iso = _canonical_return(data, publication_id)
+    date_iso = _canonical_return(data, identity.publication_id)
     if date_iso is not None:
         # The card reloads all authoritative delivery/content state from canonical DB.
         # Do not leave edit transport fields live in FSM after a successful save.
@@ -229,7 +273,9 @@ async def handle_canonical_publication_edit(
         from app.bot.routers.content_plan_publication import cb_cp_open_publication
 
         cb2 = callback.model_copy(
-            update={"data": f"cp_open_pub:{publication_id}:{date_iso}"}
+            update={
+                "data": f"cp_open_pub:{identity.publication_id}:{date_iso}"
+            }
         )  # type: ignore
         await cb_cp_open_publication(cb2, state)
         return

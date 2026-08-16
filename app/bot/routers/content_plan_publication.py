@@ -111,6 +111,14 @@ async def cb_cp_open_publication(callback: CallbackQuery, state: FSMContext):
         rows.append(
             [
                 InlineKeyboardButton(
+                    text="Изменить",
+                    callback_data=publication_edit_callback(view.publication_id, date_iso),
+                )
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
                     text="Удалить",
                     callback_data=f"cp_delete_pub:{view.publication_id}:{date_iso}",
                 )
@@ -218,7 +226,11 @@ async def cb_cp_edit_publication(callback: CallbackQuery, state: FSMContext):
         )
     if view is None:
         return await callback.answer("Публикация не найдена или нет доступа", show_alert=True)
-    if view.status != "published" or view.primary_message_id is None:
+    if view.status not in {"queued", "published"}:
+        return await callback.answer(
+            "Публикация сейчас недоступна для редактирования", show_alert=True
+        )
+    if view.status == "published" and view.primary_message_id is None:
         return await callback.answer(
             "Публикация ещё не готова для редактирования", show_alert=True
         )
@@ -230,11 +242,12 @@ async def cb_cp_edit_publication(callback: CallbackQuery, state: FSMContext):
             "Этот формат редактируется через Studio", show_alert=True
         )
 
+    queued = view.status == "queued"
     await state.update_data(
         channel_id=view.channel_id,
-        edit_chat_id=view.tg_chat_id,
-        edit_msg_id=view.primary_message_id,
-        result_ids=list(view.telegram_message_ids),
+        edit_chat_id=None if queued else view.tg_chat_id,
+        edit_msg_id=None if queued else view.primary_message_id,
+        result_ids=None if queued else list(view.telegram_message_ids),
         payload=payload,
         repeat_on=bool(view.repeat_rule.get("enabled", False)),
         repeat_seconds=int(view.repeat_rule.get("seconds") or 0),
@@ -244,6 +257,7 @@ async def cb_cp_edit_publication(callback: CallbackQuery, state: FSMContext):
         comments_on=True,
         is_draft=False,
         canonical_edit_context={
+            "mode": "queued" if queued else "published",
             "publication_id": view.publication_id,
             "expected_revision": view.content_revision,
         },
