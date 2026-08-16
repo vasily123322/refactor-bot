@@ -14,8 +14,13 @@ from aiogram.types import (
 from aiogram.types import InputPaidMediaPhoto, InputPaidMediaVideo
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from app.domain.models import PostTask
+from app.domain.publishing.models import Publication
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.repositories.posts import PostsRepo
+from app.services.canonical_schedule_materializer import (
+    find_direct_canonical_by_dedupe,
+    materialize_new_canonical_occurrence,
+)
 from app.services.legacy_content_mirror import mirror_legacy_post_task
 import os
 import asyncio
@@ -153,30 +158,51 @@ class PostingService:
         payload: dict,
         when: datetime | None,
         dedupe_key: str | None = None,
-    ) -> PostTask:
-        async def _schedule_in_session(session: AsyncSession) -> PostTask:
+    ) -> PostTask | Publication:
+        async def _schedule_in_session(
+            session: AsyncSession,
+        ) -> PostTask | Publication:
             repo = PostsRepo(session)
             if dedupe_key:
-                dup = await repo.get_by_dedupe(dedupe_key)
-                if dup:
-                    return dup
-            post = PostTask(
-                channel_id=channel_id,
-                payload=payload,
-                dedupe_key=dedupe_key,
-                scheduled_at=when,
-            )
-            session.add(post)
+                legacy_dup = await repo.get_by_dedupe(dedupe_key)
+                if legacy_dup is not None:
+                    return legacy_dup
+                canonical_dup = await find_direct_canonical_by_dedupe(
+                    session, dedupe_key
+                )
+                if canonical_dup is not None:
+                    return canonical_dup
+
             try:
-                # The executable legacy row and supported canonical mirror become
-                # visible together. Unsupported payloads intentionally return None
-                # from the mirror helper and remain on the explicit legacy fallback.
+                canonical = await materialize_new_canonical_occurrence(
+                    session,
+                    channel_id=int(channel_id),
+                    payload=payload,
+                    scheduled_at=when,
+                    dedupe_key=dedupe_key,
+                    commit=False,
+                )
+                if canonical is not None:
+                    await session.commit()
+                    await session.refresh(canonical)
+                    return canonical
+
+                # Intentional legacy, historical provenance and unsupported content
+                # retain the exact executable PostTask + mirror transaction.
+                post = PostTask(
+                    channel_id=channel_id,
+                    payload=payload,
+                    dedupe_key=dedupe_key,
+                    scheduled_at=when,
+                )
+                session.add(post)
                 await session.flush()
                 await mirror_legacy_post_task(session, post, commit=False)
                 await session.commit()
             except Exception:
                 await session.rollback()
                 raise
+
             await session.refresh(post)
             return post
 
