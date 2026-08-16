@@ -55,6 +55,10 @@ class Publication(Base):
         Index("ix_publications_channel_status", "channel_id", "status"),
         Index("ix_publications_content", "content_item_id", "content_revision"),
         UniqueConstraint("legacy_post_task_id", name="uq_publication_legacy_task"),
+        UniqueConstraint(
+            "repeat_source_publication_id",
+            name="uq_publication_repeat_source",
+        ),
         CheckConstraint(
             "execution_mode IS NULL OR execution_mode IN ('canonical', 'intentional_legacy')",
             name="ck_publication_execution_mode",
@@ -74,6 +78,7 @@ class Publication(Base):
     )
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
     execution_mode: Mapped[str | None] = mapped_column(String(32))
+    repeat_source_publication_id: Mapped[int | None] = mapped_column(Integer)
     legacy_post_task_id: Mapped[int | None] = mapped_column(
         ForeignKey("post_tasks.id", ondelete="SET NULL"), index=True
     )
