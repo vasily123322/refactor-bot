@@ -11,20 +11,13 @@ from app.domain.models import PostTask
 from app.domain.publication_delivery import PublicationDeliveryLease
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.domain.scheduler import SchedulerTaskLease
-from app.services.canonical_publication_delivery_authority import (
-    canonical_publication_delivery_repeat_started,
-    canonical_publication_delivery_repeat_time_forward_started,
-    canonical_publication_delivery_repeat_time_pin_forward_started,
-    canonical_publication_delivery_repeat_time_pin_started,
-    canonical_publication_delivery_repeat_time_started,
-    canonical_publication_delivery_repeat_views_forward_started,
-    canonical_publication_delivery_repeat_views_pin_forward_started,
-    canonical_publication_delivery_repeat_views_pin_started,
-    canonical_publication_delivery_repeat_views_started,
-)
 from app.services.canonical_publication_nonrepeat_scheduler_proof import (
     _classify as _classify_supported_profile,
-    _profile_started as _nonrepeat_profile_started,
+)
+from app.services.publication_execution_mode import (
+    CANONICAL_EXECUTION_MODE,
+    INTENTIONAL_LEGACY_EXECUTION_MODE,
+    PUBLICATION_EXECUTION_MODES,
 )
 
 
@@ -32,6 +25,7 @@ class CanonicalSchedulerAdmissionKind(str, Enum):
     LEGACY_UNLINKED = "legacy_unlinked"
     LEGACY_TIME_VIEWS = "legacy_time_views"
     LEGACY_REPORT = "legacy_report"
+    LEGACY_INTENTIONAL = "legacy_intentional"
     LEGACY_ROLLOUT_NOT_STARTED = "legacy_rollout_not_started"
     CANONICAL_PROOF_REQUIRED = "canonical_proof_required"
     FAIL_CLOSED = "fail_closed"
@@ -50,6 +44,7 @@ class CanonicalSchedulerAdmission:
             CanonicalSchedulerAdmissionKind.LEGACY_UNLINKED,
             CanonicalSchedulerAdmissionKind.LEGACY_TIME_VIEWS,
             CanonicalSchedulerAdmissionKind.LEGACY_REPORT,
+            CanonicalSchedulerAdmissionKind.LEGACY_INTENTIONAL,
             CanonicalSchedulerAdmissionKind.LEGACY_ROLLOUT_NOT_STARTED,
         }
 
@@ -138,36 +133,14 @@ def _exact_report_fallback_profile(options: dict[str, Any]) -> str | None:
     return profile.name
 
 
-def _repeat_profile_started(profile: str) -> bool:
-    if profile in {"plain", "pin", "forward", "pin_forward"}:
-        return canonical_publication_delivery_repeat_started()
-    if profile == "time":
-        return canonical_publication_delivery_repeat_time_started()
-    if profile == "time_pin":
-        return canonical_publication_delivery_repeat_time_pin_started()
-    if profile == "time_forward":
-        return canonical_publication_delivery_repeat_time_forward_started()
-    if profile == "time_pin_forward":
-        return canonical_publication_delivery_repeat_time_pin_forward_started()
-    if profile == "views":
-        return canonical_publication_delivery_repeat_views_started()
-    if profile == "views_pin":
-        return canonical_publication_delivery_repeat_views_pin_started()
-    if profile == "views_forward":
-        return canonical_publication_delivery_repeat_views_forward_started()
-    if profile == "views_pin_forward":
-        return canonical_publication_delivery_repeat_views_pin_forward_started()
-    return False
-
-
 class CanonicalSchedulerAdmissionService:
     """Classify one pending PostTask before any legacy scheduler mutation.
 
-    Linked work is never admitted merely because a canonical ownership proof returned
-    ``None``. Only an explicit legacy fallback is allowed through. Once an exact
-    canonical profile has a live successfully-started runtime, every parity/state/lease
-    ambiguity is left to the canonical proof and fails closed if that proof does not
-    succeed.
+    Linked execution ownership is read only from the persisted Publication mode. The
+    current canonical worker-started state can make a canonical proof unavailable, but
+    it can never re-authorize legacy execution for a canonical-owned occurrence.
+    Historical NULL/unknown mode therefore fails closed instead of deriving authority
+    from PostTask presence or compatibility linkage.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -199,6 +172,13 @@ class CanonicalSchedulerAdmissionService:
 
         publication = publications[0]
         publication_id = int(publication.id)
+        execution_mode = publication.execution_mode
+        if execution_mode not in PUBLICATION_EXECUTION_MODES:
+            return CanonicalSchedulerAdmission(
+                CanonicalSchedulerAdmissionKind.FAIL_CLOSED,
+                publication_id=publication_id,
+            )
+
         task = await self.session.get(PostTask, safe_task_id, populate_existing=True)
         if (
             task is None
@@ -256,30 +236,54 @@ class CanonicalSchedulerAdmissionService:
                 publication_id=publication_id,
             )
 
-        report = options.get("autodelete_report", False)
-        if type(report) is not bool:
+        # Persisted intentional legacy ownership is sufficient to keep the existing
+        # legacy path alive. Exact known fallbacks retain their existing reason kind;
+        # older/newer legacy profiles do not need PostTask presence to prove ownership.
+        if execution_mode == INTENTIONAL_LEGACY_EXECUTION_MODE:
+            if _is_exact_time_views_fallback(options):
+                return CanonicalSchedulerAdmission(
+                    CanonicalSchedulerAdmissionKind.LEGACY_TIME_VIEWS,
+                    publication_id=publication_id,
+                    repeat=repeat,
+                )
+            report_profile = _exact_report_fallback_profile(options)
+            if report_profile is not None:
+                return CanonicalSchedulerAdmission(
+                    CanonicalSchedulerAdmissionKind.LEGACY_REPORT,
+                    publication_id=publication_id,
+                    profile=report_profile,
+                    repeat=repeat,
+                )
+            return CanonicalSchedulerAdmission(
+                CanonicalSchedulerAdmissionKind.LEGACY_INTENTIONAL,
+                publication_id=publication_id,
+                repeat=repeat,
+            )
+
+        if execution_mode != CANONICAL_EXECUTION_MODE:
             return CanonicalSchedulerAdmission(
                 CanonicalSchedulerAdmissionKind.FAIL_CLOSED,
                 publication_id=publication_id,
                 repeat=repeat,
             )
 
+        # A canonical-owned row must still be internally consistent with its durable
+        # runtime intent. Fallback intent paired with canonical ownership is a conflict.
         if _is_exact_time_views_fallback(options):
             return CanonicalSchedulerAdmission(
-                CanonicalSchedulerAdmissionKind.LEGACY_TIME_VIEWS,
+                CanonicalSchedulerAdmissionKind.FAIL_CLOSED,
+                publication_id=publication_id,
+                repeat=repeat,
+            )
+        if _exact_report_fallback_profile(options) is not None:
+            return CanonicalSchedulerAdmission(
+                CanonicalSchedulerAdmissionKind.FAIL_CLOSED,
                 publication_id=publication_id,
                 repeat=repeat,
             )
 
-        report_profile = _exact_report_fallback_profile(options)
-        if report_profile is not None:
-            return CanonicalSchedulerAdmission(
-                CanonicalSchedulerAdmissionKind.LEGACY_REPORT,
-                publication_id=publication_id,
-                profile=report_profile,
-                repeat=repeat,
-            )
-        if report:
+        report = options.get("autodelete_report", False)
+        if type(report) is not bool or report:
             return CanonicalSchedulerAdmission(
                 CanonicalSchedulerAdmissionKind.FAIL_CLOSED,
                 publication_id=publication_id,
@@ -294,19 +298,9 @@ class CanonicalSchedulerAdmissionService:
                 repeat=repeat,
             )
 
-        started = (
-            _repeat_profile_started(profile.name)
-            if repeat
-            else _nonrepeat_profile_started(profile.name)
-        )
-        if not started:
-            return CanonicalSchedulerAdmission(
-                CanonicalSchedulerAdmissionKind.LEGACY_ROLLOUT_NOT_STARTED,
-                publication_id=publication_id,
-                profile=profile.name,
-                repeat=repeat,
-            )
-
+        # Do not consult live started/readiness facts here. The caller's canonical
+        # proof still checks runtime availability and fails closed when unavailable;
+        # it must never convert temporary unavailability into legacy ownership.
         return CanonicalSchedulerAdmission(
             CanonicalSchedulerAdmissionKind.CANONICAL_PROOF_REQUIRED,
             publication_id=publication_id,

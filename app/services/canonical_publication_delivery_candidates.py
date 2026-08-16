@@ -12,6 +12,7 @@ from app.domain.publishing.models import Publication, PublicationAttempt, Schedu
 from app.services.canonical_publication_delivery_planner import (
     CanonicalPublicationDeliveryPlanner,
 )
+from app.services.publication_execution_mode import CANONICAL_EXECUTION_MODE
 from app.services.scheduling import as_utc
 
 
@@ -40,7 +41,9 @@ class CanonicalPublicationDeliveryCandidateSelector:
     The coarse query is intentionally transport-independent and excludes cheap known
     terminal/execution evidence. Every returned row is then re-proven by the canonical
     delivery planner, so this selector never becomes a second source of eligibility
-    truth. No ``PostTask`` identity is read or required.
+    truth. No ``PostTask`` identity is read or required. Persisted execution mode is the
+    exact ownership discriminator; historical NULL and intentional legacy rows are not
+    canonical candidates.
 
     Persistent workers should use :meth:`scan_page` and retain ``next_cursor`` between
     pages. That keyset cursor prevents a bounded front window containing planner-invalid
@@ -74,6 +77,7 @@ class CanonicalPublicationDeliveryCandidateSelector:
             )
         )
         predicates = [
+            Publication.execution_mode == CANONICAL_EXECUTION_MODE,
             Publication.status == "queued",
             Publication.attempt_count == 0,
             Publication.result_link.is_(None),

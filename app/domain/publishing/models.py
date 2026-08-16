@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -54,6 +55,10 @@ class Publication(Base):
         Index("ix_publications_channel_status", "channel_id", "status"),
         Index("ix_publications_content", "content_item_id", "content_revision"),
         UniqueConstraint("legacy_post_task_id", name="uq_publication_legacy_task"),
+        CheckConstraint(
+            "execution_mode IS NULL OR execution_mode IN ('canonical', 'intentional_legacy')",
+            name="ck_publication_execution_mode",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -68,6 +73,7 @@ class Publication(Base):
         ForeignKey("channels.id", ondelete="CASCADE"), index=True
     )
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    execution_mode: Mapped[str | None] = mapped_column(String(32))
     legacy_post_task_id: Mapped[int | None] = mapped_column(
         ForeignKey("post_tasks.id", ondelete="SET NULL"), index=True
     )

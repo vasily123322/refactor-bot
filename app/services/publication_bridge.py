@@ -11,6 +11,7 @@ from app.domain.content import PostDocument
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
+from app.services.publication_execution_mode import execution_mode_from_runtime_options
 from app.services.rich_media_assets import RichMediaAssetError, RichMediaAssetResolver
 from app.services.scheduler_errors import (
     MISSING_SCHEDULER_TASK_ERROR,
@@ -183,6 +184,7 @@ class LegacyPublicationBridge:
             payload.pop("repeat_seconds", None)
 
         runtime_intent = _runtime_intent(runtime_options, payload=payload)
+        execution_mode = execution_mode_from_runtime_options(runtime_intent)
         for key, value in runtime_intent.items():
             payload[key] = deepcopy(value)
 
@@ -203,6 +205,7 @@ class LegacyPublicationBridge:
             content_revision=revision_number,
             channel_id=int(item.channel_id),
             status="queued",
+            execution_mode=execution_mode,
             meta=deepcopy(canonical_meta),
         )
         self.session.add_all([schedule, publication])
