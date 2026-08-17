@@ -179,10 +179,12 @@ describe('T3 proposal/apply lifecycle remains unchanged for Suggested Post candi
       updated_at: null,
       document,
     };
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify(applied), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => (
+      new Response(JSON.stringify(applied), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    ));
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await applyCurrentStructuredRewrite(7, candidate().id, 42);
