@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -150,6 +150,7 @@ def test_suggested_post_duplicate_edit_lifecycle_and_stable_identity() -> None:
                 assert document.meta["telegram_suggested_post_info"]["state"] == "approved"
                 assert document.meta["telegram_suggested_post_info"]["price"]["amount"] == 200
                 assert document.meta["telegram_suggested_post_lifecycle"]["event"] == "approved"
+                assert document.meta["telegram_suggested_post_approved"]["event"] == "approved"
                 assert first.disposition is TelegramSuggestedPostDisposition.CONTENT
                 assert first.reconciliation is not None
                 assert first.reconciliation.document_created is True
@@ -165,7 +166,6 @@ def test_suggested_post_duplicate_edit_lifecycle_and_stable_identity() -> None:
                 assert lifecycle.reconciliation is not None
                 assert lifecycle.reconciliation.document.id == document.id
                 assert lifecycle.reconciliation.candidate.id == candidate.id
-                # Lifecycle reconciliation must not erase edited content.
                 assert lifecycle.reconciliation.document.content == "Edited proposal"
         finally:
             await engine.dispose()
@@ -189,7 +189,6 @@ def test_trusted_connector_and_parent_channel_are_the_only_routing_authority() -
                 assert result.reconciliation.document.connector_id == connector.id
                 assert result.reconciliation.document.channel_id == channel.id
                 assert result.reconciliation.candidate.channel_id == channel.id
-                # Connector config or native provenance cannot override routing columns.
                 assert result.reconciliation.document.channel_id != 999999
         finally:
             await engine.dispose()
@@ -241,7 +240,7 @@ def test_parent_mismatch_and_ambiguous_connector_mapping_fail_closed() -> None:
     asyncio.run(ambiguous())
 
 
-def test_output_is_ignored_and_lifecycle_cannot_create_a_candidate() -> None:
+def test_output_lifecycle_and_retry_paths_do_not_claim_wrong_identity() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         try:
@@ -254,14 +253,15 @@ def test_output_is_ignored_and_lifecycle_cannot_create_a_candidate() -> None:
                     session, bot=FakeBot({DM_CHAT_ID: PARENT_CHAT_ID})
                 )
 
-                bot_message = _message(
-                    sender={
-                        "id": 777,
-                        "is_bot": True,
-                        "first_name": "PublisherBot",
-                    }
+                ignored = await service.ingest(
+                    _message(
+                        sender={
+                            "id": 777,
+                            "is_bot": True,
+                            "first_name": "PublisherBot",
+                        }
+                    )
                 )
-                ignored = await service.ingest(bot_message)
                 assert ignored.disposition is TelegramSuggestedPostDisposition.IGNORED
                 assert (await session.execute(select(SourceDocument))).scalars().all() == []
 
@@ -274,12 +274,24 @@ def test_output_is_ignored_and_lifecycle_cannot_create_a_candidate() -> None:
                 assert (await session.execute(select(SourceDocument))).scalars().all() == []
                 assert (await session.execute(select(ContentCandidate))).scalars().all() == []
 
-                # A later retry of the actual proposal remains valid; no adapter cache
-                # has claimed or consumed the Telegram identity.
+                real_reconcile = service.reconciler.reconcile
+                attempts = 0
+
+                async def fail_once(connector, projection):
+                    nonlocal attempts
+                    attempts += 1
+                    if attempts == 1:
+                        raise RuntimeError("transient ingestion failure")
+                    return await real_reconcile(connector, projection)
+
+                service.reconciler.reconcile = fail_once  # type: ignore[method-assign]
+                with pytest.raises(RuntimeError, match="transient ingestion failure"):
+                    await service.ingest(original)
                 retried = await service.ingest(original)
                 assert retried.reconciliation is not None
                 assert retried.reconciliation.document_created is True
                 assert retried.reconciliation.candidate_created is True
+                assert attempts == 2
         finally:
             await engine.dispose()
 
