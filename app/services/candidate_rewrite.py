@@ -16,6 +16,8 @@ from app.services.ai_run_leases import ai_run_lease_expired, abandon_expired_ai_
 
 _MAX_REWRITE_INPUT_CHARS = 12_000
 _MAX_REWRITE_OUTPUT_CHARS = 3_200
+_MAX_REWRITE_INPUT_VARIANT_CHARS = 191
+_REWRITE_INPUT_VARIANT_OUTPUT_KEY = "rewrite_input_variant"
 
 
 class CandidateRewriteError(RuntimeError):
@@ -101,6 +103,7 @@ def candidate_rewrite_input_hash(
     document: SourceDocument,
     candidate: ContentCandidate,
     reuse_policy: str,
+    input_variant: str | None = None,
 ) -> str:
     material = "\0".join(
         [
@@ -109,9 +112,19 @@ def candidate_rewrite_input_hash(
             str(document.source_url or ""),
             str(candidate.suggested_action or ""),
             str(reuse_policy),
+            str(input_variant or ""),
         ]
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def rewrite_run_input_variant(run: CandidateRewriteRun) -> str | None:
+    output = run.output if isinstance(run.output, dict) else {}
+    value = output.get(_REWRITE_INPUT_VARIANT_OUTPUT_KEY)
+    if value is None:
+        return None
+    normalized = _bounded(str(value), _MAX_REWRITE_INPUT_VARIANT_CHARS)
+    return normalized or None
 
 
 async def current_candidate_rewrite_run(
@@ -132,7 +145,12 @@ async def current_candidate_rewrite_run(
         return None
     if int(run.candidate_id) != int(candidate.id) or str(run.status) != "completed":
         return None
-    if run.input_hash != candidate_rewrite_input_hash(document, candidate, reuse_policy):
+    if run.input_hash != candidate_rewrite_input_hash(
+        document,
+        candidate,
+        reuse_policy,
+        rewrite_run_input_variant(run),
+    ):
         return None
     if not str(run.text or "").strip():
         return None
@@ -192,9 +210,11 @@ class CandidateRewriteService:
         channel_id: int,
         candidate_id: int,
         provider: CandidateRewriteProvider,
+        input_variant: str | None = None,
     ) -> CandidateRewriteResult:
         provider_name = _bounded(str(provider.name), 64)
         model_name = _bounded(str(provider.model), 191)
+        variant = _bounded(str(input_variant or ""), _MAX_REWRITE_INPUT_VARIANT_CHARS) or None
         if not provider_name or not model_name:
             raise CandidateRewriteError("rewrite provider identity is required")
 
@@ -210,7 +230,7 @@ class CandidateRewriteService:
         if policy != "rewrite_with_attribution":
             raise CandidateRewriteError("candidate policy does not allow AI rewrite")
 
-        input_hash = candidate_rewrite_input_hash(document, candidate, policy)
+        input_hash = candidate_rewrite_input_hash(document, candidate, policy, variant)
         completed = (
             await self.session.execute(
                 select(CandidateRewriteRun)
@@ -273,7 +293,11 @@ class CandidateRewriteService:
             status="running",
             input_hash=input_hash,
             input_chars=len(text),
-            output={},
+            output=(
+                {_REWRITE_INPUT_VARIANT_OUTPUT_KEY: variant}
+                if variant is not None
+                else {}
+            ),
         )
         self.session.add(run)
         try:
@@ -294,6 +318,8 @@ class CandidateRewriteService:
                 source_url=document.source_url,
             )
             output_meta = dict(output.metadata or {})
+            if variant is not None:
+                output_meta[_REWRITE_INPUT_VARIANT_OUTPUT_KEY] = variant
         except Exception as exc:
             await self._load(
                 channel_id=channel_id,
@@ -333,7 +359,12 @@ class CandidateRewriteService:
             persisted.output = {**output_meta, "discard_reason": "candidate_not_active"}
             await self.session.commit()
             raise CandidateRewriteError("candidate is no longer active")
-        if candidate_rewrite_input_hash(document, candidate, current_policy) != input_hash:
+        if candidate_rewrite_input_hash(
+            document,
+            candidate,
+            current_policy,
+            variant,
+        ) != input_hash:
             persisted.status = "stale"
             persisted.output = {**output_meta, "discard_reason": "source_or_policy_changed"}
             await self.session.commit()
