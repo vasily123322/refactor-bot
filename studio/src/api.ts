@@ -138,6 +138,10 @@ export type CandidateRewriteResult = {
   output: Record<string, unknown>;
 };
 
+export type CandidateStructuredRewriteResult = CandidateRewriteResult & {
+  document: PostDocument;
+};
+
 export type LocalBatchEnrichmentResult = {
   selected: number;
   completed: number;
@@ -363,6 +367,11 @@ export const studioApi = {
   rewriteCandidateAI: (channelId: number, candidateId: number) =>
     request<CandidateRewriteResult>(
       `/api/studio/channels/${channelId}/candidates/${candidateId}/rewrite/ai`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  rewriteCandidateAIStructured: (channelId: number, candidateId: number) =>
+    request<CandidateStructuredRewriteResult>(
+      `/api/studio/channels/${channelId}/candidates/${candidateId}/rewrite/ai/structured`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
   enrichCandidatesLocalBatch: (channelId: number, limit = 25) =>

@@ -14,7 +14,11 @@ from app.core.db import AsyncSessionLocal
 from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
 from app.services.ai_activity import AIActivityService
-from app.services.candidate_drafts import CandidateDraftError, CandidateDraftService
+from app.services.candidate_drafts import (
+    CandidateDraftError,
+    CandidateDraftService,
+    CandidateDraftValidationError,
+)
 from app.services.candidate_enrichment import (
     CandidateEnrichmentBusy,
     CandidateEnrichmentError,
@@ -31,6 +35,10 @@ from app.services.candidate_rewrite import (
     CandidateRewriteService,
 )
 from app.services.candidate_rewrite_ai import ChannelAIRewriteProviderFactory
+from app.services.candidate_structured_rewrite_ai import (
+    ChannelAIStructuredRewriteProviderFactory,
+    structured_document_from_run_output,
+)
 
 
 router = APIRouter(prefix="/api/studio", tags=["inbox", "ai"])
@@ -60,6 +68,10 @@ class CandidateRewriteResponse(BaseModel):
     text: str
     reused_existing: bool
     output: dict[str, Any]
+
+
+class CandidateStructuredRewriteResponse(CandidateRewriteResponse):
+    document: dict[str, Any]
 
 
 class LocalBatchEnrichmentRequest(BaseModel):
@@ -161,6 +173,19 @@ def _rewrite_response(result: CandidateRewriteResult) -> CandidateRewriteRespons
     )
 
 
+def _structured_rewrite_response(
+    result: CandidateRewriteResult,
+) -> CandidateStructuredRewriteResponse:
+    document = structured_document_from_run_output(result.run.output)
+    if document is None:
+        raise CandidateRewriteError("structured rewrite run has no valid PostDocument")
+    base = _rewrite_response(result)
+    return CandidateStructuredRewriteResponse(
+        **base.model_dump(),
+        document=document.to_dict(),
+    )
+
+
 def _raise_enrichment_http(exc: CandidateEnrichmentError) -> None:
     if isinstance(exc, CandidateEnrichmentBusy):
         raise HTTPException(status_code=409, detail="Candidate enrichment is already running") from exc
@@ -243,6 +268,8 @@ async def create_candidate_draft(
             candidate_id=candidate_id,
             created_by_tg_user_id=principal.tg_user_id,
         )
+    except CandidateDraftValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except CandidateDraftError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -352,3 +379,27 @@ async def rewrite_candidate_ai(
         _raise_rewrite_http(exc)
         raise AssertionError("unreachable")
     return _rewrite_response(result)
+
+
+@router.post(
+    "/channels/{channel_id}/candidates/{candidate_id}/rewrite/ai/structured",
+    response_model=CandidateStructuredRewriteResponse,
+)
+async def rewrite_candidate_ai_structured(
+    channel_id: int,
+    candidate_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> CandidateStructuredRewriteResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    try:
+        provider = await ChannelAIStructuredRewriteProviderFactory(session).build(channel_id)
+        result = await CandidateRewriteService(session).rewrite(
+            channel_id=channel_id,
+            candidate_id=candidate_id,
+            provider=provider,
+        )
+        return _structured_rewrite_response(result)
+    except CandidateRewriteError as exc:
+        _raise_rewrite_http(exc)
+        raise AssertionError("unreachable")
