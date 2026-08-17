@@ -27,6 +27,33 @@ def _payload(value: Any) -> Mapping[str, Any] | None:
     return value if isinstance(value, Mapping) else None
 
 
+def _legacy_time_intent(payload: Mapping[str, Any] | None) -> tuple[bool, bool]:
+    """Return (active, invalid) for legacy timer fields used by mixed fallback."""
+
+    if payload is None:
+        return False, False
+
+    active = False
+    invalid = False
+    for key in ("autodelete_effective_seconds", "autodelete_seconds"):
+        raw = payload.get(key)
+        if raw is None or raw is False or raw == 0 or raw == "0" or raw == "":
+            continue
+        if isinstance(raw, bool):
+            invalid = True
+            continue
+        try:
+            seconds = int(raw)
+        except (TypeError, ValueError, OverflowError):
+            invalid = True
+            continue
+        if seconds > 0:
+            active = True
+        elif seconds < 0:
+            invalid = True
+    return active, invalid
+
+
 async def sync_active_legacy_view_intents(
     session: AsyncSession,
     *,
@@ -36,8 +63,9 @@ async def sync_active_legacy_view_intents(
 
     No commit is performed here. The caller can immediately run the existing bridge in
     the same session, making its commit include both the transport projection and this
-    indexed scheduler state. Malformed view intent clears any stale indexed row so the
-    future destructive evaluator cannot run from an obsolete threshold.
+    indexed scheduler state. Mixed time+views remains legacy-owned and is deliberately
+    excluded from the canonical views index. Malformed view or timer intent clears any
+    stale indexed row so the destructive evaluator cannot run from obsolete provenance.
     """
 
     try:
@@ -62,7 +90,21 @@ async def sync_active_legacy_view_intents(
 
     for publication_id, raw_payload in rows:
         payload = _payload(raw_payload)
-        raw_threshold = payload.get("autodelete_views") if payload is not None else None
+        has_time_intent, invalid_time_intent = _legacy_time_intent(payload)
+        if invalid_time_intent:
+            invalid += 1
+            await service.sync_intent(
+                publication_id=int(publication_id),
+                threshold=None,
+            )
+            cleared += 1
+            continue
+
+        raw_threshold = (
+            None
+            if has_time_intent
+            else (payload.get("autodelete_views") if payload is not None else None)
+        )
         try:
             snapshot = await service.sync_intent(
                 publication_id=int(publication_id),
