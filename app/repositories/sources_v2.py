@@ -35,22 +35,6 @@ class SourcesRepo:
         )
         return list(result.scalars().all())
 
-    async def list_connectors_by_kind_value(
-        self,
-        *,
-        kind: str,
-        value: str,
-        enabled_only: bool = True,
-    ) -> list[SourceConnector]:
-        statement = select(SourceConnector).where(
-            SourceConnector.kind == str(kind),
-            SourceConnector.value == str(value),
-        )
-        if enabled_only:
-            statement = statement.where(SourceConnector.enabled.is_(True))
-        result = await self.session.execute(statement.order_by(SourceConnector.id.asc()))
-        return list(result.scalars().all())
-
     async def create_connector(
         self,
         *,
