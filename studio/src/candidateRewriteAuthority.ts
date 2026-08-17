@@ -49,7 +49,9 @@ export function rewriteProvenanceLabel(
 }
 
 export function isRewriteAuthorityStaleError(error: unknown): boolean {
-  return error instanceof Error && error.message.toLowerCase().includes('no longer current');
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes('no longer current') || message.includes('rewrite authority changed');
 }
 
 async function authorityRequest<T>(path: string, init: RequestInit = {}): Promise<T> {

@@ -96,7 +96,7 @@ describe('structured rewrite provenance presentation', () => {
     );
   });
 
-  it('renders a server-rejected visible proposal as stale rather than current', () => {
+  it('renders server-rejected visible proposals as stale for both preflight and late-CAS rejection', () => {
     const label = rewriteProvenanceLabel(
       { ...structuredPreview, provenanceStatus: 'stale' },
       5,
@@ -105,6 +105,7 @@ describe('structured rewrite provenance presentation', () => {
     expect(label).toContain(' · stale · ');
     expect(label).not.toContain('current at last server check');
     expect(isRewriteAuthorityStaleError(new Error('candidate structured rewrite is no longer current'))).toBe(true);
+    expect(isRewriteAuthorityStaleError(new Error('candidate rewrite authority changed during rewrite'))).toBe(true);
   });
 
   it('never presents failed or historical state as current, regardless of run identity', () => {
