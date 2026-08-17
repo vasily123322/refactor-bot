@@ -18,6 +18,18 @@ export type CurrentStructuredRewrite = {
   document: PostDocument;
 };
 
+export function rewriteProvenanceLabel(
+  preview: RewritePreview,
+  candidateId: number,
+): string {
+  const proposalKind = preview.kind === 'structured' ? 'AI Rich proposal' : 'AI rewrite proposal';
+  const authority = preview.kind === 'structured'
+    ? 'current at last server check'
+    : 'current at generation';
+  const model = preview.model ? ` · ${preview.model}` : '';
+  return `${proposalKind} · ${authority} · candidate #${candidateId} · run #${preview.runId}${model}`;
+}
+
 async function authorityRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const initData = getRawInitData();
   if (!initData) throw new Error('Откройте Studio из Telegram, чтобы авторизоваться.');
