@@ -206,7 +206,7 @@ def test_malformed_or_unknown_newer_lifecycle_is_neutral_instead_of_reviving_pen
 
     assert view is not None
     assert view.native_status == "unknown"
-    assert view.commercial_kind == "free"
+    assert view.commercial_kind == "unknown"
 
 
 def test_decline_and_refund_details_are_read_only_provenance() -> None:
