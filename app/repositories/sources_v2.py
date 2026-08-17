@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
@@ -98,59 +97,45 @@ class SourcesRepo:
             await self.session.rollback()
             raise
 
-    async def upsert_document(
+    async def get_document_by_identity(
         self,
         *,
-        connector: SourceConnector,
+        connector_id: int,
         external_id: str,
-        content: str,
-        source_url: str | None = None,
-        title: str | None = None,
-        language: str | None = None,
-        author: str | None = None,
-        published_at: datetime | None = None,
-        metadata: Mapping[str, Any] | None = None,
-    ) -> tuple[SourceDocument, bool]:
-        normalized_content = str(content).strip()
-        content_hash = hashlib.sha256(normalized_content.encode("utf-8")).hexdigest()
+    ) -> SourceDocument | None:
         result = await self.session.execute(
             select(SourceDocument).where(
-                SourceDocument.connector_id == int(connector.id),
+                SourceDocument.connector_id == int(connector_id),
                 SourceDocument.external_id == str(external_id),
             )
         )
-        row = result.scalar_one_or_none()
-        created = row is None
-        if row is None:
-            row = SourceDocument(
-                connector_id=int(connector.id),
-                channel_id=int(connector.channel_id),
-                external_id=str(external_id),
-                content=normalized_content,
-                content_hash=content_hash,
+        return result.scalar_one_or_none()
+
+    async def add_document(self, row: SourceDocument) -> SourceDocument:
+        """Stage a source document and assign its identity without committing."""
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def get_candidate_by_source_channel(
+        self,
+        *,
+        source_document_id: int,
+        channel_id: int,
+    ) -> ContentCandidate | None:
+        result = await self.session.execute(
+            select(ContentCandidate).where(
+                ContentCandidate.source_document_id == int(source_document_id),
+                ContentCandidate.channel_id == int(channel_id),
             )
-            self.session.add(row)
-        else:
-            row.content = normalized_content
-            row.content_hash = content_hash
-        row.source_url = source_url
-        row.title = title
-        row.language = language
-        row.author = author
-        row.published_at = published_at
-        row.fetched_at = datetime.now(timezone.utc)
-        row.meta = dict(metadata or {})
-        connector.last_document_at = row.published_at or row.fetched_at
-        connector.last_success_at = datetime.now(timezone.utc)
-        connector.status = "healthy"
-        connector.status_reason = None
-        try:
-            await self.session.commit()
-            await self.session.refresh(row)
-            return row, created
-        except Exception:
-            await self.session.rollback()
-            raise
+        )
+        return result.scalar_one_or_none()
+
+    async def add_candidate(self, row: ContentCandidate) -> ContentCandidate:
+        """Stage a candidate and assign its identity without committing."""
+        self.session.add(row)
+        await self.session.flush()
+        return row
 
     async def list_documents(
         self, channel_id: int, *, limit: int = 100
@@ -166,35 +151,6 @@ class SourcesRepo:
             .limit(max(1, min(int(limit), 500)))
         )
         return list(result.scalars().all())
-
-    async def ensure_candidate(
-        self,
-        *,
-        source_document_id: int,
-        channel_id: int,
-        status: str = "new",
-        suggested_action: str | None = None,
-        metadata: Mapping[str, Any] | None = None,
-    ) -> ContentCandidate:
-        result = await self.session.execute(
-            select(ContentCandidate).where(
-                ContentCandidate.source_document_id == int(source_document_id),
-                ContentCandidate.channel_id == int(channel_id),
-            )
-        )
-        row = result.scalar_one_or_none()
-        if row is None:
-            row = ContentCandidate(
-                source_document_id=int(source_document_id),
-                channel_id=int(channel_id),
-                status=str(status),
-                suggested_action=suggested_action,
-                meta=dict(metadata or {}),
-            )
-            self.session.add(row)
-            await self.session.commit()
-            await self.session.refresh(row)
-        return row
 
     async def get_candidate_for_channel(
         self, candidate_id: int, channel_id: int
