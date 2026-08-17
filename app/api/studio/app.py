@@ -32,6 +32,7 @@ from app.api.studio.schemas import (
 )
 from app.api.studio.source_media_assets import router as source_media_assets_router
 from app.api.studio.sources import router as sources_router
+from app.api.studio.suggested_post_actions import router as suggested_post_actions_router
 from app.bot.bot_instance import bot as tg_bot
 from app.core.db import AsyncSessionLocal
 from app.domain.content import (
@@ -101,6 +102,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
     app.include_router(sources_router)
     app.include_router(media_assets_router)
     app.include_router(candidate_actions_router)
+    app.include_router(suggested_post_actions_router)
     app.include_router(candidate_rewrite_authority_router)
     app.include_router(candidate_prompt_rewrite_router)
     app.include_router(candidate_media_router)
