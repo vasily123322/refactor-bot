@@ -222,6 +222,8 @@ def project_suggested_post_inbox(
     lifecycle = _mapping(raw.get("telegram_suggested_post_lifecycle"))
     lifecycle_payload = _current_lifecycle_payload(lifecycle)
     native_status = _native_status(raw, info)
+    initial_state = _text(info.get("state")) if info is not None else None
+    has_lifecycle = "telegram_suggested_post_lifecycle" in raw
 
     approved_payload = _event_payload(raw, "approved")
     approval_failed_payload = _event_payload(raw, "approval_failed")
@@ -244,11 +246,19 @@ def project_suggested_post_inbox(
         paid_payload,
         lifecycle_payload if native_status == "paid" else None,
     )
-    if price is not None or payment is not None:
+    if price is not None or payment is not None or native_status in {"paid", "refunded"}:
         commercial_kind: SuggestedPostCommercialKind = "paid"
-    elif info is not None:
-        # Bot API SuggestedPostInfo.price is optional; its absence means an unpaid
-        # proposal. Only explicit persisted SuggestedPostInfo can establish this.
+    elif has_lifecycle and native_status == "unknown":
+        commercial_kind = "unknown"
+    elif native_status == "approval_failed":
+        # A well-formed approval failure carries business data. If it is absent,
+        # do not reinterpret the older proposal as free.
+        commercial_kind = "unknown"
+    elif native_status == "approved" and lifecycle is not None and lifecycle_payload is not None:
+        # For a known approved event, omitted price is explicit unpaid/free state.
+        commercial_kind = "free"
+    elif initial_state in _INITIAL_NATIVE_STATUSES:
+        # SuggestedPostInfo is valid and price is absent, so this is an unpaid proposal.
         commercial_kind = "free"
     else:
         commercial_kind = "unknown"
