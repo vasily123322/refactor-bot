@@ -12,6 +12,10 @@ from app.services.source_ingestion import (
     IngestionResult,
     SourceIngestionError,
 )
+from app.services.source_reconciliation import (
+    SourceIngestionReconciliationService,
+    SourceProjection,
+)
 from app.userbot.client import UserbotChat, UserbotMessage, app as userbot
 
 
@@ -53,17 +57,6 @@ def _normalize_message_date(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
-
-
-def _candidate_action(connector: SourceConnector) -> str:
-    mode = str(connector.mode or "research")
-    if mode == "summary":
-        return "summarize"
-    if mode == "rewrite":
-        return "rewrite"
-    if mode == "mirror":
-        return "mirror" if connector.reuse_policy == "mirror_authorized" else "review"
-    return "research"
 
 
 def _message_text(message: UserbotMessage) -> str:
@@ -112,6 +105,7 @@ class TelegramSourceIngestionService:
         self.gateway = gateway
         self.history_limit = max(1, min(int(history_limit), 500))
         self.repo = SourcesRepo(session)
+        self.reconciler = SourceIngestionReconciliationService(session)
 
     async def _resolve_chat(self, connector: SourceConnector) -> UserbotChat:
         target = str(connector.value).strip()
@@ -204,27 +198,20 @@ class TelegramSourceIngestionService:
                 }
                 if message.media is not None:
                     metadata["telegram_media"] = message.media.to_metadata()
-                document, created = await self.repo.upsert_document(
-                    connector=connector,
-                    external_id=f"telegram:{int(chat.id)}:{message_id}",
-                    content=content,
-                    source_url=_message_url(chat, message_id),
-                    title=chat.title,
-                    published_at=published_at,
-                    metadata=metadata,
+                result = await self.reconciler.reconcile(
+                    connector,
+                    SourceProjection(
+                        external_id=f"telegram:{int(chat.id)}:{message_id}",
+                        content=content,
+                        source_url=_message_url(chat, message_id),
+                        title=chat.title,
+                        published_at=published_at,
+                        metadata=metadata,
+                    ),
                 )
-                if created:
+                if result.document_created:
                     created_count += 1
-                await self.repo.ensure_candidate(
-                    source_document_id=document.id,
-                    channel_id=connector.channel_id,
-                    suggested_action=_candidate_action(connector),
-                    metadata={
-                        "source_connector_id": int(connector.id),
-                        "reuse_policy": str(connector.reuse_policy),
-                    },
-                )
-                if created:
+                if result.candidate_created:
                     candidate_count += 1
         except SourceIngestionError:
             raise
