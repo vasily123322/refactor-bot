@@ -19,6 +19,7 @@ import {
   promoteCandidateMedia,
   type CandidateMediaView,
 } from './candidateMedia';
+import { SuggestedPostProvenance } from './SuggestedPostProvenance';
 import { TelegramVisualPreview } from './TelegramVisualPreview';
 import type { Channel, ContentCandidateView } from './types';
 
@@ -411,6 +412,10 @@ export function InboxPanel({
                   {media && <span className="candidate-policy">{candidateMediaLabel(media)}</span>}
                   {score && <span className="candidate-policy">score {score}</span>}
                 </div>
+                <SuggestedPostProvenance
+                  suggestedPost={candidate.suggested_post}
+                  candidateStatus={candidate.status}
+                />
                 <h3>{candidate.topic || candidate.source_title || `Материал #${candidate.source_document_id}`}</h3>
                 <p>{candidate.summary || candidate.excerpt}</p>
                 {rewritePreview && (
