@@ -201,11 +201,15 @@ class TelegramSuggestedPostIngestionService:
         if topic is None or info is None:
             return TelegramSuggestedPostResult(TelegramSuggestedPostDisposition.IGNORED)
 
-        # Suggested Posts created by bots or channel identities are output/automation,
-        # not an inbound user proposal. Human user identity is required here.
+        # A real inbound proposal is authored by the user who owns this native DM
+        # topic. Bot/channel senders and human admin/output in somebody else's topic
+        # are transport output, not candidate content.
+        topic_user = topic.user
         if (
-            message.from_user is None
+            topic_user is None
+            or message.from_user is None
             or message.from_user.is_bot
+            or int(message.from_user.id) != int(topic_user.id)
             or message.sender_chat is not None
         ):
             return TelegramSuggestedPostResult(TelegramSuggestedPostDisposition.IGNORED)
