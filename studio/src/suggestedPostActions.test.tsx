@@ -130,7 +130,7 @@ describe('Suggested Post controls are plausibility-only UI', () => {
     }));
     expect(html).toContain('Одобрить в Telegram');
     expect(html).toContain('Отклонить в Telegram');
-    expect(html).toContain('maxLength="128"');
+    expect(html).toContain('До 128 символов');
   });
 
   it('renders terminal Suggested Posts read-only', () => {
