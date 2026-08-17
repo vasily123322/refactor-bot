@@ -1,24 +1,71 @@
+import { useEffect, useState } from 'react';
+
+import {
+  submitSuggestedPostAction,
+  type SuggestedPostAction,
+} from './suggestedPostActions';
 import { suggestedPostPresentation } from './suggestedPostPresentation';
 import type { SuggestedPostView } from './types';
 import './suggested-post.css';
 
+function actionErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return 'Не удалось изменить Suggested Post.';
+}
+
 export function SuggestedPostProvenance({
+  candidateId,
   suggestedPost,
   candidateStatus,
 }: {
+  candidateId: number;
   suggestedPost: SuggestedPostView | null | undefined;
   candidateStatus: string;
 }) {
-  const presentation = suggestedPostPresentation(suggestedPost);
-  if (!presentation || !suggestedPost) return null;
+  const [current, setCurrent] = useState<SuggestedPostView | null | undefined>(suggestedPost);
+  const [busyAction, setBusyAction] = useState<SuggestedPostAction | null>(null);
+  const [declineComment, setDeclineComment] = useState('');
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setCurrent(suggestedPost);
+    setActionError(null);
+  }, [suggestedPost]);
+
+  const presentation = suggestedPostPresentation(current);
+  if (!presentation || !current) return null;
 
   const identityParts = [
-    suggestedPost.direct_messages_chat_id == null
+    current.direct_messages_chat_id == null
       ? null
-      : `DM chat ${suggestedPost.direct_messages_chat_id}`,
-    suggestedPost.message_id == null ? null : `message ${suggestedPost.message_id}`,
-    suggestedPost.topic_id == null ? null : `topic ${suggestedPost.topic_id}`,
+      : `DM chat ${current.direct_messages_chat_id}`,
+    current.message_id == null ? null : `message ${current.message_id}`,
+    current.topic_id == null ? null : `topic ${current.topic_id}`,
   ].filter(Boolean);
+  const canRequestAction = presentation.status === 'pending';
+
+  const requestAction = async (action: SuggestedPostAction) => {
+    if (busyAction !== null || !canRequestAction) return;
+    setBusyAction(action);
+    setActionError(null);
+    try {
+      const result = await submitSuggestedPostAction(
+        candidateId,
+        action,
+        action === 'decline' ? declineComment : null,
+      );
+      if (!result.suggested_post) {
+        throw new Error('Сервер не вернул актуальный Suggested Post status.');
+      }
+      // No optimistic terminal state: render only the server-returned read model.
+      setCurrent(result.suggested_post);
+      if (action === 'decline') setDeclineComment('');
+    } catch (error) {
+      setActionError(actionErrorMessage(error));
+    } finally {
+      setBusyAction(null);
+    }
+  };
 
   return (
     <section
@@ -39,14 +86,50 @@ export function SuggestedPostProvenance({
           <span>Предложенная отправка: {presentation.proposedSendDateLabel}</span>
         )}
         {presentation.paymentLabel && <span>Получено: {presentation.paymentLabel}</span>}
-        {suggestedPost.decline_comment && <span>Комментарий: {suggestedPost.decline_comment}</span>}
-        {suggestedPost.refund_reason && <span>Причина возврата: {suggestedPost.refund_reason}</span>}
+        {current.decline_comment && <span>Комментарий: {current.decline_comment}</span>}
+        {current.refund_reason && <span>Причина возврата: {current.refund_reason}</span>}
       </div>
 
       <p className="suggested-post-authority-note">
         Telegram lifecycle и оплата — отдельная provenance-информация. Они не создают,
         не применяют и не публикуют Content автоматически.
       </p>
+
+      {canRequestAction && (
+        <div className="suggested-post-actions">
+          <div className="suggested-post-action-buttons">
+            <button
+              className="button primary compact"
+              disabled={busyAction !== null}
+              onClick={() => void requestAction('approve')}
+            >
+              {busyAction === 'approve' ? 'Одобряю…' : 'Одобрить в Telegram'}
+            </button>
+            <button
+              className="button secondary compact"
+              disabled={busyAction !== null}
+              onClick={() => void requestAction('decline')}
+            >
+              {busyAction === 'decline' ? 'Отклоняю…' : 'Отклонить в Telegram'}
+            </button>
+          </div>
+          <label>
+            <span>Комментарий при отклонении · необязательно</span>
+            <input
+              type="text"
+              maxLength={128}
+              value={declineComment}
+              disabled={busyAction !== null}
+              onChange={(event) => setDeclineComment(event.target.value)}
+              placeholder="До 128 символов"
+            />
+          </label>
+          <small>
+            Одобрение использует текущую Telegram send date и не создаёт Studio schedule.
+          </small>
+          {actionError && <div className="suggested-post-action-error" role="alert">{actionError}</div>}
+        </div>
+      )}
 
       <details className="suggested-post-details">
         <summary>Telegram provenance</summary>
