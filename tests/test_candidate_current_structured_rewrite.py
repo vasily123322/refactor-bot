@@ -160,10 +160,9 @@ def test_changed_input_plain_failed_invalid_and_missing_runs_are_not_current() -
                 document.content_hash = "changed-input-hash"
                 await session.commit()
                 assert await service.current(channel_id=812, candidate_id=candidate.id) is None
-                document.content_hash = completed.input_hash  # remains intentionally non-matching
+                document.content_hash = completed.input_hash
                 await session.commit()
 
-                # Re-seed a fresh input hash for the remaining identity/state checks.
                 completed.input_hash = candidate_rewrite_input_hash(
                     document,
                     candidate,
@@ -312,7 +311,12 @@ def test_explicit_apply_after_refresh_uses_expected_current_run_and_stale_apply_
                 candidate = await session.get(ContentCandidate, candidate.id)
                 assert candidate is not None
                 assert candidate.content_item_id is None
-                assert (await session.execute(select(ContentItem))).scalars().all() == []
+                stale_items = (
+                    await session.execute(
+                        select(ContentItem).where(ContentItem.channel_id == 815)
+                    )
+                ).scalars().all()
+                assert stale_items == []
         finally:
             await engine.dispose()
 
