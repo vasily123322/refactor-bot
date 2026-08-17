@@ -184,7 +184,12 @@ describe('T3 proposal/apply lifecycle remains unchanged for Suggested Post candi
   });
 
   it('keeps Apply explicit and bound to the exact current run id', async () => {
-    vi.stubEnv('VITE_DEV_INIT_DATA', 'signed-test-init-data');
+    vi.stubGlobal('window', {
+      location: {
+        search: '?tgWebAppData=signed-test-init-data',
+        hash: '',
+      },
+    });
     const applied: ContentDetail = {
       id: 900,
       channel_id: 7,
