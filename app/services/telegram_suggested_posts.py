@@ -138,7 +138,7 @@ def _lifecycle_event(message: Message) -> tuple[str, Any] | None:
 
 
 class TelegramSuggestedPostIngestionService:
-    """Normalize Telegram Suggested Posts into the canonical source reconciliation seam.
+    """Normalize Telegram Suggested Posts into canonical source reconciliation.
 
     Routing is accepted only when Telegram's DM parent channel agrees with the
     canonical Channel row and exactly one enabled Suggested Posts SourceConnector.
@@ -157,7 +157,10 @@ class TelegramSuggestedPostIngestionService:
         self.sources = SourcesRepo(session)
         self.reconciler = SourceIngestionReconciliationService(session)
 
-    async def _resolve_connector(self, direct_messages_chat_id: int) -> tuple[SourceConnector, int]:
+    async def _resolve_connector(
+        self,
+        direct_messages_chat_id: int,
+    ) -> tuple[SourceConnector, int]:
         chat = await self.bot.get_chat(int(direct_messages_chat_id))
         parent_chat = getattr(chat, "parent_chat", None)
         parent_chat_id = int(getattr(parent_chat, "id", 0) or 0)
@@ -172,15 +175,12 @@ class TelegramSuggestedPostIngestionService:
                 "direct-messages parent channel is not a canonical Channel"
             )
 
-        connectors = await self.sources.list_connectors_by_kind_value(
-            kind=SUGGESTED_POST_CONNECTOR_KIND,
-            value=str(parent_chat_id),
-            enabled_only=True,
-        )
         connectors = [
             connector
-            for connector in connectors
-            if int(connector.channel_id) == int(channel.id)
+            for connector in await self.sources.list_connectors(int(channel.id))
+            if connector.enabled
+            and str(connector.kind) == SUGGESTED_POST_CONNECTOR_KIND
+            and str(connector.value) == str(parent_chat_id)
         ]
         if len(connectors) != 1:
             if not connectors:
@@ -192,7 +192,10 @@ class TelegramSuggestedPostIngestionService:
             )
         return connectors[0], parent_chat_id
 
-    async def _reconcile_content(self, message: Message) -> TelegramSuggestedPostResult:
+    async def _reconcile_content(
+        self,
+        message: Message,
+    ) -> TelegramSuggestedPostResult:
         topic = message.direct_messages_topic
         info = message.suggested_post_info
         if topic is None or info is None:
@@ -200,7 +203,11 @@ class TelegramSuggestedPostIngestionService:
 
         # Suggested Posts created by bots or channel identities are output/automation,
         # not an inbound user proposal. Human user identity is required here.
-        if message.from_user is None or message.from_user.is_bot or message.sender_chat is not None:
+        if (
+            message.from_user is None
+            or message.from_user.is_bot
+            or message.sender_chat is not None
+        ):
             return TelegramSuggestedPostResult(TelegramSuggestedPostDisposition.IGNORED)
 
         content = _content(message)
@@ -231,7 +238,10 @@ class TelegramSuggestedPostIngestionService:
         result = await self.reconciler.reconcile(
             connector,
             SourceProjection(
-                external_id=suggested_post_external_id(dm_chat_id, int(message.message_id)),
+                external_id=suggested_post_external_id(
+                    dm_chat_id,
+                    int(message.message_id),
+                ),
                 content=content,
                 author=_author(message),
                 published_at=message.date,
@@ -244,15 +254,18 @@ class TelegramSuggestedPostIngestionService:
             result,
         )
 
-    async def _reconcile_lifecycle(self, message: Message) -> TelegramSuggestedPostResult:
+    async def _reconcile_lifecycle(
+        self,
+        message: Message,
+    ) -> TelegramSuggestedPostResult:
         lifecycle = _lifecycle_event(message)
         if lifecycle is None:
             return TelegramSuggestedPostResult(TelegramSuggestedPostDisposition.IGNORED)
         event_name, event = lifecycle
         original = getattr(event, "suggested_post_message", None)
         if original is None:
-            # Telegram makes correlation optional on the wire. Without the native
-            # original message identity there is no safe document to mutate.
+            # Correlation is optional on the wire. Without the native original
+            # message identity there is no safe document to mutate.
             return TelegramSuggestedPostResult(TelegramSuggestedPostDisposition.IGNORED)
 
         dm_chat_id = int(original.chat.id)
@@ -262,21 +275,26 @@ class TelegramSuggestedPostIngestionService:
             )
         connector, parent_chat_id = await self._resolve_connector(dm_chat_id)
         event_payload = _dump(event, exclude={"suggested_post_message"})
+        lifecycle_metadata = {
+            "event": event_name,
+            "service_message_id": int(message.message_id),
+            "payload": event_payload,
+        }
         metadata = {
             "transport": "telegram_suggested_posts",
             "telegram_direct_messages_chat_id": dm_chat_id,
             "telegram_message_id": int(original.message_id),
             "telegram_parent_chat_id": parent_chat_id,
-            "telegram_suggested_post_lifecycle": {
-                "event": event_name,
-                "service_message_id": int(message.message_id),
-                "payload": event_payload,
-            },
+            "telegram_suggested_post_lifecycle": lifecycle_metadata,
+            f"telegram_suggested_post_{event_name}": lifecycle_metadata,
         }
         result = await self.reconciler.reconcile(
             connector,
             SourceProjection(
-                external_id=suggested_post_external_id(dm_chat_id, int(original.message_id)),
+                external_id=suggested_post_external_id(
+                    dm_chat_id,
+                    int(original.message_id),
+                ),
                 metadata=metadata,
                 update_mode=SourceProjectionUpdateMode.LIFECYCLE,
             ),
