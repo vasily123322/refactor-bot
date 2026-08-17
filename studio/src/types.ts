@@ -169,6 +169,45 @@ export type SourceIngestionResult = {
   candidates_created: number;
 };
 
+export type SuggestedPostNativeStatus =
+  | 'pending'
+  | 'approved'
+  | 'declined'
+  | 'approval_failed'
+  | 'paid'
+  | 'refunded'
+  | 'unknown';
+
+export type SuggestedPostCommercialKind = 'free' | 'paid' | 'unknown';
+
+export type SuggestedPostPersonView = {
+  id: number | null;
+  username: string | null;
+  display_name: string | null;
+};
+
+export type SuggestedPostMoneyView = {
+  currency: string | null;
+  amount: number | null;
+  nanostar_amount: number | null;
+};
+
+export type SuggestedPostView = {
+  transport: 'telegram_suggested_posts';
+  native_status: SuggestedPostNativeStatus;
+  commercial_kind: SuggestedPostCommercialKind;
+  sender: SuggestedPostPersonView | null;
+  topic_user: SuggestedPostPersonView | null;
+  topic_id: number | null;
+  direct_messages_chat_id: number | null;
+  message_id: number | null;
+  proposed_send_date: string | null;
+  price: SuggestedPostMoneyView | null;
+  payment: SuggestedPostMoneyView | null;
+  decline_comment: string | null;
+  refund_reason: string | null;
+};
+
 export type ContentCandidateView = {
   id: number;
   source_document_id: number;
@@ -185,6 +224,7 @@ export type ContentCandidateView = {
   fetched_at: string | null;
   created_at: string | null;
   reuse_policy: string;
+  suggested_post?: SuggestedPostView | null;
 };
 
 export const emptyTextDocument = (): PostDocument => ({
