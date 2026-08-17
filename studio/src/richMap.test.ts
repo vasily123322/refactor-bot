@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_RICH_MAP, richMapDraft, richMapError, richMapPatch } from './richMap';
 
 describe('Rich map editor contract', () => {
-  it('normalizes legacy coordinate aliases into canonical fields', () => {
+  it('normalizes legacy coordinate aliases into canonical geometry only', () => {
     const draft = richMapDraft({
       id: 'map',
       type: 'map',
@@ -12,7 +12,8 @@ describe('Rich map editor contract', () => {
       zoom: 12,
       width: 640,
       height: 360,
-      caption: 'Paris',
+      caption: [{ text: 'Paris', marks: ['bold'] }],
+      credit: 'Map source',
     });
     expect(draft).toEqual({
       latitude: 48.8566,
@@ -20,9 +21,10 @@ describe('Rich map editor contract', () => {
       zoom: 12,
       width: 640,
       height: 360,
-      caption: 'Paris',
     });
     expect(richMapPatch(draft)).toEqual(draft);
+    expect(richMapPatch(draft)).not.toHaveProperty('caption');
+    expect(richMapPatch(draft)).not.toHaveProperty('credit');
   });
 
   it('falls back only for non-numeric values', () => {

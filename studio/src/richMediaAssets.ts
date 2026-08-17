@@ -1,4 +1,5 @@
 import type { MediaAssetView } from './api';
+import { richCaptionPatch } from './richCaption';
 import {
   richMediaAssetChangeCleanupPatch,
   richMediaOptionCapabilities,
@@ -19,12 +20,6 @@ export type MediaCollectionItem = {
   performer?: string;
   title?: string;
 };
-
-function safeRichContent(value: unknown): RichContentValue | undefined {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return structuredClone(value) as RichContentValue;
-  return undefined;
-}
 
 function boundedInteger(value: unknown, minimum: number, maximum: number): number | undefined {
   if (value === null || value === undefined) return undefined;
@@ -76,10 +71,9 @@ export function mediaCollectionItems(value: unknown): MediaCollectionItem[] {
 
     const item: MediaCollectionItem = { type: 'media', asset_id: assetId, kind };
     const capabilities = richMediaOptionCapabilities(kind);
-    const caption = safeRichContent(candidate.caption);
-    const credit = safeRichContent(candidate.credit);
-    if (caption !== undefined) item.caption = caption;
-    if (credit !== undefined) item.credit = credit;
+    const caption = richCaptionPatch(candidate, {});
+    if (caption.caption !== undefined) item.caption = caption.caption;
+    if (caption.credit !== undefined) item.credit = caption.credit;
 
     if (capabilities.spoiler && typeof candidate.has_spoiler === 'boolean') {
       item.has_spoiler = candidate.has_spoiler;

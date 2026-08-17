@@ -8,6 +8,7 @@ import {
 } from './api';
 import { MapBlockEditor } from './MapBlockEditor';
 import { MediaCollectionEditor } from './MediaCollectionEditor';
+import { RichCaptionEditor } from './RichCaptionEditor';
 import { RichListEditor } from './RichListEditor';
 import { RichMediaOptionsEditor } from './RichMediaOptionsEditor';
 import {
@@ -263,15 +264,7 @@ function BlockEditor({
                 ))}
               </select>
             </label>
-            <label className="rich-field-label">
-              <span>Caption</span>
-              <textarea
-                className="rich-media-caption"
-                value={textValue(block.caption)}
-                onChange={(event) => onPatch({ caption: event.target.value })}
-                placeholder="Подпись (необязательно)"
-              />
-            </label>
+            <RichCaptionEditor source={block} onPatch={onPatch} />
             <RichMediaOptionsEditor block={block} asset={selectedAsset} onPatch={onPatch} />
             {selectedAssetId === 0 && (
               <small className="rich-media-warning">Выберите asset перед exact preview / publish.</small>

@@ -58,7 +58,7 @@ describe('Rich media asset document boundary', () => {
     expect(JSON.stringify(mediaCollectionItem(asset))).not.toContain('https');
   });
 
-  it('preserves safe renderer options while stripping transport and unsupported fields', () => {
+  it('preserves safe renderer options and rich captions while stripping transport fields', () => {
     const items = mediaCollectionItems([
       {
         type: 'media',
@@ -67,7 +67,10 @@ describe('Rich media asset document boundary', () => {
         storage_url: 'https://secret.invalid/a',
         has_spoiler: true,
         duration: 99,
-        caption: [{ text: 'Photo', marks: ['bold'] }],
+        caption: {
+          text: [{ text: 'Photo', marks: ['bold'] }],
+          credit: [{ text: 'Source', marks: ['italic'] }],
+        },
       },
       {
         media_asset_id: '4',
@@ -89,6 +92,7 @@ describe('Rich media asset document boundary', () => {
         asset_id: 3,
         kind: 'photo',
         caption: [{ text: 'Photo', marks: ['bold'] }],
+        credit: [{ text: 'Source', marks: ['italic'] }],
         has_spoiler: true,
       },
       {
@@ -107,7 +111,7 @@ describe('Rich media asset document boundary', () => {
     expect(serialized).not.toContain('performer');
   });
 
-  it('resets asset-bound metadata while preserving compatible presentation options on replace', () => {
+  it('resets asset-bound metadata while preserving caption and compatible presentation options', () => {
     const current = mediaCollectionItems([{
       type: 'media',
       asset_id: 42,
@@ -117,14 +121,16 @@ describe('Rich media asset document boundary', () => {
       width: 1920,
       height: 1080,
       duration: 30,
-      caption: 'Keep caption',
+      caption: [{ text: 'Keep caption', marks: ['bold'] }],
+      credit: 'Keep credit',
     }])[0];
 
     expect(mediaCollectionItemWithAsset(current, animationAsset)).toEqual({
       type: 'media',
       asset_id: 43,
       kind: 'animation',
-      caption: 'Keep caption',
+      caption: [{ text: 'Keep caption', marks: ['bold'] }],
+      credit: 'Keep credit',
       has_spoiler: true,
     });
   });
