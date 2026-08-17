@@ -8,6 +8,11 @@ import {
 } from './api';
 import { MapBlockEditor } from './MapBlockEditor';
 import { MediaCollectionEditor } from './MediaCollectionEditor';
+import {
+  isRichCollectionBlockType,
+  newRichCollectionBlock,
+  RICH_COLLECTION_BLOCK_OPTIONS,
+} from './richCollections';
 import { mediaAssetBlockPatch, mediaAssetOptionLabel } from './richMediaAssets';
 import { DEFAULT_RICH_MAP } from './richMap';
 import { RichTextField } from './RichTextField';
@@ -24,8 +29,7 @@ const BLOCK_OPTIONS = [
   ['math', '∑ Формула'],
   ['anchor', '# Anchor'],
   ['media', '▣ Медиа'],
-  ['gallery', '▦ Галерея'],
-  ['slideshow', '▤ Слайдшоу'],
+  ...RICH_COLLECTION_BLOCK_OPTIONS,
   ['map', '⌖ Карта'],
 ] as const;
 
@@ -47,6 +51,8 @@ function newId(prefix: string): string {
 
 function newBlock(type: string): PostBlock {
   const id = newId(type.slice(0, 3));
+  const collection = newRichCollectionBlock(id, type);
+  if (collection) return collection;
   switch (type) {
     case 'heading':
       return { id, type, size: 2, content: '' };
@@ -66,9 +72,6 @@ function newBlock(type: string): PostBlock {
       return { id, type, name: '' };
     case 'media':
       return { id, type, kind: 'photo', caption: '' };
-    case 'gallery':
-    case 'slideshow':
-      return { id, type, items: [], caption: '' };
     case 'map':
       return { id, type, ...DEFAULT_RICH_MAP };
     default:
@@ -290,7 +293,7 @@ function BlockEditor({
           </>
         )}
 
-        {(block.type === 'gallery' || block.type === 'slideshow') && (
+        {isRichCollectionBlockType(block.type) && (
           <MediaCollectionEditor block={block} assets={assets} onPatch={onPatch} />
         )}
 
