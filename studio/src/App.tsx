@@ -12,8 +12,10 @@ import { InboxPanel } from './InboxPanel';
 import { PlannerPanel } from './PlannerPanel';
 import { RichComposer } from './RichComposer';
 import { SourcesPanel } from './SourcesPanel';
+import type { StudioView } from './studioNavigation';
 import { TelegramComposer } from './TelegramComposer';
 import { useTelegramDirtyClosingProtection } from './telegramDirtyClosingProtection';
+import { useTelegramStudioBackButton } from './telegramStudioBackButton';
 import { TelegramVisualPreview } from './TelegramVisualPreview';
 import type {
   Channel,
@@ -24,7 +26,6 @@ import type {
 } from './types';
 import { documentText, emptyRichDocument, emptyTextDocument } from './types';
 
-type StudioView = 'content' | 'planner' | 'sources' | 'inbox' | 'ai';
 type DraftSaveState = 'saved' | 'dirty' | 'saving' | 'error';
 
 function shortDate(value: string | null): string {
@@ -151,6 +152,7 @@ export default function App() {
   const inFlightSaveRef = useRef<Promise<boolean> | null>(null);
 
   useTelegramDirtyClosingProtection(dirty);
+  useTelegramStudioBackButton(view, setView);
 
   selectedRef.current = selected;
   channelIdRef.current = selectedChannelId;
