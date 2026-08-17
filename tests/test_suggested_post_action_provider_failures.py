@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
 from app.domain.models import Channel
+from app.domain.sources.models import ContentCandidate, SourceDocument
 from app.repositories.sources_v2 import SourcesRepo
 from app.services.suggested_post_actions import (
     SuggestedPostAction,
@@ -133,19 +134,10 @@ def test_provider_rejection_is_classified_and_does_not_become_local_success(
                     )
                 assert raised.value.failure is expected
                 assert bot.mutation_calls == 1
-                candidate = await session.get(
-                    __import__(
-                        "app.domain.sources.models",
-                        fromlist=["ContentCandidate"],
-                    ).ContentCandidate,
-                    candidate_id,
-                )
+                candidate = await session.get(ContentCandidate, candidate_id)
                 assert candidate is not None
                 document = await session.get(
-                    __import__(
-                        "app.domain.sources.models",
-                        fromlist=["SourceDocument"],
-                    ).SourceDocument,
+                    SourceDocument,
                     int(candidate.source_document_id),
                 )
                 assert document is not None
