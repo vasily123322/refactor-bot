@@ -1,11 +1,13 @@
 import {
   backButton,
   closingBehavior,
+  deviceStorage,
   hapticFeedback,
   init as initSDK,
   mainButton,
   miniApp,
   secondaryButton,
+  secureStorage,
   setDebug,
   themeParams,
   viewport,
@@ -17,6 +19,12 @@ import {
   telegramCapabilitiesForVersion,
 } from './telegramPlatform';
 import type { TelegramMiniAppCapabilities } from './telegramPlatform';
+import { createTelegramStorageBridge } from './telegramStorage';
+export type {
+  StudioDeviceStorageKey,
+  TelegramStorageError,
+  TelegramStorageResult,
+} from './telegramStorage';
 
 export type TelegramFullscreenActionResult =
   | 'requested'
@@ -54,6 +62,23 @@ export function getTelegramMiniAppVersion(): string | null {
 export function getTelegramMiniAppCapabilities(): TelegramMiniAppCapabilities {
   return telegramCapabilitiesForVersion(getTelegramMiniAppVersion());
 }
+
+const telegramStorage = createTelegramStorageBridge({
+  isDeviceStorageSupported: () => getTelegramMiniAppCapabilities().deviceStorage,
+  isSecureStorageSupported: () => getTelegramMiniAppCapabilities().secureStorage,
+  deviceStorage,
+  secureStorage,
+});
+
+export const getTelegramDeviceStorageItem = telegramStorage.deviceGet;
+export const setTelegramDeviceStorageItem = telegramStorage.deviceSet;
+export const removeTelegramDeviceStorageItem = telegramStorage.deviceRemove;
+export const clearTelegramDeviceStorageUxState = telegramStorage.deviceClearUxState;
+export const getTelegramSecureStorageItem = telegramStorage.secureGet;
+export const setTelegramSecureStorageItem = telegramStorage.secureSet;
+export const removeTelegramSecureStorageItem = telegramStorage.secureRemove;
+export const clearTelegramSecureStorage = telegramStorage.secureClear;
+export const restoreTelegramSecureStorageItem = telegramStorage.secureRestore;
 
 function fullscreenBridgeReady(): boolean {
   return Boolean(
