@@ -19,6 +19,14 @@ import {
 import { mediaAssetBlockPatch, mediaAssetOptionLabel } from './richMediaAssets';
 import { richMediaAssetChangeCleanupPatch } from './richMediaOptions';
 import { DEFAULT_RICH_MAP } from './richMap';
+import {
+  canAuthorNestedBlocks,
+  initialNestedBlocks,
+  moveNestedBlock,
+  nestedBlocksState,
+  patchNestedBlock,
+  removeNestedBlock,
+} from './richNestedBlocks';
 import { RichTextField } from './RichTextField';
 import type { PostBlock, PostDocument, RichSegmentValue } from './types';
 
@@ -110,11 +118,63 @@ function mediaAccept(kind: MediaAssetKind): string {
   return 'audio/*';
 }
 
+function NestedBlocksEditor({
+  parentId,
+  blocks,
+  depth,
+  assets,
+  onChange,
+}: {
+  parentId: string;
+  blocks: PostBlock[];
+  depth: number;
+  assets: MediaAssetView[];
+  onChange: (blocks: PostBlock[]) => void;
+}) {
+  const duplicate = (index: number) => {
+    const clone = structuredClone(blocks[index]);
+    clone.id = newId(clone.type.slice(0, 3));
+    onChange([...blocks.slice(0, index + 1), clone, ...blocks.slice(index + 1)]);
+  };
+
+  return (
+    <div className="rich-nested-blocks">
+      <div className="rich-block-list">
+        {blocks.map((child, index) => (
+          <BlockEditor
+            key={`${parentId}:${child.id}`}
+            block={child}
+            index={index}
+            count={blocks.length}
+            assets={assets}
+            depth={depth}
+            onPatch={(value) => onChange(patchNestedBlock(blocks, index, value))}
+            onMove={(direction) => onChange(moveNestedBlock(blocks, index, direction))}
+            onDuplicate={() => duplicate(index)}
+            onDelete={() => onChange(removeNestedBlock(blocks, index))}
+          />
+        ))}
+      </div>
+      <div className="rich-add-block">
+        <span>Вложенный блок</span>
+        <div>
+          {BLOCK_OPTIONS.map(([type, label]) => (
+            <button key={`${parentId}:${type}`} onClick={() => onChange([...blocks, newBlock(type)])}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function BlockEditor({
   block,
   index,
   count,
   assets,
+  depth = 0,
   onPatch,
   onMove,
   onDuplicate,
@@ -124,6 +184,7 @@ function BlockEditor({
   index: number;
   count: number;
   assets: MediaAssetView[];
+  depth?: number;
   onPatch: (patch: Partial<PostBlock>) => void;
   onMove: (direction: -1 | 1) => void;
   onDuplicate: () => void;
@@ -132,6 +193,37 @@ function BlockEditor({
   const title = BLOCK_OPTIONS.find(([type]) => type === block.type)?.[1] ?? block.type;
   const selectedAssetId = Number(block.asset_id || 0);
   const selectedAsset = assets.find((candidate) => candidate.id === selectedAssetId) ?? null;
+  const nested = block.type === 'quote' || block.type === 'details'
+    ? nestedBlocksState(block.blocks)
+    : { kind: 'none' as const, blocks: [] };
+
+  const nestedBody = nested.kind === 'editable'
+    ? canAuthorNestedBlocks(depth)
+      ? (
+          <NestedBlocksEditor
+            parentId={block.id}
+            blocks={nested.blocks}
+            depth={depth + 1}
+            assets={assets}
+            onChange={(blocks) => onPatch({ blocks })}
+          />
+        )
+      : (
+          <small className="rich-media-warning">
+            Более глубокие вложенные blocks сохранены без изменений; редактирование ограничено глубиной 2.
+          </small>
+        )
+    : nested.kind === 'invalid'
+      ? (
+          <small className="rich-media-warning">
+            Вложенные blocks некорректны для renderer и сохранены без изменений.
+          </small>
+        )
+      : null;
+
+  const enableNested = () => onPatch({
+    blocks: initialNestedBlocks(newId(`${block.type.slice(0, 3)}n`)),
+  });
 
   return (
     <article className={`rich-block rich-block-${block.type}`}>
@@ -174,7 +266,30 @@ function BlockEditor({
           </>
         )}
 
-        {(block.type === 'quote' || block.type === 'pull_quote') && (
+        {block.type === 'quote' && (
+          <>
+            {nested.kind === 'none' ? (
+              <>
+                <RichTextField
+                  value={richValue(block.content)}
+                  onChange={(content) => onPatch({ content })}
+                  placeholder="Текст цитаты…"
+                />
+                {canAuthorNestedBlocks(depth) && (
+                  <button onClick={enableNested}>+ Вложенные блоки</button>
+                )}
+              </>
+            ) : nestedBody}
+            <RichTextField
+              value={richValue(block.credit)}
+              onChange={(credit) => onPatch({ credit })}
+              placeholder="Автор / источник (необязательно)"
+              compact
+            />
+          </>
+        )}
+
+        {block.type === 'pull_quote' && (
           <>
             <RichTextField
               value={richValue(block.content)}
@@ -202,11 +317,18 @@ function BlockEditor({
               placeholder="Заголовок раскрывающегося блока…"
               compact
             />
-            <RichTextField
-              value={richValue(block.content)}
-              onChange={(content) => onPatch({ content })}
-              placeholder="Содержимое details…"
-            />
+            {nested.kind === 'none' ? (
+              <>
+                <RichTextField
+                  value={richValue(block.content)}
+                  onChange={(content) => onPatch({ content })}
+                  placeholder="Содержимое details…"
+                />
+                {canAuthorNestedBlocks(depth) && (
+                  <button onClick={enableNested}>+ Вложенные блоки</button>
+                )}
+              </>
+            ) : nestedBody}
             <label className="rich-check-row">
               <input
                 type="checkbox"
