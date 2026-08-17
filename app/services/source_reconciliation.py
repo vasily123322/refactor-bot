@@ -103,7 +103,7 @@ class SourceIngestionReconciliationService:
         normalized_content = str(projection.content or "").strip()
         if not normalized_content:
             raise SourceReconciliationError("content projection must contain source content")
-        candidate = SourceDocument(
+        new_document = SourceDocument(
             connector_id=int(connector.id),
             channel_id=int(connector.channel_id),
             external_id=external_id,
@@ -119,8 +119,8 @@ class SourceIngestionReconciliationService:
         )
         try:
             async with self.session.begin_nested():
-                await self.repo.add_document(candidate)
-            return candidate, True
+                await self.repo.add_document(new_document)
+            return new_document, True
         except IntegrityError:
             winner = await self.repo.get_document_by_identity(
                 connector_id=int(connector.id),
@@ -183,7 +183,6 @@ class SourceIngestionReconciliationService:
                 raise SourceReconciliationError(
                     "content projection must contain source content"
                 )
-            document.channel_id = int(connector.channel_id)
             document.content = normalized_content
             document.content_hash = hashlib.sha256(
                 normalized_content.encode("utf-8")
@@ -233,6 +232,10 @@ class SourceIngestionReconciliationService:
                 projection=projection,
                 now=now,
             )
+            if int(document.channel_id) != int(connector.channel_id):
+                raise SourceReconciliationError(
+                    "source document routing disagrees with trusted source connector"
+                )
             self._apply_projection(
                 connector=connector,
                 document=document,
