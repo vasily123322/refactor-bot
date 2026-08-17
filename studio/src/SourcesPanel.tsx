@@ -1,11 +1,19 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { StudioApiError, studioApi, type CreateSourceInput } from './api';
+import {
+  parseSourceCreateKindPreference,
+  serializeSourceCreateKindPreference,
+} from './sourceCreateKindPreference';
 import { SourceSettingsControls } from './SourceSettingsControls';
 import { SourceWorkerHealthCard } from './SourceWorkerHealthCard';
 import { updateSourceSettings } from './sourceSettingsApi';
 import type { SourceSettingsPatch } from './sourceSettingsApi';
+import {
+  getTelegramDeviceStorageItem,
+  setTelegramDeviceStorageItem,
+} from './telegram';
 import type { Channel, SourceConnectorView } from './types';
 
 function errorMessage(error: unknown): string {
@@ -43,6 +51,7 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
   const [mode, setMode] = useState<CreateSourceInput['mode']>('summary');
   const [reusePolicy, setReusePolicy] = useState<CreateSourceInput['reuse_policy']>('reference_only');
   const [citationEnabled, setCitationEnabled] = useState(true);
+  const kindTouchedRef = useRef(false);
 
   const load = useCallback(async () => {
     if (!channel) {
@@ -57,6 +66,30 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
     setNotice(null);
     void load().catch((reason) => setError(errorMessage(reason)));
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getTelegramDeviceStorageItem('editor-ui-preferences').then((result) => {
+      if (cancelled || kindTouchedRef.current || !result.ok) return;
+      const storedKind = parseSourceCreateKindPreference(result.value);
+      if (storedKind) setKind(storedKind);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const persistSourceKindPreference = useCallback(
+    async (nextKind: CreateSourceInput['kind']) => {
+      const current = await getTelegramDeviceStorageItem('editor-ui-preferences');
+      const currentValue = current.ok ? current.value : null;
+      await setTelegramDeviceStorageItem(
+        'editor-ui-preferences',
+        serializeSourceCreateKindPreference(currentValue, nextKind),
+      );
+    },
+    [],
+  );
 
   const run = async (key: string, action: () => Promise<void>) => {
     setBusyId(key);
@@ -81,6 +114,8 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
         citation_enabled: citationEnabled,
         reuse_policy: reusePolicy,
       });
+      kindTouchedRef.current = true;
+      void persistSourceKindPreference(kind);
       setValue('');
       setShowForm(false);
       setNotice(`Источник #${created.id} добавлен`);
@@ -151,7 +186,13 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
           <div className="source-form-grid">
             <label>
               <span>Тип</span>
-              <select value={kind} onChange={(event) => setKind(event.target.value as CreateSourceInput['kind'])}>
+              <select
+                value={kind}
+                onChange={(event) => {
+                  kindTouchedRef.current = true;
+                  setKind(event.target.value as CreateSourceInput['kind']);
+                }}
+              >
                 <option value="rss">RSS / Atom</option>
                 <option value="url">Web URL</option>
                 <option value="telegram">Telegram</option>
