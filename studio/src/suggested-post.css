@@ -104,3 +104,22 @@
 
 .suggested-post-details dt { font-weight: 700; }
 .suggested-post-details dd { margin: 0; overflow-wrap: anywhere; }
+
+.suggested-post-enrichment-summary {
+  margin-top: 8px;
+  padding: 8px 9px;
+  border-left: 2px solid color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 35%, transparent);
+  color: var(--tg-theme-hint-color, #94a3b8);
+}
+
+.suggested-post-enrichment-summary small {
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.suggested-post-enrichment-summary p {
+  margin: 4px 0 0;
+  color: inherit;
+  font-size: 10px;
+  line-height: 1.45;
+}
