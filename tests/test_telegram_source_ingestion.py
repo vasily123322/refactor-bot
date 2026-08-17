@@ -203,7 +203,7 @@ def test_incremental_cursor_drains_backlog_without_skipping_over_page_limit() ->
     asyncio.run(run())
 
 
-def test_retry_heals_document_committed_before_candidate_without_advancing_cursor() -> None:
+def test_candidate_failure_rolls_back_document_without_advancing_cursor() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         try:
@@ -225,17 +225,17 @@ def test_retry_heals_document_committed_before_candidate_without_advancing_curso
                     config={TELEGRAM_CURSOR_KEY: 100},
                 )
                 first_service = TelegramSourceIngestionService(session, gateway=gateway)
-                original_ensure = first_service.repo.ensure_candidate
+                original_add = first_service.reconciler.repo.add_candidate
                 failed_once = False
 
-                async def fail_after_document(**kwargs):
+                async def fail_candidate(row: ContentCandidate) -> ContentCandidate:
                     nonlocal failed_once
                     if not failed_once:
                         failed_once = True
                         raise RuntimeError("candidate persistence interrupted")
-                    return await original_ensure(**kwargs)
+                    return await original_add(row)
 
-                first_service.repo.ensure_candidate = fail_after_document  # type: ignore[method-assign]
+                first_service.reconciler.repo.add_candidate = fail_candidate  # type: ignore[method-assign]
                 with pytest.raises(SourceIngestionError, match="history read failed"):
                     await first_service.ingest(connector)
 
@@ -246,13 +246,14 @@ def test_retry_heals_document_committed_before_candidate_without_advancing_curso
                 candidates_after_failure = (
                     await session.execute(select(ContentCandidate))
                 ).scalars().all()
-                assert len(documents_after_failure) == 1
+                assert documents_after_failure == []
                 assert candidates_after_failure == []
 
                 retry = await TelegramSourceIngestionService(session, gateway=gateway).ingest(
                     connector
                 )
-                assert retry.documents_created == 1
+                assert retry.documents_created == 2
+                assert retry.candidates_created == 2
                 assert telegram_cursor_message_id(connector) == 102
                 assert telegram_backlog_hint(connector) is False
                 documents = (
