@@ -79,6 +79,51 @@
   line-height: 1.45;
 }
 
+.suggested-post-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 16%, transparent);
+}
+
+.suggested-post-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.suggested-post-actions label {
+  display: grid;
+  gap: 5px;
+}
+
+.suggested-post-actions label > span,
+.suggested-post-actions small {
+  color: var(--tg-theme-hint-color, #94a3b8);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.suggested-post-actions input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 25%, transparent);
+  border-radius: 8px;
+  padding: 8px 9px;
+  background: color-mix(in srgb, var(--tg-theme-bg-color, #0b1020) 72%, transparent);
+  color: inherit;
+}
+
+.suggested-post-action-error {
+  border-radius: 8px;
+  padding: 8px 9px;
+  color: #ef4444;
+  background: color-mix(in srgb, #ef4444 9%, transparent);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
 .suggested-post-details {
   margin-top: 7px;
   color: var(--tg-theme-hint-color, #94a3b8);
