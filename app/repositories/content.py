@@ -5,7 +5,7 @@ from typing import Any, Mapping
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.content import PostDocument
+from app.domain.content import PostDocument, validate_native_document_capabilities
 from app.domain.content.models import ContentItem, ContentRevision, MediaAsset
 from app.services.content import document_from_legacy_payload
 
@@ -15,9 +15,10 @@ class ContentNotFoundError(LookupError):
 
 
 def _document_dict(document: PostDocument | Mapping[str, Any]) -> dict[str, Any]:
-    if isinstance(document, PostDocument):
-        return document.to_dict()
-    return PostDocument.from_dict(document).to_dict()
+    doc = document if isinstance(document, PostDocument) else PostDocument.from_dict(document)
+    doc.validate()
+    validate_native_document_capabilities(doc)
+    return doc.to_dict()
 
 
 class ContentRepo:

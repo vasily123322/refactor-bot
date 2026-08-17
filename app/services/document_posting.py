@@ -5,7 +5,11 @@ from typing import Any
 
 from loguru import logger
 
-from app.domain.content import PostDocument
+from app.domain.content import (
+    PostDocument,
+    UnsupportedPostDocumentCapabilityError,
+    validate_native_document_capabilities,
+)
 from app.domain.models import PostTask
 from app.services.posting import PostingService
 from app.services.rich_media_assets import RichMediaAssetError, RichMediaAssetResolver
@@ -141,6 +145,10 @@ class DocumentPostingService(PostingService):
         value. A boolean explicitly overrides delivery silence for either path so
         canonical runtime intent can stay outside the immutable content document.
         """
+        try:
+            validate_native_document_capabilities(document)
+        except UnsupportedPostDocumentCapabilityError as exc:
+            raise TelegramRenderError(str(exc)) from exc
         render_document = await self._resolve_media_assets(
             document,
             asset_channel_id=asset_channel_id,
