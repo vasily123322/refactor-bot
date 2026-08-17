@@ -14,6 +14,7 @@ from .settings import router as settings_commands
 from .admin import router as admin_commands
 from .tz import router as tz_commands
 from .sources import router as sources_commands
+from .telegram_suggested_posts import router as telegram_suggested_posts_commands
 from .moderation import router as moderation_commands
 from .ai_result_actions import router as ai_result_actions_commands
 from app.core.settings_channel_access import SettingsChannelOwnerMiddleware
@@ -32,6 +33,7 @@ main_router.include_router(content_plan_commands)
 main_router.include_router(settings_commands)
 main_router.include_router(admin_commands)
 main_router.include_router(tz_commands)
+main_router.include_router(telegram_suggested_posts_commands)
 main_router.include_router(sources_commands)
 main_router.include_router(moderation_commands)
 main_router.include_router(ai_editor_commands)
