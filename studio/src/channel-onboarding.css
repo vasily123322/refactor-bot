@@ -1,0 +1,34 @@
+.channel-onboarding-control {
+  margin-top: 7px;
+}
+
+.channel-onboarding-button {
+  border: 1px dashed var(--tg-theme-hint-color, #64748b);
+}
+
+.channel-onboarding-message {
+  display: block;
+  padding: 6px 9px 0;
+  color: var(--tg-theme-hint-color, #94a3b8);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.channel-onboarding-success {
+  color: #22c55e;
+}
+
+.channel-onboarding-error {
+  color: #ef4444;
+}
+
+@media (max-width: 720px) {
+  .channel-onboarding-control {
+    margin-top: 6px;
+  }
+
+  .channel-onboarding-button {
+    width: auto;
+    min-width: max-content;
+  }
+}

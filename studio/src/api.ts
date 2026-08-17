@@ -1,3 +1,7 @@
+import type {
+  ChannelOnboardingPrepare,
+  ChannelOnboardingStatus,
+} from './channelOnboardingFlow';
 import { getRawInitData } from './telegram';
 import type {
   Channel,
@@ -213,6 +217,18 @@ export type SourceWorkerHealthView = {
 export const studioApi = {
   me: () => request<StudioUser>('/api/studio/me'),
   channels: () => request<Channel[]>('/api/studio/channels'),
+  prepareChannelOnboarding: () =>
+    request<ChannelOnboardingPrepare>('/api/studio/channel-onboarding/prepare', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  channelOnboardingStatus: (requestId: number) =>
+    request<ChannelOnboardingStatus>(`/api/studio/channel-onboarding/${requestId}`),
+  cancelChannelOnboarding: (requestId: number) =>
+    request<ChannelOnboardingStatus>(
+      `/api/studio/channel-onboarding/${requestId}/cancel`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
   content: (channelId: number) =>
     request<ContentSummary[]>(`/api/studio/channels/${channelId}/content?limit=100`),
   contentItem: (channelId: number, contentId: number) =>

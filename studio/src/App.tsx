@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AIStudioPanel } from './AIStudioPanel';
 import { StudioApiError, studioApi } from './api';
+import { ChannelOnboardingControl } from './ChannelOnboardingControl';
 import { DRAFT_AUTOSAVE_DELAY_MS, isCurrentDraftSave } from './draftAutosave';
 import {
   isEditorDocumentDirty,
@@ -54,6 +55,7 @@ function Sidebar({
   activeView,
   onSelectChannel,
   onView,
+  onChannelsChanged,
 }: {
   user: StudioUser | null;
   channels: Channel[];
@@ -61,6 +63,7 @@ function Sidebar({
   activeView: StudioView;
   onSelectChannel: (id: number) => void;
   onView: (view: StudioView) => void;
+  onChannelsChanged: () => Promise<void>;
 }) {
   return (
     <aside className="sidebar">
@@ -125,6 +128,7 @@ function Sidebar({
           </button>
         ))}
       </div>
+      <ChannelOnboardingControl onConnected={onChannelsChanged} />
     </aside>
   );
 }
@@ -168,6 +172,11 @@ export default function App() {
   const loadItems = useCallback(async (channelId: number) => {
     const rows = await studioApi.content(channelId);
     setItems(rows);
+  }, []);
+
+  const refreshChannels = useCallback(async () => {
+    const nextChannels = await studioApi.channels();
+    setChannels(nextChannels);
   }, []);
 
   const installEditorDocument = useCallback(
@@ -462,6 +471,7 @@ export default function App() {
           activeView={view}
           onSelectChannel={selectChannel}
           onView={setView}
+          onChannelsChanged={refreshChannels}
         />
 
         {view === 'planner' ? (
