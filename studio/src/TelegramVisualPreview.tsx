@@ -1,4 +1,5 @@
 import './rich-collections.css';
+import './telegram-inline-keyboard.css';
 
 import { richCaptionPreview, type RichCaptionSource } from './richCaption';
 import { richCollectionVisualModel } from './richCollections';
@@ -6,6 +7,7 @@ import { richListItems, richListItemPreview } from './richListItems';
 import { richMediaVisualBadges } from './richMediaOptions';
 import { canAuthorNestedBlocks, nestedBlocksState } from './richNestedBlocks';
 import { telegramDeliverySettings } from './telegramDeliverySettings';
+import { telegramInlineKeyboard } from './telegramInlineKeyboard';
 import type { Channel, PostBlock, PostDocument, RichSegmentValue } from './types';
 import { documentText } from './types';
 
@@ -187,6 +189,7 @@ export function TelegramVisualPreview({
 }) {
   const text = documentText(document) || 'Начните писать пост…';
   const delivery = telegramDeliverySettings(document);
+  const keyboard = telegramInlineKeyboard(document);
   const deliveryFlags = [
     delivery.silent ? '🔕 без уведомления' : null,
     delivery.protectContent ? '🔒 защищено' : null,
@@ -214,6 +217,21 @@ export function TelegramVisualPreview({
               <div className="telegram-text">{text}</div>
             )}
             <div className="telegram-meta">сейчас · 👁 1</div>
+            {keyboard.kind === 'editable' && keyboard.rows.length > 0 ? (
+              <div className="visual-inline-keyboard">
+                {keyboard.rows.map((row, rowIndex) => (
+                  <div className="visual-inline-keyboard-row" key={`preview-keyboard-row:${rowIndex}`}>
+                    {row.map((button, buttonIndex) => (
+                      <span className="visual-inline-keyboard-button" key={`${rowIndex}:${buttonIndex}:${button.text}`}>
+                        {button.text}
+                      </span>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            ) : keyboard.kind === 'invalid' ? (
+              <small className="rich-media-warning">Keyboard некорректен · exact preview</small>
+            ) : null}
           </div>
         </article>
       </div>

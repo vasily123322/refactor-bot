@@ -1,0 +1,102 @@
+.telegram-inline-keyboard {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle, #e5e7eb);
+  border-radius: 10px;
+}
+
+.telegram-inline-keyboard-head,
+.telegram-inline-keyboard-row-actions,
+.telegram-inline-keyboard-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.telegram-inline-keyboard-head {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.telegram-inline-keyboard-head > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.telegram-inline-keyboard-head small,
+.telegram-inline-keyboard-empty,
+.telegram-inline-keyboard-label small {
+  color: var(--text-muted, #6b7280);
+  font-size: 11px;
+}
+
+.telegram-inline-keyboard-rows {
+  display: grid;
+  gap: 8px;
+}
+
+.telegram-inline-keyboard-row {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle, #e5e7eb);
+  border-radius: 8px;
+}
+
+.telegram-inline-keyboard-row-actions {
+  flex-wrap: wrap;
+}
+
+.telegram-inline-keyboard-row-actions strong {
+  margin-right: auto;
+  font-size: 12px;
+}
+
+.telegram-inline-keyboard-buttons {
+  display: grid;
+  gap: 5px;
+}
+
+.telegram-inline-keyboard-label {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  justify-items: start;
+  text-align: left;
+}
+
+.telegram-inline-keyboard-label strong,
+.telegram-inline-keyboard-label small {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.visual-inline-keyboard {
+  display: grid;
+  gap: 3px;
+  margin-top: 6px;
+}
+
+.visual-inline-keyboard-row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 3px;
+}
+
+.visual-inline-keyboard-button {
+  min-width: 0;
+  padding: 5px 4px;
+  border-radius: 5px;
+  background: #e5e7eb;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  font-size: 8px;
+  font-weight: 600;
+}
