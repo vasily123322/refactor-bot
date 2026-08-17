@@ -148,7 +148,7 @@ class SourcesRepo:
         return result.scalar_one_or_none()
 
     async def add_candidate(self, row: ContentCandidate) -> ContentCandidate:
-        """Stage a content candidate and assign its identity without committing."""
+        """Stage a source document and assign its identity without committing."""
         self.session.add(row)
         await self.session.flush()
         return row
