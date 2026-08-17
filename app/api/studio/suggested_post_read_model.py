@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel
 
@@ -194,12 +194,12 @@ def _native_status(
         lifecycle = _mapping(metadata.get("telegram_suggested_post_lifecycle"))
         event = _text(lifecycle.get("event")) if lifecycle is not None else None
         if event in _KNOWN_NATIVE_STATUSES:
-            return event  # type: ignore[return-value]
+            return cast(SuggestedPostNativeStatus, event)
         return "unknown"
 
     state = _text(info.get("state")) if info is not None else None
     if state in _INITIAL_NATIVE_STATUSES:
-        return state  # type: ignore[return-value]
+        return cast(SuggestedPostNativeStatus, state)
     return "unknown"
 
 
@@ -229,10 +229,13 @@ def project_suggested_post_inbox(
     declined_payload = _event_payload(raw, "declined")
     refunded_payload = _event_payload(raw, "refunded")
 
+    # Prefer the current lifecycle payload. Once an approval is known, retain its
+    # business terms through later paid/refunded events instead of reviving an
+    # older proposal price from SuggestedPostInfo.
     price = _first_money(
-        info.get("price") if info is not None else None,
         lifecycle_payload.get("price") if lifecycle_payload is not None else None,
         approved_payload.get("price") if approved_payload is not None else None,
+        info.get("price") if info is not None else None,
         approval_failed_payload.get("price")
         if approval_failed_payload is not None
         else None,
@@ -254,18 +257,20 @@ def project_suggested_post_inbox(
     sender = _mapping(raw.get("telegram_sender"))
     sender_user = _mapping(sender.get("user")) if sender is not None else None
 
+    # An approved send date is newer evidence than the initial proposal date; the
+    # initial SuggestedPostInfo remains the fallback for a still-pending proposal.
     proposed_send_date = _first_timestamp(
-        info.get("send_date") if info is not None else None,
         approved_payload.get("send_date") if approved_payload is not None else None,
         lifecycle_payload.get("send_date") if lifecycle_payload is not None else None,
+        info.get("send_date") if info is not None else None,
     )
 
-    decline_payload = declined_payload
-    if decline_payload is None and native_status == "declined":
-        decline_payload = lifecycle_payload
-    refund_payload = refunded_payload
-    if refund_payload is None and native_status == "refunded":
-        refund_payload = lifecycle_payload
+    decline_payload = declined_payload or (
+        lifecycle_payload if native_status == "declined" else None
+    )
+    refund_payload = refunded_payload or (
+        lifecycle_payload if native_status == "refunded" else None
+    )
 
     return SuggestedPostInboxView(
         native_status=native_status,
