@@ -27,13 +27,15 @@ const knownStatuses = new Set<SuggestedPostNativeStatus>([
 ]);
 
 function safeStatus(value: unknown): SuggestedPostNativeStatus {
-  return typeof value === 'string' && knownStatuses.has(value as SuggestedPostNativeStatus)
-    ? value as SuggestedPostNativeStatus
-    : 'unknown';
+  if (typeof value === 'string' && knownStatuses.has(value as SuggestedPostNativeStatus)) {
+    return value as SuggestedPostNativeStatus;
+  }
+  return 'unknown';
 }
 
 function safeCommercialKind(value: unknown): SuggestedPostCommercialKind {
-  return value === 'paid' || value === 'free' || value === 'unknown' ? value : 'unknown';
+  if (value === 'paid' || value === 'free' || value === 'unknown') return value;
+  return 'unknown';
 }
 
 function personLabel(person: SuggestedPostPersonView | null | undefined): string | null {
