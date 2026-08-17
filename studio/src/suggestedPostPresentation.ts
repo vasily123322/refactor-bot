@@ -1,4 +1,5 @@
 import type {
+  ContentCandidateView,
   SuggestedPostCommercialKind,
   SuggestedPostMoneyView,
   SuggestedPostNativeStatus,
@@ -126,4 +127,15 @@ export function suggestedPostPresentation(
     priceLabel,
     paymentLabel,
   };
+}
+
+export function candidateInboxPrimaryText(candidate: ContentCandidateView): string {
+  return suggestedPostPresentation(candidate.suggested_post)
+    ? candidate.excerpt
+    : candidate.summary || candidate.excerpt;
+}
+
+export function suggestedPostEnrichmentSummary(candidate: ContentCandidateView): string | null {
+  if (!suggestedPostPresentation(candidate.suggested_post)) return null;
+  return candidate.summary || null;
 }
