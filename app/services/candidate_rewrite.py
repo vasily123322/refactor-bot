@@ -105,16 +105,16 @@ def candidate_rewrite_input_hash(
     reuse_policy: str,
     input_variant: str | None = None,
 ) -> str:
-    material = "\0".join(
-        [
-            str(document.content_hash or ""),
-            str(document.title or ""),
-            str(document.source_url or ""),
-            str(candidate.suggested_action or ""),
-            str(reuse_policy),
-            str(input_variant or ""),
-        ]
-    )
+    parts = [
+        str(document.content_hash or ""),
+        str(document.title or ""),
+        str(document.source_url or ""),
+        str(candidate.suggested_action or ""),
+        str(reuse_policy),
+    ]
+    if input_variant:
+        parts.append(str(input_variant))
+    material = "\0".join(parts)
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
