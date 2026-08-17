@@ -419,6 +419,7 @@ export function InboxPanel({
                   {score && <span className="candidate-policy">score {score}</span>}
                 </div>
                 <SuggestedPostProvenance
+                  candidateId={candidate.id}
                   suggestedPost={candidate.suggested_post}
                   candidateStatus={candidate.status}
                 />
