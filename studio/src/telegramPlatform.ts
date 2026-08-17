@@ -7,6 +7,8 @@ export type TelegramMiniAppCapabilities = Readonly<{
   fullscreen: boolean;
   safeArea: boolean;
   contentSafeArea: boolean;
+  sharePreparedMessage: boolean;
+  downloadFile: boolean;
   deviceStorage: boolean;
   secureStorage: boolean;
   requestChat: boolean;
@@ -69,6 +71,8 @@ export function telegramCapabilitiesForVersion(
     fullscreen: atLeast8,
     safeArea: atLeast8,
     contentSafeArea: atLeast8,
+    sharePreparedMessage: atLeast8,
+    downloadFile: atLeast8,
     deviceStorage: atLeast9,
     secureStorage: atLeast9,
     requestChat: isTelegramMiniAppVersionAtLeast(normalized, '9.6'),
