@@ -5,6 +5,9 @@ from datetime import datetime
 
 from loguru import logger
 
+from app.services.legacy_mixed_time_views_autodelete import (
+    LegacyMixedTimeViewsAutodeleteObserver,
+)
 from app.services.publication_autodelete_views import PublicationAutodeleteViewsSyncConflict
 from app.services.publication_autodelete_views_composed import (
     PublicationAutodeleteViewsComposedService,
@@ -20,6 +23,11 @@ class PublicationAutodeleteViewsPinForwardWorker(PublicationAutodeleteViewsForwa
     but never this combined fact. `repeat_views_pin_forward_available` opens only after this
     exact worker starts successfully with plain repeat+views, pin, forward and the dedicated
     combined construction mode all enabled.
+
+    Legacy mixed time+views intent is not admitted to the canonical views service. A
+    separate observer runs on this worker's already-started views polling cadence and
+    delegates threshold winners to the historical shared mixed DELETE ledger, preserving
+    the same timer/views winner election and no-replay generation.
     """
 
     def __init__(
@@ -30,6 +38,12 @@ class PublicationAutodeleteViewsPinForwardWorker(PublicationAutodeleteViewsForwa
     ) -> None:
         super().__init__(*args, **kwargs)
         self.allow_repeat_views_pin_forward = bool(allow_repeat_views_pin_forward)
+        self._legacy_mixed_views_observer = LegacyMixedTimeViewsAutodeleteObserver(
+            view_source=self.view_source,
+            delete_provider=self.delete_provider,
+            session_factory=self.session_factory,
+            batch_size=self.batch_size,
+        )
 
     @property
     def repeat_views_pin_forward_available(self) -> bool:
@@ -46,6 +60,27 @@ class PublicationAutodeleteViewsPinForwardWorker(PublicationAutodeleteViewsForwa
         *,
         now: datetime | None = None,
     ) -> PublicationAutodeleteViewsWorkerTick:
+        # Mixed intent remains outside PublicationAutodeleteViewsComposedService.
+        # Observe it separately, but race the fallback timer through exactly the
+        # same LegacyTimeViewsDeleteActionLedger used by the scheduler.
+        mixed_tick = await self._legacy_mixed_views_observer.run_once()
+        if (
+            mixed_tick.delete_winners
+            or mixed_tick.already_handled
+            or mixed_tick.failures
+        ):
+            logger.info(
+                "Legacy mixed views observer tick selected={} observed={} below={} "
+                "winners={} handled={} unavailable={} failures={}",
+                mixed_tick.selected,
+                mixed_tick.observed,
+                mixed_tick.below_threshold,
+                mixed_tick.delete_winners,
+                mixed_tick.already_handled,
+                mixed_tick.unavailable,
+                mixed_tick.failures,
+            )
+
         current = _utc(now)
         batch = await self._select(now=current)
 
