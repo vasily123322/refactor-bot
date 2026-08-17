@@ -1,0 +1,32 @@
+.rich-media-options {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.rich-media-option-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.rich-media-option-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.rich-media-option-field {
+  display: grid;
+  gap: 4px;
+}
+
+.rich-media-option-field > span,
+.rich-media-option-note {
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+}
+
+.rich-media-option-field input {
+  width: 100%;
+}

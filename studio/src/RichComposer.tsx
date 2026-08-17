@@ -8,12 +8,14 @@ import {
 } from './api';
 import { MapBlockEditor } from './MapBlockEditor';
 import { MediaCollectionEditor } from './MediaCollectionEditor';
+import { RichMediaOptionsEditor } from './RichMediaOptionsEditor';
 import {
   isRichCollectionBlockType,
   newRichCollectionBlock,
   RICH_COLLECTION_BLOCK_OPTIONS,
 } from './richCollections';
 import { mediaAssetBlockPatch, mediaAssetOptionLabel } from './richMediaAssets';
+import { richMediaAssetChangeCleanupPatch } from './richMediaOptions';
 import { DEFAULT_RICH_MAP } from './richMap';
 import { RichTextField } from './RichTextField';
 import type { PostBlock, PostDocument, RichSegmentValue } from './types';
@@ -127,6 +129,7 @@ function BlockEditor({
 }) {
   const title = BLOCK_OPTIONS.find(([type]) => type === block.type)?.[1] ?? block.type;
   const selectedAssetId = Number(block.asset_id || 0);
+  const selectedAsset = assets.find((candidate) => candidate.id === selectedAssetId) ?? null;
 
   return (
     <article className={`rich-block rich-block-${block.type}`}>
@@ -269,7 +272,10 @@ function BlockEditor({
                 onChange={(event) => {
                   const assetId = Number(event.target.value || 0);
                   const asset = assets.find((candidate) => candidate.id === assetId) ?? null;
-                  onPatch(mediaAssetBlockPatch(asset));
+                  onPatch({
+                    ...mediaAssetBlockPatch(asset),
+                    ...richMediaAssetChangeCleanupPatch(asset?.kind ?? 'photo'),
+                  });
                 }}
               >
                 <option value="">Выберите asset…</option>
@@ -287,6 +293,7 @@ function BlockEditor({
                 placeholder="Подпись (необязательно)"
               />
             </label>
+            <RichMediaOptionsEditor block={block} asset={selectedAsset} onPatch={onPatch} />
             {selectedAssetId === 0 && (
               <small className="rich-media-warning">Выберите asset перед exact preview / publish.</small>
             )}
