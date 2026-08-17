@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
+from app.domain.sources.models import ContentCandidate
 from app.repositories.sources_v2 import SourcesRepo
 from app.services.source_reconciliation import (
     SourceIngestionReconciliationService,
@@ -49,7 +51,10 @@ def test_reconciliation_fails_closed_if_document_routing_drifts_from_connector()
                             update_mode=SourceProjectionUpdateMode.LIFECYCLE,
                         ),
                     )
-                assert first.candidate.channel_id == 81
+                candidate = (
+                    await session.execute(select(ContentCandidate))
+                ).scalar_one()
+                assert candidate.channel_id == 81
         finally:
             await engine.dispose()
 
