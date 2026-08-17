@@ -6,7 +6,9 @@ import {
   mediaAssetOptionLabel,
   mediaCollectionItem,
   mediaCollectionItems,
+  mediaCollectionItemWithAsset,
   moveMediaCollectionItem,
+  patchMediaCollectionItem,
 } from './richMediaAssets';
 
 const asset: MediaAssetView = {
@@ -22,6 +24,16 @@ const asset: MediaAssetView = {
   duration_seconds: 12,
   size_bytes: 123456,
   created_at: '2026-08-09T15:00:00Z',
+};
+
+const animationAsset: MediaAssetView = {
+  ...asset,
+  id: 43,
+  kind: 'animation',
+  label: 'Loop',
+  width: 640,
+  height: 640,
+  duration_seconds: 5,
 };
 
 describe('Rich media asset document boundary', () => {
@@ -46,25 +58,106 @@ describe('Rich media asset document boundary', () => {
     expect(JSON.stringify(mediaCollectionItem(asset))).not.toContain('https');
   });
 
-  it('sanitizes malformed collection input', () => {
-    expect(mediaCollectionItems([
-      { type: 'media', asset_id: 3, kind: 'photo', storage_url: 'https://secret.invalid/a' },
-      { media_asset_id: '4', media_type: 'video' },
+  it('preserves safe renderer options while stripping transport and unsupported fields', () => {
+    const items = mediaCollectionItems([
+      {
+        type: 'media',
+        asset_id: 3,
+        kind: 'photo',
+        storage_url: 'https://secret.invalid/a',
+        has_spoiler: true,
+        duration: 99,
+        caption: [{ text: 'Photo', marks: ['bold'] }],
+      },
+      {
+        media_asset_id: '4',
+        media_type: 'video',
+        telegram_file_id: 'secret-file-id',
+        supports_streaming: true,
+        duration: '12',
+        width: 1280,
+        height: 720,
+        performer: 'ignored',
+      },
       { asset_id: 0, kind: 'photo' },
       null,
-    ])).toEqual([
-      { type: 'media', asset_id: 3, kind: 'photo' },
-      { type: 'media', asset_id: 4, kind: 'video' },
     ]);
+
+    expect(items).toEqual([
+      {
+        type: 'media',
+        asset_id: 3,
+        kind: 'photo',
+        caption: [{ text: 'Photo', marks: ['bold'] }],
+        has_spoiler: true,
+      },
+      {
+        type: 'media',
+        asset_id: 4,
+        kind: 'video',
+        supports_streaming: true,
+        width: 1280,
+        height: 720,
+        duration: 12,
+      },
+    ]);
+    const serialized = JSON.stringify(items);
+    expect(serialized).not.toContain('secret.invalid');
+    expect(serialized).not.toContain('secret-file-id');
+    expect(serialized).not.toContain('performer');
   });
 
-  it('reorders without mutating the original array', () => {
-    const items = [
-      { type: 'media' as const, asset_id: 1, kind: 'photo' },
-      { type: 'media' as const, asset_id: 2, kind: 'video' },
-    ];
+  it('resets asset-bound metadata while preserving compatible presentation options on replace', () => {
+    const current = mediaCollectionItems([{
+      type: 'media',
+      asset_id: 42,
+      kind: 'video',
+      has_spoiler: true,
+      supports_streaming: true,
+      width: 1920,
+      height: 1080,
+      duration: 30,
+      caption: 'Keep caption',
+    }])[0];
+
+    expect(mediaCollectionItemWithAsset(current, animationAsset)).toEqual({
+      type: 'media',
+      asset_id: 43,
+      kind: 'animation',
+      caption: 'Keep caption',
+      has_spoiler: true,
+    });
+  });
+
+  it('patches one item through the same safe parser boundary', () => {
+    const current = mediaCollectionItem(asset);
+    const next = patchMediaCollectionItem(current, {
+      has_spoiler: true,
+      supports_streaming: true,
+      duration: 15,
+      storage_url: 'https://secret.invalid/b',
+    });
+    expect(next).toEqual({
+      type: 'media',
+      asset_id: 42,
+      kind: 'video',
+      has_spoiler: true,
+      supports_streaming: true,
+      duration: 15,
+    });
+    expect(JSON.stringify(next)).not.toContain('secret.invalid');
+  });
+
+  it('reorders without mutating or stripping item options', () => {
+    const items = mediaCollectionItems([
+      { type: 'media', asset_id: 1, kind: 'photo', has_spoiler: true },
+      { type: 'media', asset_id: 2, kind: 'video', duration: 12 },
+    ]);
     const moved = moveMediaCollectionItem(items, 0, 1);
-    expect(moved.map((item) => item.asset_id)).toEqual([2, 1]);
-    expect(items.map((item) => item.asset_id)).toEqual([1, 2]);
+    expect(moved).toEqual([
+      { type: 'media', asset_id: 2, kind: 'video', duration: 12 },
+      { type: 'media', asset_id: 1, kind: 'photo', has_spoiler: true },
+    ]);
+    expect(items[0]).toEqual({ type: 'media', asset_id: 1, kind: 'photo', has_spoiler: true });
   });
 });

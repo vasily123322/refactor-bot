@@ -1,0 +1,20 @@
+.rich-media-collection-card {
+  display: grid;
+  gap: 6px;
+}
+
+.rich-media-collection-options {
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle, #e5e7eb);
+  border-radius: 8px;
+}
+
+.rich-media-collection-options > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+}
+
+.rich-media-collection-options[open] > summary {
+  margin-bottom: 8px;
+}
