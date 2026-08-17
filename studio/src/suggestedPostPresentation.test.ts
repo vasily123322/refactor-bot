@@ -5,6 +5,8 @@ import {
   loadCurrentStructuredRewritePreviews,
 } from './candidateRewriteAuthority';
 import {
+  candidateInboxPrimaryText,
+  suggestedPostEnrichmentSummary,
   suggestedPostMoneyLabel,
   suggestedPostPresentation,
 } from './suggestedPostPresentation';
@@ -124,6 +126,20 @@ describe('Suggested Post origin and native lifecycle presentation', () => {
     expect(() => suggestedPostPresentation(malformed)).not.toThrow();
     expect(suggestedPostPresentation(malformed)?.status).toBe('unknown');
     expect(suggestedPostPresentation(malformed)?.statusLabel).toBe('Статус Telegram неизвестен');
+  });
+
+  it('keeps current reconciled source content primary after a native edit', () => {
+    const edited = {
+      ...candidate(),
+      excerpt: 'Edited native Suggested Post text',
+      summary: 'Older enrichment summary',
+    };
+    const ordinary = { ...edited, suggested_post: null };
+
+    expect(candidateInboxPrimaryText(edited)).toBe('Edited native Suggested Post text');
+    expect(suggestedPostEnrichmentSummary(edited)).toBe('Older enrichment summary');
+    expect(candidateInboxPrimaryText(ordinary)).toBe('Older enrichment summary');
+    expect(suggestedPostEnrichmentSummary(ordinary)).toBeNull();
   });
 
   it('is read-only presentation and performs no Telegram or Content request', () => {
