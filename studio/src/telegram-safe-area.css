@@ -1,0 +1,57 @@
+:root {
+  --studio-safe-top: max(
+    env(safe-area-inset-top, 0px),
+    var(--tg-safe-area-inset-top, 0px),
+    var(--tg-content-safe-area-inset-top, 0px),
+    var(--tg-viewport-safe-area-inset-top, 0px),
+    var(--tg-viewport-content-safe-area-inset-top, 0px)
+  );
+  --studio-safe-right: max(
+    env(safe-area-inset-right, 0px),
+    var(--tg-safe-area-inset-right, 0px),
+    var(--tg-content-safe-area-inset-right, 0px),
+    var(--tg-viewport-safe-area-inset-right, 0px),
+    var(--tg-viewport-content-safe-area-inset-right, 0px)
+  );
+  --studio-safe-bottom: max(
+    env(safe-area-inset-bottom, 0px),
+    var(--tg-safe-area-inset-bottom, 0px),
+    var(--tg-content-safe-area-inset-bottom, 0px),
+    var(--tg-viewport-safe-area-inset-bottom, 0px),
+    var(--tg-viewport-content-safe-area-inset-bottom, 0px)
+  );
+  --studio-safe-left: max(
+    env(safe-area-inset-left, 0px),
+    var(--tg-safe-area-inset-left, 0px),
+    var(--tg-content-safe-area-inset-left, 0px),
+    var(--tg-viewport-safe-area-inset-left, 0px),
+    var(--tg-viewport-content-safe-area-inset-left, 0px)
+  );
+}
+
+.sidebar {
+  padding-top: max(20px, var(--studio-safe-top));
+  padding-bottom: max(20px, var(--studio-safe-bottom));
+  padding-left: max(14px, var(--studio-safe-left));
+}
+
+.workspace {
+  padding-top: max(24px, var(--studio-safe-top));
+  padding-right: max(24px, var(--studio-safe-right));
+  padding-bottom: max(24px, var(--studio-safe-bottom));
+  padding-left: max(24px, var(--studio-safe-left));
+}
+
+.busy-indicator {
+  top: calc(10px + var(--studio-safe-top));
+  right: calc(10px + var(--studio-safe-right));
+}
+
+@media (max-width: 720px) {
+  .sidebar {
+    padding-top: max(12px, var(--studio-safe-top));
+    padding-right: max(10px, var(--studio-safe-right));
+    padding-bottom: max(8px, var(--studio-safe-bottom));
+    padding-left: max(10px, var(--studio-safe-left));
+  }
+}

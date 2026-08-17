@@ -9,6 +9,7 @@ import './rich.css';
 import './source-settings.css';
 import './sources.css';
 import './styles.css';
+import './telegram-safe-area.css';
 import { initTelegram } from './telegram';
 
 const root = ReactDOM.createRoot(document.getElementById('root')!);
