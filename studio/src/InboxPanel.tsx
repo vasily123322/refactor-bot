@@ -8,6 +8,10 @@ import {
   type RewritePreview,
 } from './candidateRewriteAuthority';
 import {
+  editCurrentStructuredRewrite,
+  type StructuredEditOperation,
+} from './candidateStructuredEdit';
+import {
   candidateMediaLabel,
   loadCandidateMedia,
   promoteCandidateMedia,
@@ -52,6 +56,13 @@ function scoreLabel(score: number | null): string | null {
 function mediaMap(rows: CandidateMediaView[]): Record<number, CandidateMediaView> {
   return Object.fromEntries(rows.map((row) => [row.candidate_id, row]));
 }
+
+const structuredEditLabels: Array<[StructuredEditOperation, string]> = [
+  ['shorten', 'Короче'],
+  ['expand', 'Подробнее'],
+  ['to_list', 'Списком'],
+  ['add_headings', 'Заголовки'],
+];
 
 export function InboxPanel({
   channel,
@@ -215,6 +226,37 @@ export function InboxPanel({
     });
   };
 
+  const editStructuredAI = (
+    candidate: ContentCandidateView,
+    operation: StructuredEditOperation,
+  ) => {
+    const preview = rewritePreviews[candidate.id];
+    if (!preview || preview.kind !== 'structured') return;
+    void run(`rewrite-ai-edit:${candidate.id}:${operation}`, async () => {
+      const result = await editCurrentStructuredRewrite(
+        channel!.id,
+        candidate.id,
+        preview.runId,
+        operation,
+      );
+      setRewritePreviews((current) => ({
+        ...current,
+        [candidate.id]: {
+          runId: result.run_id,
+          text: result.text,
+          model: result.model,
+          kind: 'structured',
+          document: result.document,
+        },
+      }));
+      setNotice(
+        result.reused_existing
+          ? `AI edit #${result.run_id}: использован тот же operation proposal`
+          : `AI edit #${result.run_id}: ${operation} · validated PostDocument`,
+      );
+    });
+  };
+
   const promoteMedia = (candidate: ContentCandidateView) =>
     run(`promote-media:${candidate.id}`, async () => {
       const asset = await promoteCandidateMedia(channel!.id, candidate.id);
@@ -335,10 +377,24 @@ export function InboxPanel({
                       {rewritePreview.model ? ` · ${rewritePreview.model}` : ''}
                     </small>
                     {rewritePreview.document ? (
-                      <details>
-                        <summary>Visual PostDocument preview</summary>
-                        <TelegramVisualPreview document={rewritePreview.document} channel={channel} />
-                      </details>
+                      <>
+                        <details>
+                          <summary>Visual PostDocument preview</summary>
+                          <TelegramVisualPreview document={rewritePreview.document} channel={channel} />
+                        </details>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                          {structuredEditLabels.map(([operation, label]) => (
+                            <button
+                              key={operation}
+                              className="button secondary compact"
+                              disabled={busyId !== null}
+                              onClick={() => editStructuredAI(candidate, operation)}
+                            >
+                              {busyId === `rewrite-ai-edit:${candidate.id}:${operation}` ? 'AI…' : label}
+                            </button>
+                          ))}
+                        </div>
+                      </>
                     ) : (
                       <p>{rewritePreview.text}</p>
                     )}
