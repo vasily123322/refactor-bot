@@ -5,6 +5,7 @@ import { richCollectionVisualModel } from './richCollections';
 import { richListItems, richListItemPreview } from './richListItems';
 import { richMediaVisualBadges } from './richMediaOptions';
 import { canAuthorNestedBlocks, nestedBlocksState } from './richNestedBlocks';
+import { telegramDeliverySettings } from './telegramDeliverySettings';
 import type { Channel, PostBlock, PostDocument, RichSegmentValue } from './types';
 import { documentText } from './types';
 
@@ -185,6 +186,11 @@ export function TelegramVisualPreview({
   channel: Channel | null;
 }) {
   const text = documentText(document) || 'Начните писать пост…';
+  const delivery = telegramDeliverySettings(document);
+  const deliveryFlags = [
+    delivery.silent ? '🔕 без уведомления' : null,
+    delivery.protectContent ? '🔒 защищено' : null,
+  ].filter(Boolean).join(' · ');
   return (
     <div className="phone-stage" aria-label="Предпросмотр Telegram">
       <div className="phone-header">
@@ -214,6 +220,7 @@ export function TelegramVisualPreview({
       <div className="preview-note">
         Visual preview помогает редактировать быстро. «В Telegram» отправляет exact preview через
         тот же renderer и Bot API, что production.
+        {deliveryFlags ? ` ${deliveryFlags}.` : ''}
       </div>
     </div>
   );

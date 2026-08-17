@@ -16,6 +16,7 @@ import { SourcesPanel } from './SourcesPanel';
 import { emitStudioHaptic } from './studioHaptics';
 import type { StudioView } from './studioNavigation';
 import { TelegramComposer } from './TelegramComposer';
+import { TelegramDeliverySettings } from './TelegramDeliverySettings';
 import { useTelegramDirtyClosingProtection } from './telegramDirtyClosingProtection';
 import { useTelegramStudioBackButton } from './telegramStudioBackButton';
 import { TelegramVisualPreview } from './TelegramVisualPreview';
@@ -577,6 +578,7 @@ export default function App() {
                 ) : (
                   <TelegramComposer document={document} onChange={editDocument} />
                 )}
+                <TelegramDeliverySettings document={document} onChange={editDocument} />
                 <footer className="editor-footer">
                   <span>
                     {text.length} UTF-16 единиц · {document.mode === 'rich' ? 'native Rich Message blocks' : 'Telegram text limit: 4096'}
