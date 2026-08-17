@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.studio.auth import StudioPrincipal, require_studio_principal
+from app.api.studio.candidate_structured_edit import router as structured_edit_router
 from app.api.studio.schemas import ContentDetailResponse
 from app.core.db import AsyncSessionLocal
 from app.repositories.channels import ChannelsRepo
@@ -20,6 +21,7 @@ from app.services.candidate_current_structured_rewrite import (
 
 
 router = APIRouter(prefix="/api/studio", tags=["inbox", "ai"])
+router.include_router(structured_edit_router)
 
 
 class CurrentStructuredRewriteResponse(BaseModel):
