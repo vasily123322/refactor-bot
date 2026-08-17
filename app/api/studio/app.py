@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.studio.auth import StudioPrincipal, require_studio_principal
 from app.api.studio.candidate_actions import router as candidate_actions_router
 from app.api.studio.candidate_media import router as candidate_media_router
+from app.api.studio.candidate_rewrite_authority import router as candidate_rewrite_authority_router
 from app.api.studio.channel_onboarding import router as channel_onboarding_router
 from app.api.studio.config import StudioConfig, studio_config
 from app.api.studio.media_assets import router as media_assets_router
@@ -99,6 +100,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
     app.include_router(sources_router)
     app.include_router(media_assets_router)
     app.include_router(candidate_actions_router)
+    app.include_router(candidate_rewrite_authority_router)
     app.include_router(candidate_media_router)
     app.include_router(source_media_assets_router)
     app.include_router(channel_onboarding_router)
