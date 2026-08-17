@@ -1,6 +1,7 @@
 import './rich-collections.css';
 
 import { richCollectionVisualModel } from './richCollections';
+import { richListItems, richListItemPreview } from './richListItems';
 import { richMediaVisualBadges } from './richMediaOptions';
 import type { Channel, PostBlock, PostDocument, RichSegmentValue } from './types';
 import { documentText } from './types';
@@ -79,15 +80,15 @@ function RichPreviewBlock({ block }: { block: PostBlock }) {
     case 'list':
       return (
         <ul className="visual-rich-list">
-          {(Array.isArray(block.items) ? block.items : []).map((item, index) => (
-            <li key={index}>
-              {typeof item === 'string'
-                ? item
-                : typeof item === 'object' && item !== null
-                  ? String((item as { content?: unknown; text?: unknown }).content ?? (item as { text?: unknown }).text ?? '')
-                  : String(item)}
-            </li>
-          ))}
+          {richListItems(block.items).map((item, index) => {
+            const preview = richListItemPreview(item);
+            return (
+              <li key={index}>
+                {preview.label ? <strong>{preview.label} </strong> : null}
+                {preview.text}
+              </li>
+            );
+          })}
         </ul>
       );
     case 'details':
