@@ -125,7 +125,7 @@ export function SuggestedPostProvenance({
             />
           </label>
           <small>
-            Одобрение использует текущую Telegram send date и не создаёт Studio schedule.
+            Studio не задаёт новый send_date: native timing остаётся под authority Telegram.
           </small>
           {actionError && <div className="suggested-post-action-error" role="alert">{actionError}</div>}
         </div>
