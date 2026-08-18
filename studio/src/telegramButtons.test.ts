@@ -34,6 +34,10 @@ function buttonProvider(options: { supported?: boolean } = {}) {
     show: availableSync(() => undefined),
     hide: availableSync(() => undefined),
     setText: availableSync((_text: string) => undefined),
+    enable: availableSync(() => undefined),
+    disable: availableSync(() => undefined),
+    showLoader: availableSync(() => undefined),
+    hideLoader: availableSync(() => undefined),
     setPosition: availableSync((_position: 'left' | 'right' | 'top' | 'bottom') => undefined),
   };
 
@@ -80,6 +84,8 @@ describe('Telegram native button bridge', () => {
     expect(release).not.toBeNull();
     expect(main.provider.mount).toHaveBeenCalledTimes(1);
     expect(main.provider.setText).toHaveBeenCalledWith('Publish');
+    expect(main.provider.enable).toHaveBeenCalledTimes(1);
+    expect(main.provider.hideLoader).toHaveBeenCalledTimes(1);
     expect(main.provider.onClick).toHaveBeenCalledWith(listener);
     expect(main.provider.show).toHaveBeenCalledTimes(1);
 
@@ -93,18 +99,37 @@ describe('Telegram native button bridge', () => {
     expect(main.provider.unmount).toHaveBeenCalledTimes(1);
   });
 
+  it('projects disabled and loading state through the owned MainButton binding', () => {
+    const { bridge, main } = bridgeWithProviders();
+
+    expect(bridge.bindMain('Preview', vi.fn(), {
+      enabled: false,
+      loading: true,
+    })).not.toBeNull();
+
+    expect(main.provider.disable).toHaveBeenCalledTimes(1);
+    expect(main.provider.enable).not.toHaveBeenCalled();
+    expect(main.provider.showLoader).toHaveBeenCalledTimes(1);
+    expect(main.provider.hideLoader).not.toHaveBeenCalled();
+  });
+
   it('replaces a React remount owner without leaking the previous listener', () => {
     const { bridge, main } = bridgeWithProviders();
     const first = vi.fn();
     const second = vi.fn();
 
     const releaseFirst = bridge.bindMain('Save', first)!;
-    const releaseSecond = bridge.bindMain('Save', second)!;
+    const releaseSecond = bridge.bindMain('Save', second, {
+      enabled: false,
+      loading: true,
+    })!;
 
     expect(main.removers[0]).toHaveBeenCalledTimes(1);
     expect(main.provider.unmount).toHaveBeenCalledTimes(1);
     expect(main.provider.mount).toHaveBeenCalledTimes(2);
     expect(main.provider.onClick).toHaveBeenCalledTimes(2);
+    expect(main.provider.disable).toHaveBeenCalledTimes(1);
+    expect(main.provider.showLoader).toHaveBeenCalledTimes(1);
 
     releaseFirst();
     expect(main.removers[1]).not.toHaveBeenCalled();
