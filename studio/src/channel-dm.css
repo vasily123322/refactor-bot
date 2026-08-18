@@ -32,13 +32,49 @@
 
 .channel-dm-facts,
 .channel-dm-authority-note,
-.channel-dm-details {
+.channel-dm-details,
+.channel-dm-composer small {
   font-size: 12px;
   color: var(--tg-theme-hint-color, #707579);
 }
 
-.channel-dm-authority-note {
+.channel-dm-authority-note,
+.channel-dm-delivery-state,
+.channel-dm-reply-error {
   margin: 0;
+}
+
+.channel-dm-composer {
+  display: grid;
+  gap: 7px;
+  padding-top: 4px;
+}
+
+.channel-dm-composer label {
+  font-weight: 700;
+}
+
+.channel-dm-composer textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+.channel-dm-composer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.channel-dm-delivery-state {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.channel-dm-delivery-unknown,
+.channel-dm-delivery-uncertain,
+.channel-dm-reply-error {
+  color: var(--tg-theme-destructive-text-color, #d14b4b);
 }
 
 .channel-dm-details summary {

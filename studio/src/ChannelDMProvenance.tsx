@@ -1,3 +1,4 @@
+import { ChannelDMReplyComposer } from './ChannelDMReplyComposer';
 import { channelDMPresentation } from './channelDMPresentation';
 import type { ChannelDMView } from './types';
 import './channel-dm.css';
@@ -5,9 +6,11 @@ import './channel-dm.css';
 export function ChannelDMProvenance({
   channelDM,
   candidateStatus,
+  candidateId,
 }: {
   channelDM: ChannelDMView | null | undefined;
   candidateStatus: string;
+  candidateId?: number;
 }) {
   const presentation = channelDMPresentation(channelDM);
   if (!presentation || !channelDM) return null;
@@ -43,9 +46,11 @@ export function ChannelDMProvenance({
       </div>
 
       <p className="channel-dm-authority-note">
-        Telegram provenance описывает входящее сообщение. Она не означает создание Content
-        и не отправляет ответ в Telegram.
+        Telegram provenance описывает входящее сообщение. Ответ отправляется только явной командой ниже;
+        native routing повторно выводится сервером из candidate/source/connector authority.
       </p>
+
+      {candidateId != null && <ChannelDMReplyComposer candidateId={candidateId} />}
 
       <details className="channel-dm-details">
         <summary>Telegram provenance</summary>
