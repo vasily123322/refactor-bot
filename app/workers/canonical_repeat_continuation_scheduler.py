@@ -18,6 +18,7 @@ from app.services.canonical_publication_delivery_authority import (
     canonical_publication_delivery_repeat_time_pin_started,
     canonical_publication_delivery_repeat_time_started,
     canonical_publication_delivery_repeat_views_forward_started,
+    canonical_publication_delivery_repeat_views_pin_forward_started,
     canonical_publication_delivery_repeat_views_pin_started,
     canonical_publication_delivery_repeat_views_started,
     canonical_publication_delivery_time_autodelete_started,
@@ -50,11 +51,11 @@ class Scheduler(RecoveryScheduler):
 
     Exact fixed-delay linked repeats may yield before the inherited legacy lease when a
     successfully started canonical repeat primary is live. Established non-destructive
-    profiles and proven repeat+time compositions remain eligible. Exact repeat+views plain,
-    pin and ordered-forward profiles may yield only while their dedicated started
-    capabilities are live. Scheduler admission performs no cutover mutation; canonical
-    primary remains the sole atomic handoff/claim owner. Combined views and time+views
-    remain on the inherited legacy path.
+    profiles, proven repeat+time compositions and the explicitly enabled repeat+views
+    lattice remain eligible. Every views composition requires its dedicated started fact;
+    the combined pin+forward profile additionally requires both sibling facts. Scheduler
+    admission performs no cutover mutation; canonical primary owns atomic handoff/claim.
+    Time+views remains intentionally on the inherited legacy path.
     """
 
     def __init__(
@@ -308,6 +309,29 @@ class Scheduler(RecoveryScheduler):
             and not proof.views_pin_forward_composed
             and runtime_options.get("autodelete_report") in (None, False)
         )
+        views_pin_forward_profile = (
+            runtime_keys.issubset(
+                {
+                    "silent",
+                    "pin_on",
+                    "forward_to",
+                    "autodelete_views",
+                    "autodelete_report",
+                }
+            )
+            and runtime_options.get("pin_on") is True
+            and "forward_to" in runtime_options
+            and isinstance(forward_value, list)
+            and bool(forward_value)
+            and positive_exact_views
+            and proof.time_autodelete_seconds is None
+            and proof.pin_on
+            and bool(proof.forward_channel_ids)
+            and tuple(proof.forward_channel_ids) == tuple(forward_value)
+            and not proof.autodelete_report
+            and proof.views_pin_forward_composed
+            and runtime_options.get("autodelete_report") in (None, False)
+        )
         if time_profile and not canonical_publication_delivery_repeat_time_started():
             return False
         if time_pin_profile and not canonical_publication_delivery_repeat_time_pin_started():
@@ -328,6 +352,11 @@ class Scheduler(RecoveryScheduler):
             and not canonical_publication_delivery_repeat_views_forward_started()
         ):
             return False
+        if (
+            views_pin_forward_profile
+            and not canonical_publication_delivery_repeat_views_pin_forward_started()
+        ):
+            return False
         if not (
             plain_profile
             or pin_profile
@@ -340,6 +369,7 @@ class Scheduler(RecoveryScheduler):
             or views_profile
             or views_pin_profile
             or views_forward_profile
+            or views_pin_forward_profile
         ):
             return False
         if (
@@ -354,10 +384,15 @@ class Scheduler(RecoveryScheduler):
             )
             or (
                 proof.views_autodelete_threshold is not None
-                and not (views_profile or views_pin_profile or views_forward_profile)
+                and not (
+                    views_profile
+                    or views_pin_profile
+                    or views_forward_profile
+                    or views_pin_forward_profile
+                )
             )
             or proof.autodelete_report
-            or proof.views_pin_forward_composed
+            or (proof.views_pin_forward_composed and not views_pin_forward_profile)
         ):
             return False
 
