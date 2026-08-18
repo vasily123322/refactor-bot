@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Protocol
 
-from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.sources import SourceConnector
-from app.infrastructure.repositories.channels import ChannelsRepo
-from app.infrastructure.repositories.sources_v2 import SourcesRepository
+from app.domain.sources.models import SourceConnector
+from app.repositories.channels import ChannelsRepo
+from app.repositories.sources_v2 import SourcesRepo
+
+
+class ChannelDMBot(Protocol):
+    async def get_chat(self, chat_id: int): ...
 
 
 class ChannelDMContextErrorCode(str, Enum):
@@ -35,16 +39,12 @@ class ChannelDMContext:
 
 
 class ChannelDMContextResolver:
-    """Resolve trusted routing for Telegram Channel Direct Messages.
+    """Resolve trusted routing for Telegram Channel Direct Messages only."""
 
-    This seam owns transport/routing verification only. Source reconciliation and
-    feature policy stay with their respective ingestion services.
-    """
-
-    def __init__(self, session: AsyncSession, bot: Bot) -> None:
-        self._bot = bot
-        self._channels = ChannelsRepo(session)
-        self._sources = SourcesRepository(session)
+    def __init__(self, session: AsyncSession, *, bot: ChannelDMBot) -> None:
+        self.bot = bot
+        self.channels = ChannelsRepo(session)
+        self.sources = SourcesRepo(session)
 
     async def resolve(
         self,
@@ -52,55 +52,47 @@ class ChannelDMContextResolver:
         direct_messages_chat_id: int,
         connector_kind: str,
     ) -> ChannelDMContext:
-        direct_chat = await self._bot.get_chat(direct_messages_chat_id)
-        if getattr(direct_chat, "is_direct_messages", None) is False:
+        chat = await self.bot.get_chat(int(direct_messages_chat_id))
+        if getattr(chat, "is_direct_messages", None) is False:
             raise ChannelDMContextRoutingError(
                 ChannelDMContextErrorCode.DIRECT_MESSAGES_CHAT_REQUIRED
             )
 
-        parent_chat = getattr(direct_chat, "parent_chat", None)
-        parent_chat_id = getattr(parent_chat, "id", None)
-        if parent_chat_id is None:
-            raise ChannelDMContextRoutingError(
-                ChannelDMContextErrorCode.PARENT_CHANNEL_REQUIRED
-            )
-        if getattr(parent_chat, "type", "channel") != "channel":
+        parent_chat = getattr(chat, "parent_chat", None)
+        parent_chat_id = int(getattr(parent_chat, "id", 0) or 0)
+        if parent_chat_id == 0 or getattr(parent_chat, "type", "channel") != "channel":
             raise ChannelDMContextRoutingError(
                 ChannelDMContextErrorCode.PARENT_CHANNEL_REQUIRED
             )
 
-        channel = await self._channels.get_by_chat_id(int(parent_chat_id))
+        channel = await self.channels.get_by_chat_id(parent_chat_id)
         if channel is None:
-            raise ChannelDMContextRoutingError(
-                ChannelDMContextErrorCode.CHANNEL_NOT_FOUND
-            )
+            raise ChannelDMContextRoutingError(ChannelDMContextErrorCode.CHANNEL_NOT_FOUND)
 
-        connectors = await self._sources.list_connectors(channel.id)
-        matches = [
+        connectors = [
             connector
-            for connector in connectors
+            for connector in await self.sources.list_connectors(int(channel.id))
             if connector.enabled
-            and connector.kind == connector_kind
+            and str(connector.kind) == str(connector_kind)
             and str(connector.value) == str(parent_chat_id)
         ]
-        if not matches:
+        if not connectors:
             raise ChannelDMContextRoutingError(
                 ChannelDMContextErrorCode.CONNECTOR_NOT_CONFIGURED
             )
-        if len(matches) != 1:
+        if len(connectors) != 1:
             raise ChannelDMContextRoutingError(
                 ChannelDMContextErrorCode.CONNECTOR_AMBIGUOUS
             )
 
-        connector = matches[0]
+        connector = connectors[0]
         if int(connector.channel_id) != int(channel.id):
             raise ChannelDMContextRoutingError(
                 ChannelDMContextErrorCode.CONNECTOR_CHANNEL_MISMATCH
             )
-
         return ChannelDMContext(
             direct_messages_chat_id=int(direct_messages_chat_id),
-            parent_chat_id=int(parent_chat_id),
+            parent_chat_id=parent_chat_id,
             channel_id=int(connector.channel_id),
             connector=connector,
         )
