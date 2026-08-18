@@ -35,6 +35,50 @@ export type ChannelDMReplyProposalResult = {
   reply_text: string;
 };
 
+export type ChannelDMReplyIntentOrigin = 'manual' | 'ai' | 'automation';
+export type ChannelDMReplyIntentState = 'pending_review' | 'dismissed' | 'stale' | 'consumed';
+
+export type ChannelDMReplyIntent = {
+  intent_id: number;
+  candidate_id: number;
+  reply_text: string;
+  origin: ChannelDMReplyIntentOrigin;
+  state: ChannelDMReplyIntentState;
+  is_current: boolean;
+  handoff_in_progress: boolean;
+  consumed_command_id: number | null;
+  created_at: string;
+  updated_at: string;
+  consumed_at: string | null;
+  dismissed_at: string | null;
+  stale_at: string | null;
+};
+
+export type ChannelDMReplyIntentList = {
+  candidate_id: number;
+  intents: ChannelDMReplyIntent[];
+};
+
+type ChannelDMReplyIntentBatchResult = {
+  candidates: ChannelDMReplyIntentList[];
+};
+
+export type ChannelDMReplyIntentWriteResult = {
+  intent: ChannelDMReplyIntent;
+  reused_existing: boolean;
+};
+
+export type ChannelDMReplyIntentSendResult = {
+  intent: ChannelDMReplyIntent;
+  command: {
+    command_id: number;
+    candidate_id: number;
+    state: ChannelDMReplyState;
+    error_class: string | null;
+    reused_existing: boolean;
+  };
+};
+
 export class ChannelDMReplyApiError extends Error {
   constructor(
     message: string,
@@ -54,6 +98,23 @@ export function channelDMReplyStatusLabel(state: ChannelDMReplyState): string {
     case 'failed': return 'Не отправлено';
     case 'uncertain': return 'Delivery status unknown';
     case 'pending': return 'Статус отправки уточняется';
+  }
+}
+
+export function channelDMReplyIntentStateLabel(state: ChannelDMReplyIntentState): string {
+  switch (state) {
+    case 'pending_review': return 'Ожидает проверки';
+    case 'dismissed': return 'Отклонено';
+    case 'stale': return 'Устарело после изменения входящего DM';
+    case 'consumed': return 'Передано в явную команду отправки';
+  }
+}
+
+export function channelDMReplyIntentOriginLabel(origin: ChannelDMReplyIntentOrigin): string {
+  switch (origin) {
+    case 'manual': return 'Ручной черновик';
+    case 'ai': return 'AI proposal';
+    case 'automation': return 'Automation proposal';
   }
 }
 
@@ -170,6 +231,65 @@ export function requestChannelDMReplyLifecycle(
   });
 }
 
+type IntentWaiter = {
+  resolve: (result: ChannelDMReplyIntentList) => void;
+  reject: (reason: unknown) => void;
+};
+
+let intentWaiters = new Map<number, IntentWaiter[]>();
+let intentBatchScheduled = false;
+
+async function flushChannelDMReplyIntentBatch(): Promise<void> {
+  const pending = intentWaiters;
+  intentWaiters = new Map<number, IntentWaiter[]>();
+  intentBatchScheduled = false;
+  const candidateIds = [...pending.keys()];
+  if (candidateIds.length === 0) return;
+
+  try {
+    const response = await fetch('/api/studio/channel-dm-reply-intents/batch', {
+      method: 'POST',
+      headers: studioHeaders(),
+      body: JSON.stringify({ candidate_ids: candidateIds }),
+    });
+    if (!response.ok) {
+      throw await responseError(response, 'Channel DM reply intents unavailable');
+    }
+    const payload = (await response.json()) as ChannelDMReplyIntentBatchResult;
+    const byCandidate = new Map(
+      payload.candidates.map((candidate) => [candidate.candidate_id, candidate]),
+    );
+    for (const [candidateId, waiters] of pending) {
+      const result = byCandidate.get(candidateId);
+      if (!result) {
+        const error = new ChannelDMReplyApiError('Channel DM reply intents unavailable', 409);
+        waiters.forEach((waiter) => waiter.reject(error));
+        continue;
+      }
+      waiters.forEach((waiter) => waiter.resolve(result));
+    }
+  } catch (reason) {
+    for (const waiters of pending.values()) {
+      waiters.forEach((waiter) => waiter.reject(reason));
+    }
+  }
+}
+
+export function requestChannelDMReplyIntents(candidateId: number): Promise<ChannelDMReplyIntentList> {
+  return new Promise((resolve, reject) => {
+    const normalized = Number(candidateId);
+    const waiters = intentWaiters.get(normalized) ?? [];
+    waiters.push({ resolve, reject });
+    intentWaiters.set(normalized, waiters);
+    if (!intentBatchScheduled) {
+      intentBatchScheduled = true;
+      queueMicrotask(() => {
+        void flushChannelDMReplyIntentBatch();
+      });
+    }
+  });
+}
+
 export async function requestChannelDMReplyProposal(
   candidateId: number,
 ): Promise<ChannelDMReplyProposalResult> {
@@ -182,6 +302,92 @@ export async function requestChannelDMReplyProposal(
     throw await responseError(response, 'Channel DM reply proposal failed');
   }
   return (await response.json()) as ChannelDMReplyProposalResult;
+}
+
+export async function createManualChannelDMReplyIntent(
+  candidateId: number,
+  replyText: string,
+): Promise<ChannelDMReplyIntentWriteResult> {
+  const text = replyText.trim();
+  if (!text || text.length > 4096) {
+    throw new ChannelDMReplyApiError(
+      !text ? 'Введите текст ответа.' : 'Ответ не может быть длиннее 4096 символов.',
+      422,
+    );
+  }
+  const response = await fetch(`/api/studio/candidates/${candidateId}/channel-dm-reply-intents/manual`, {
+    method: 'POST',
+    headers: studioHeaders(),
+    body: JSON.stringify({ reply_text: text }),
+  });
+  if (!response.ok) {
+    throw await responseError(response, 'Channel DM reply intent creation failed');
+  }
+  return (await response.json()) as ChannelDMReplyIntentWriteResult;
+}
+
+export async function createAIChannelDMReplyIntent(
+  candidateId: number,
+): Promise<ChannelDMReplyIntentWriteResult> {
+  const response = await fetch(`/api/studio/candidates/${candidateId}/channel-dm-reply-intents/ai`, {
+    method: 'POST',
+    headers: studioHeaders(),
+    body: JSON.stringify({}),
+  });
+  if (!response.ok) {
+    throw await responseError(response, 'AI Channel DM reply intent creation failed');
+  }
+  return (await response.json()) as ChannelDMReplyIntentWriteResult;
+}
+
+export async function editChannelDMReplyIntent(
+  intentId: number,
+  replyText: string,
+): Promise<ChannelDMReplyIntent> {
+  const text = replyText.trim();
+  if (!text || text.length > 4096) {
+    throw new ChannelDMReplyApiError(
+      !text ? 'Введите текст ответа.' : 'Ответ не может быть длиннее 4096 символов.',
+      422,
+    );
+  }
+  const response = await fetch(`/api/studio/channel-dm-reply-intents/${intentId}`, {
+    method: 'PATCH',
+    headers: studioHeaders(),
+    body: JSON.stringify({ reply_text: text }),
+  });
+  if (!response.ok) {
+    throw await responseError(response, 'Channel DM reply intent edit failed');
+  }
+  return (await response.json()) as ChannelDMReplyIntent;
+}
+
+export async function dismissChannelDMReplyIntent(
+  intentId: number,
+): Promise<ChannelDMReplyIntent> {
+  const response = await fetch(`/api/studio/channel-dm-reply-intents/${intentId}/dismiss`, {
+    method: 'POST',
+    headers: studioHeaders(),
+    body: JSON.stringify({}),
+  });
+  if (!response.ok) {
+    throw await responseError(response, 'Channel DM reply intent dismissal failed');
+  }
+  return (await response.json()) as ChannelDMReplyIntent;
+}
+
+export async function sendChannelDMReplyIntent(
+  intentId: number,
+): Promise<ChannelDMReplyIntentSendResult> {
+  const response = await fetch(`/api/studio/channel-dm-reply-intents/${intentId}/send`, {
+    method: 'POST',
+    headers: studioHeaders(),
+    body: JSON.stringify({}),
+  });
+  if (!response.ok) {
+    throw await responseError(response, 'Channel DM reply intent handoff failed');
+  }
+  return (await response.json()) as ChannelDMReplyIntentSendResult;
 }
 
 export async function submitChannelDMReply(

@@ -7,6 +7,7 @@ still import concrete models from their own modules rather than from this regist
 
 from app.domain import ai_auto_task as _ai_auto_task_models  # noqa: F401
 from app.domain import channel_dm_reply as _channel_dm_reply_models  # noqa: F401
+from app.domain import channel_dm_reply_intent as _channel_dm_reply_intent_models  # noqa: F401
 from app.domain import models as _legacy_models  # noqa: F401
 from app.domain import publication_autodelete as _publication_autodelete_models  # noqa: F401
 from app.domain import publication_delivery as _publication_delivery_models  # noqa: F401

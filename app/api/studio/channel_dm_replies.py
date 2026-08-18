@@ -17,6 +17,13 @@ from app.services.channel_dm_replies import (
     ChannelDMReplyFailure,
     ChannelDMReplyService,
 )
+from app.services.channel_dm_reply_intents import (
+    ChannelDMReplyIntentError,
+    ChannelDMReplyIntentFailure,
+    ChannelDMReplyIntentList,
+    ChannelDMReplyIntentService,
+    ChannelDMReplyIntentView,
+)
 from app.services.channel_dm_reply_lifecycle import (
     ChannelDMReplyLifecycleError,
     ChannelDMReplyLifecycleFailure,
@@ -83,6 +90,71 @@ class ChannelDMReplyProposalResponse(BaseModel):
     reply_text: str
 
 
+class ChannelDMReplyIntentManualRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reply_text: str = Field(min_length=1, max_length=4096)
+
+
+class ChannelDMReplyIntentEditRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reply_text: str = Field(min_length=1, max_length=4096)
+
+
+class ChannelDMReplyIntentEmptyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ChannelDMReplyIntentBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_ids: list[int] = Field(min_length=1, max_length=100)
+
+
+class ChannelDMReplyIntentResponse(BaseModel):
+    intent_id: int
+    candidate_id: int
+    reply_text: str
+    origin: Literal["manual", "ai", "automation"]
+    state: Literal["pending_review", "dismissed", "stale", "consumed"]
+    is_current: bool
+    handoff_in_progress: bool
+    consumed_command_id: int | None = None
+    created_at: datetime
+    updated_at: datetime
+    consumed_at: datetime | None = None
+    dismissed_at: datetime | None = None
+    stale_at: datetime | None = None
+
+
+class ChannelDMReplyIntentListResponse(BaseModel):
+    candidate_id: int
+    intents: list[ChannelDMReplyIntentResponse]
+
+
+class ChannelDMReplyIntentBatchResponse(BaseModel):
+    candidates: list[ChannelDMReplyIntentListResponse]
+
+
+class ChannelDMReplyIntentWriteResponse(BaseModel):
+    intent: ChannelDMReplyIntentResponse
+    reused_existing: bool
+
+
+class ChannelDMReplyIntentCommandResponse(BaseModel):
+    command_id: int
+    candidate_id: int
+    state: Literal["pending", "sent", "failed", "uncertain"]
+    error_class: str | None = None
+    reused_existing: bool
+
+
+class ChannelDMReplyIntentSendResponse(BaseModel):
+    intent: ChannelDMReplyIntentResponse
+    command: ChannelDMReplyIntentCommandResponse
+
+
 async def _session_dependency() -> AsyncIterator[AsyncSession]:
     async with AsyncSessionLocal() as session:
         yield session
@@ -115,6 +187,18 @@ _PROPOSAL_HTTP_ERRORS: dict[str, tuple[int, str]] = {
     ChannelDMReplyProposalFailure.INVALID_OUTPUT: (422, "AI reply proposal is invalid"),
 }
 
+_INTENT_HTTP_ERRORS: dict[ChannelDMReplyIntentFailure, tuple[int, str]] = {
+    ChannelDMReplyIntentFailure.CANDIDATE_NOT_FOUND: (404, "Candidate not found"),
+    ChannelDMReplyIntentFailure.INTENT_NOT_FOUND: (404, "Channel DM reply intent not found"),
+    ChannelDMReplyIntentFailure.INVALID_REQUEST: (422, "Channel DM reply intent request is invalid"),
+    ChannelDMReplyIntentFailure.PROPOSAL_UNAVAILABLE: (422, "AI reply intent proposal is unavailable"),
+    ChannelDMReplyIntentFailure.ROUTING_MISMATCH: (409, "Channel DM reply intent routing is unavailable"),
+    ChannelDMReplyIntentFailure.STALE: (409, "Channel DM reply intent is stale"),
+    ChannelDMReplyIntentFailure.NOT_REVIEWABLE: (409, "Channel DM reply intent is no longer reviewable"),
+    ChannelDMReplyIntentFailure.HANDOFF_REJECTED: (409, "Channel DM reply command handoff was rejected"),
+    ChannelDMReplyIntentFailure.MALFORMED_INTENT: (409, "Channel DM reply intent is unavailable"),
+}
+
 
 def _lifecycle_response(result: ChannelDMReplyLifecycleResult) -> ChannelDMReplyLifecycleResponse:
     return ChannelDMReplyLifecycleResponse(
@@ -134,6 +218,44 @@ def _lifecycle_response(result: ChannelDMReplyLifecycleResult) -> ChannelDMReply
     )
 
 
+def _intent_response(intent: ChannelDMReplyIntentView) -> ChannelDMReplyIntentResponse:
+    return ChannelDMReplyIntentResponse(
+        intent_id=intent.intent_id,
+        candidate_id=intent.candidate_id,
+        reply_text=intent.reply_text,
+        origin=intent.origin,
+        state=intent.state,
+        is_current=intent.is_current,
+        handoff_in_progress=intent.handoff_in_progress,
+        consumed_command_id=intent.consumed_command_id,
+        created_at=intent.created_at,
+        updated_at=intent.updated_at,
+        consumed_at=intent.consumed_at,
+        dismissed_at=intent.dismissed_at,
+        stale_at=intent.stale_at,
+    )
+
+
+def _intent_list_response(result: ChannelDMReplyIntentList) -> ChannelDMReplyIntentListResponse:
+    return ChannelDMReplyIntentListResponse(
+        candidate_id=result.candidate_id,
+        intents=[_intent_response(intent) for intent in result.intents],
+    )
+
+
+async def _studio_client(session: AsyncSession, principal: StudioPrincipal):
+    return await ClientsRepo(session).create_or_get(
+        principal.tg_user_id,
+        principal.username,
+        principal.full_name,
+    )
+
+
+def _raise_intent_http(exc: ChannelDMReplyIntentError) -> None:
+    status_code, detail = _INTENT_HTTP_ERRORS[exc.failure]
+    raise HTTPException(status_code=status_code, detail=detail) from exc
+
+
 @router.post(
     "/candidates/{candidate_id}/channel-dm-reply",
     response_model=ChannelDMReplyResponse,
@@ -144,11 +266,7 @@ async def reply_to_channel_dm(
     principal: PrincipalDep,
     session: SessionDep,
 ) -> ChannelDMReplyResponse:
-    client = await ClientsRepo(session).create_or_get(
-        principal.tg_user_id,
-        principal.username,
-        principal.full_name,
-    )
+    client = await _studio_client(session, principal)
     try:
         result = await ChannelDMReplyService(session, bot=bot).execute(
             candidate_id=candidate_id,
@@ -178,11 +296,7 @@ async def read_channel_dm_reply_lifecycle(
     principal: PrincipalDep,
     session: SessionDep,
 ) -> ChannelDMReplyLifecycleResponse:
-    client = await ClientsRepo(session).create_or_get(
-        principal.tg_user_id,
-        principal.username,
-        principal.full_name,
-    )
+    client = await _studio_client(session, principal)
     try:
         result = await ChannelDMReplyLifecycleReader(session).read(
             candidate_id=candidate_id,
@@ -203,11 +317,7 @@ async def read_channel_dm_reply_lifecycle_batch(
     principal: PrincipalDep,
     session: SessionDep,
 ) -> ChannelDMReplyLifecycleBatchResponse:
-    client = await ClientsRepo(session).create_or_get(
-        principal.tg_user_id,
-        principal.username,
-        principal.full_name,
-    )
+    client = await _studio_client(session, principal)
     try:
         results = await ChannelDMReplyLifecycleReader(session).read_many(
             candidate_ids=request.candidate_ids,
@@ -231,11 +341,7 @@ async def propose_channel_dm_reply(
     principal: PrincipalDep,
     session: SessionDep,
 ) -> ChannelDMReplyProposalResponse:
-    client = await ClientsRepo(session).create_or_get(
-        principal.tg_user_id,
-        principal.username,
-        principal.full_name,
-    )
+    client = await _studio_client(session, principal)
     try:
         result = await ChannelDMReplyProposalService(session).propose(
             candidate_id=candidate_id,
@@ -247,4 +353,168 @@ async def propose_channel_dm_reply(
     return ChannelDMReplyProposalResponse(
         candidate_id=result.candidate_id,
         reply_text=result.reply_text,
+    )
+
+
+@router.get(
+    "/candidates/{candidate_id}/channel-dm-reply-intents",
+    response_model=ChannelDMReplyIntentListResponse,
+)
+async def read_channel_dm_reply_intents(
+    candidate_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> ChannelDMReplyIntentListResponse:
+    client = await _studio_client(session, principal)
+    try:
+        result = await ChannelDMReplyIntentService(session, bot=bot).read(
+            candidate_id=candidate_id,
+            actor_client_id=int(client.id),
+        )
+    except ChannelDMReplyIntentError as exc:
+        _raise_intent_http(exc)
+    return _intent_list_response(result)
+
+
+@router.post(
+    "/channel-dm-reply-intents/batch",
+    response_model=ChannelDMReplyIntentBatchResponse,
+)
+async def read_channel_dm_reply_intents_batch(
+    request: ChannelDMReplyIntentBatchRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> ChannelDMReplyIntentBatchResponse:
+    client = await _studio_client(session, principal)
+    try:
+        results = await ChannelDMReplyIntentService(session, bot=bot).read_many(
+            candidate_ids=request.candidate_ids,
+            actor_client_id=int(client.id),
+        )
+    except ChannelDMReplyIntentError as exc:
+        _raise_intent_http(exc)
+    return ChannelDMReplyIntentBatchResponse(
+        candidates=[_intent_list_response(result) for result in results]
+    )
+
+
+@router.post(
+    "/candidates/{candidate_id}/channel-dm-reply-intents/manual",
+    response_model=ChannelDMReplyIntentWriteResponse,
+)
+async def create_manual_channel_dm_reply_intent(
+    candidate_id: int,
+    request: ChannelDMReplyIntentManualRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> ChannelDMReplyIntentWriteResponse:
+    client = await _studio_client(session, principal)
+    try:
+        result = await ChannelDMReplyIntentService(session, bot=bot).create_manual(
+            candidate_id=candidate_id,
+            actor_client_id=int(client.id),
+            reply_text=request.reply_text,
+        )
+    except ChannelDMReplyIntentError as exc:
+        _raise_intent_http(exc)
+    return ChannelDMReplyIntentWriteResponse(
+        intent=_intent_response(result.intent),
+        reused_existing=result.reused_existing,
+    )
+
+
+@router.post(
+    "/candidates/{candidate_id}/channel-dm-reply-intents/ai",
+    response_model=ChannelDMReplyIntentWriteResponse,
+)
+async def create_ai_channel_dm_reply_intent(
+    candidate_id: int,
+    _request: ChannelDMReplyIntentEmptyRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> ChannelDMReplyIntentWriteResponse:
+    client = await _studio_client(session, principal)
+    try:
+        result = await ChannelDMReplyIntentService(session, bot=bot).create_ai(
+            candidate_id=candidate_id,
+            actor_client_id=int(client.id),
+        )
+    except ChannelDMReplyIntentError as exc:
+        _raise_intent_http(exc)
+    return ChannelDMReplyIntentWriteResponse(
+        intent=_intent_response(result.intent),
+        reused_existing=result.reused_existing,
+    )
+
+
+@router.patch(
+    "/channel-dm-reply-intents/{intent_id}",
+    response_model=ChannelDMReplyIntentResponse,
+)
+async def edit_channel_dm_reply_intent(
+    intent_id: int,
+    request: ChannelDMReplyIntentEditRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> ChannelDMReplyIntentResponse:
+    client = await _studio_client(session, principal)
+    try:
+        result = await ChannelDMReplyIntentService(session, bot=bot).edit(
+            intent_id=intent_id,
+            actor_client_id=int(client.id),
+            reply_text=request.reply_text,
+        )
+    except ChannelDMReplyIntentError as exc:
+        _raise_intent_http(exc)
+    return _intent_response(result)
+
+
+@router.post(
+    "/channel-dm-reply-intents/{intent_id}/dismiss",
+    response_model=ChannelDMReplyIntentResponse,
+)
+async def dismiss_channel_dm_reply_intent(
+    intent_id: int,
+    _request: ChannelDMReplyIntentEmptyRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> ChannelDMReplyIntentResponse:
+    client = await _studio_client(session, principal)
+    try:
+        result = await ChannelDMReplyIntentService(session, bot=bot).dismiss(
+            intent_id=intent_id,
+            actor_client_id=int(client.id),
+        )
+    except ChannelDMReplyIntentError as exc:
+        _raise_intent_http(exc)
+    return _intent_response(result)
+
+
+@router.post(
+    "/channel-dm-reply-intents/{intent_id}/send",
+    response_model=ChannelDMReplyIntentSendResponse,
+)
+async def send_channel_dm_reply_intent(
+    intent_id: int,
+    _request: ChannelDMReplyIntentEmptyRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> ChannelDMReplyIntentSendResponse:
+    client = await _studio_client(session, principal)
+    try:
+        result = await ChannelDMReplyIntentService(session, bot=bot).send(
+            intent_id=intent_id,
+            actor_client_id=int(client.id),
+        )
+    except ChannelDMReplyIntentError as exc:
+        _raise_intent_http(exc)
+    return ChannelDMReplyIntentSendResponse(
+        intent=_intent_response(result.intent),
+        command=ChannelDMReplyIntentCommandResponse(
+            command_id=result.command.command_id,
+            candidate_id=result.command.candidate_id,
+            state=result.command.state,
+            error_class=result.command.error_class,
+            reused_existing=result.command.reused_existing,
+        ),
     )
