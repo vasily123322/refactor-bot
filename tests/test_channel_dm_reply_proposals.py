@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.domain  # noqa: F401 register ORM metadata
+from app.api.studio.channel_dm_replies import ChannelDMReplyProposalRequest
 from app.core.db import Base
 from app.domain.channel_dm_reply import ChannelDMReplyCommand
 from app.domain.content.models import ContentItem
@@ -87,6 +89,22 @@ async def _seed(
     session.add(candidate)
     await session.commit()
     return channel, connector, document, candidate
+
+
+def test_ai_proposal_request_body_carries_no_delivery_or_editor_authority() -> None:
+    assert ChannelDMReplyProposalRequest.model_validate({}).model_dump() == {}
+    for payload in (
+        {"reply_text": "send this"},
+        {"idempotency_key": "dm-reply:not-allowed"},
+        {"chat_id": DM_CHAT_ID},
+        {"direct_messages_topic_id": 611},
+        {"message_id": 111},
+        {"connector_id": 1},
+        {"channel_id": 1},
+        {"instruction": "send automatically"},
+    ):
+        with pytest.raises(ValidationError):
+            ChannelDMReplyProposalRequest.model_validate(payload)
 
 
 def test_ai_proposal_returns_editable_text_without_creating_send_or_content_authority() -> None:
