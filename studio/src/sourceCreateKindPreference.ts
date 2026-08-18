@@ -1,4 +1,8 @@
-export type SourceCreateKindPreference = 'rss' | 'url' | 'telegram';
+export type SourceCreateKindPreference =
+  | 'rss'
+  | 'url'
+  | 'telegram'
+  | 'telegram_channel_dms';
 
 type EditorUiPreferences = Readonly<{
   sourceCreateKind?: SourceCreateKindPreference;
@@ -22,7 +26,12 @@ export function parseSourceCreateKindPreference(
 ): SourceCreateKindPreference | null {
   const envelope = parseEnvelope(value) as EditorUiPreferences;
   const kind = envelope.sourceCreateKind;
-  return kind === 'rss' || kind === 'url' || kind === 'telegram' ? kind : null;
+  return kind === 'rss' ||
+    kind === 'url' ||
+    kind === 'telegram' ||
+    kind === 'telegram_channel_dms'
+    ? kind
+    : null;
 }
 
 export function serializeSourceCreateKindPreference(

@@ -3,9 +3,16 @@ import type { FormEvent } from 'react';
 
 import { StudioApiError, studioApi, type CreateSourceInput } from './api';
 import {
+  buildSourceCreateInput,
+  CHANNEL_DM_SOURCE_KIND,
+  hasChannelDMSource,
+  sourceCreateNeedsValue,
+} from './channelDMSourceCreate';
+import {
   parseSourceCreateKindPreference,
   serializeSourceCreateKindPreference,
 } from './sourceCreateKindPreference';
+import type { SourceCreateKindPreference } from './sourceCreateKindPreference';
 import { SourceSettingsControls } from './SourceSettingsControls';
 import { SourceWorkerHealthCard } from './SourceWorkerHealthCard';
 import { updateSourceSettings } from './sourceSettingsApi';
@@ -41,6 +48,7 @@ function sourceKindLabel(kind: string): string {
   if (kind === 'rss') return 'RSS';
   if (kind === 'url' || kind === 'web') return 'Web';
   if (kind === 'telegram') return 'Telegram';
+  if (kind === CHANNEL_DM_SOURCE_KIND) return 'Channel DMs';
   return kind;
 }
 
@@ -50,7 +58,7 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
-  const [kind, setKind] = useState<CreateSourceInput['kind']>('rss');
+  const [kind, setKind] = useState<SourceCreateKindPreference>('rss');
   const [value, setValue] = useState('');
   const [mode, setMode] = useState<CreateSourceInput['mode']>('summary');
   const [reusePolicy, setReusePolicy] = useState<CreateSourceInput['reuse_policy']>('reference_only');
@@ -90,7 +98,7 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
   }, []);
 
   const persistSourceKindPreference = useCallback(
-    async (nextKind: CreateSourceInput['kind']) => {
+    async (nextKind: SourceCreateKindPreference) => {
       const current = await getTelegramDeviceStorageItem('editor-ui-preferences');
       const currentValue = current.ok ? current.value : null;
       await setTelegramDeviceStorageItem(
@@ -113,17 +121,25 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
     }
   };
 
+  const channelDMSourceExists = hasChannelDMSource(sources.map((source) => source.kind));
+  const sourceValueReady = !sourceCreateNeedsValue(kind) || Boolean(value.trim());
+  const duplicateChannelDMSource = kind === CHANNEL_DM_SOURCE_KIND && channelDMSourceExists;
+
   const createSource = async (event: FormEvent) => {
     event.preventDefault();
-    if (!channel || !value.trim()) return;
+    if (!channel || duplicateChannelDMSource) return;
+    const input = buildSourceCreateInput({
+      kind,
+      value,
+      channelTgChatId: channel.tg_chat_id,
+      mode,
+      citationEnabled,
+      reusePolicy,
+    });
+    if (!input) return;
+
     await run('create', async () => {
-      const created = await studioApi.createSource(channel.id, {
-        kind,
-        value: value.trim(),
-        mode,
-        citation_enabled: citationEnabled,
-        reuse_policy: reusePolicy,
-      });
+      const created = await studioApi.createSource(channel.id, input);
       kindTouchedRef.current = true;
       void persistSourceKindPreference(kind);
       setValue('');
@@ -200,23 +216,34 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
                 value={kind}
                 onChange={(event) => {
                   kindTouchedRef.current = true;
-                  setKind(event.target.value as CreateSourceInput['kind']);
+                  setKind(event.target.value as SourceCreateKindPreference);
                 }}
               >
                 <option value="rss">RSS / Atom</option>
                 <option value="url">Web URL</option>
                 <option value="telegram">Telegram</option>
+                <option value={CHANNEL_DM_SOURCE_KIND} disabled={channelDMSourceExists}>
+                  Channel DMs{channelDMSourceExists ? ' · уже подключено' : ''}
+                </option>
               </select>
             </label>
-            <label className="source-value-field">
-              <span>{kind === 'telegram' ? 'Username / chat' : 'URL'}</span>
-              <input
-                required
-                value={value}
-                onChange={(event) => setValue(event.target.value)}
-                placeholder={kind === 'telegram' ? '@channel или id' : 'https://example.com/feed.xml'}
-              />
-            </label>
+            {kind === CHANNEL_DM_SOURCE_KIND ? (
+              <div className="source-value-field">
+                <span>Канал</span>
+                <strong>{channel.title || 'Текущий Telegram-канал'}</strong>
+                <small>Входящие Channel DMs привязываются к текущему owned channel; отдельный routing ID не вводится.</small>
+              </div>
+            ) : (
+              <label className="source-value-field">
+                <span>{kind === 'telegram' ? 'Username / chat' : 'URL'}</span>
+                <input
+                  required
+                  value={value}
+                  onChange={(event) => setValue(event.target.value)}
+                  placeholder={kind === 'telegram' ? '@channel или id' : 'https://example.com/feed.xml'}
+                />
+              </label>
+            )}
             <label>
               <span>Режим</span>
               <select value={mode} onChange={(event) => setMode(event.target.value as CreateSourceInput['mode'])}>
@@ -244,7 +271,13 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
           </label>
           <div className="source-form-actions">
             <button type="button" className="button secondary" onClick={closeCreateSourceForm}>{SOURCE_CREATE_CANCEL_LABEL}</button>
-            <button type="submit" className="button primary" disabled={busyId !== null || !value.trim()}>Добавить</button>
+            <button
+              type="submit"
+              className="button primary"
+              disabled={busyId !== null || !sourceValueReady || duplicateChannelDMSource}
+            >
+              Добавить
+            </button>
           </div>
         </form>
       )}
@@ -260,7 +293,12 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
               source.enabled &&
               !source.ingestion_busy &&
               ['rss', 'url', 'web', 'telegram'].includes(source.kind);
-            const ingestLabel = source.kind === 'telegram' ? 'MTProto ingest' : 'Ingest now';
+            const ingestLabel =
+              source.kind === CHANNEL_DM_SOURCE_KIND
+                ? 'Push ingress'
+                : source.kind === 'telegram'
+                  ? 'MTProto ingest'
+                  : 'Ingest now';
             const lifecycleEditable = !(
               source.legacy_grab_source_id !== null && source.legacy_ai_source_id === null
             );
@@ -273,7 +311,9 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
                   <div className={`source-kind source-kind-${source.kind}`}>{sourceKindLabel(source.kind)}</div>
                   <span className={`source-health source-health-${source.status}`}>{source.status}</span>
                 </div>
-                <strong className="source-address">{source.value}</strong>
+                <strong className="source-address">
+                  {source.kind === CHANNEL_DM_SOURCE_KIND ? 'Входящие DM текущего Telegram-канала' : source.value}
+                </strong>
                 <div className="source-meta-row">
                   <span>{source.mode}</span>
                   <span>{source.reuse_policy}</span>
@@ -325,13 +365,15 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
                     title={
                       !source.enabled
                         ? 'Сначала включите источник'
-                        : source.ingestion_busy
-                          ? `Ingest уже выполняет ${source.ingestion_holder || 'другой процесс'}`
-                          : source.worker_failure_count > 0
-                            ? 'Ручной ingest проверит источник сейчас и сбросит backoff при успехе'
-                            : source.kind === 'telegram'
-                              ? 'Получить историю через userbot MTProto session'
-                              : 'Получить новые документы сейчас'
+                        : source.kind === CHANNEL_DM_SOURCE_KIND
+                          ? 'Channel DMs поступают через bot updates; ручной ingest не требуется'
+                          : source.ingestion_busy
+                            ? `Ingest уже выполняет ${source.ingestion_holder || 'другой процесс'}`
+                            : source.worker_failure_count > 0
+                              ? 'Ручной ingest проверит источник сейчас и сбросит backoff при успехе'
+                              : source.kind === 'telegram'
+                                ? 'Получить историю через userbot MTProto session'
+                                : 'Получить новые документы сейчас'
                     }
                     onClick={() => void ingest(source)}
                   >

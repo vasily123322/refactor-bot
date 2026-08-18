@@ -146,7 +146,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
             "revisions": True,
             "planner": True,
             "sources_v2": True,
-            "source_kinds": ["telegram", "rss", "url"],
+            "source_kinds": ["telegram", "rss", "url", "telegram_channel_dms"],
             "candidate_to_draft": True,
         }
 
