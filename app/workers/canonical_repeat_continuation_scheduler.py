@@ -96,6 +96,7 @@ class Scheduler(RecoveryScheduler):
             allow_views_autodelete=(
                 canonical_publication_delivery_views_autodelete_started()
             ),
+            allow_forward=True,
         )
         if result.outcome != "retired":
             return False
