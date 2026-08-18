@@ -179,6 +179,8 @@ export type SuggestedPostNativeStatus =
   | 'unknown';
 
 export type SuggestedPostCommercialKind = 'free' | 'paid' | 'unknown';
+export type SuggestedPostMoneyKind = 'stars' | 'ton_nanograms' | 'unknown';
+export type SuggestedPostRefundReasonCode = 'post_deleted' | 'payment_refunded' | 'unknown';
 
 export type SuggestedPostPersonView = {
   id: number | null;
@@ -187,9 +189,12 @@ export type SuggestedPostPersonView = {
 };
 
 export type SuggestedPostMoneyView = {
+  kind: SuggestedPostMoneyKind;
   currency: string | null;
-  amount: number | null;
+  stars: number | null;
   nanostar_amount: number | null;
+  ton_nanograms: number | null;
+  raw_amount: number | null;
 };
 
 export type SuggestedPostView = {
@@ -204,8 +209,13 @@ export type SuggestedPostView = {
   proposed_send_date: string | null;
   price: SuggestedPostMoneyView | null;
   payment: SuggestedPostMoneyView | null;
+  paid_event_at: string | null;
+  paid_service_message_id: number | null;
+  refunded_event_at: string | null;
+  refunded_service_message_id: number | null;
   decline_comment: string | null;
   refund_reason: string | null;
+  refund_reason_code: SuggestedPostRefundReasonCode | null;
 };
 
 export type ContentCandidateView = {
