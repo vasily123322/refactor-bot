@@ -4,6 +4,7 @@ import weakref
 
 
 _primary_worker_ref: weakref.ReferenceType[object] | None = None
+_time_autodelete_available = False
 
 
 def canonical_publication_delivery_primary_started() -> bool:
@@ -12,8 +13,21 @@ def canonical_publication_delivery_primary_started() -> bool:
     return _primary_worker_ref is not None and _primary_worker_ref() is not None
 
 
-def set_canonical_publication_delivery_primary_worker(worker: object | None) -> None:
-    """Publish canonical primary authority from concrete successful start/stop boundaries."""
+def canonical_publication_delivery_time_autodelete_started() -> bool:
+    """Return the started primary fact for canonical non-repeat time autodelete."""
 
-    global _primary_worker_ref
+    return canonical_publication_delivery_primary_started() and _time_autodelete_available
+
+
+def set_canonical_publication_delivery_primary_worker(
+    worker: object | None,
+    *,
+    time_autodelete_available: bool = False,
+) -> None:
+    """Publish primary authority only with capabilities proven at successful startup."""
+
+    global _primary_worker_ref, _time_autodelete_available
     _primary_worker_ref = None if worker is None else weakref.ref(worker)
+    _time_autodelete_available = bool(
+        worker is not None and time_autodelete_available
+    )

@@ -119,5 +119,8 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
                 "Boot: failed to clean up safe repeat canonical publication worker after startup failure"
             )
         raise
-    set_canonical_publication_delivery_primary_worker(worker)
+    set_canonical_publication_delivery_primary_worker(
+        worker,
+        time_autodelete_available=time_available,
+    )
     return worker

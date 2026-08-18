@@ -12,6 +12,7 @@ from app.services import canonical_publication_delivery_runtime_control as runti
 from app.services import canonical_publication_safe_repeat_runtime_control as safe_control
 from app.services.canonical_publication_delivery_authority import (
     canonical_publication_delivery_primary_started,
+    canonical_publication_delivery_time_autodelete_started,
     set_canonical_publication_delivery_primary_worker,
 )
 
@@ -45,10 +46,12 @@ def test_safe_repeat_primary_publishes_authority_only_after_successful_start(
         class StartedWorker:
             def __init__(self, **kwargs) -> None:
                 assert canonical_publication_delivery_primary_started() is False
+                assert canonical_publication_delivery_time_autodelete_started() is False
 
             async def start(self) -> None:
                 events.append("start")
                 assert canonical_publication_delivery_primary_started() is False
+                assert canonical_publication_delivery_time_autodelete_started() is False
 
             async def stop(self) -> None:
                 events.append("stop")
@@ -64,11 +67,13 @@ def test_safe_repeat_primary_publishes_authority_only_after_successful_start(
             recovery_worker=object(),
             bot=object(),
             session_factory=object(),  # type: ignore[arg-type]
+            time_autodelete_executor_available=True,
         )
 
         assert isinstance(worker, StartedWorker)
         assert events == ["start"]
         assert canonical_publication_delivery_primary_started() is True
+        assert canonical_publication_delivery_time_autodelete_started() is True
         set_canonical_publication_delivery_primary_worker(None)
 
     asyncio.run(run())
@@ -113,10 +118,12 @@ def test_safe_repeat_primary_start_failure_never_publishes_authority(monkeypatch
                 recovery_worker=object(),
                 bot=object(),
                 session_factory=object(),  # type: ignore[arg-type]
+                time_autodelete_executor_available=True,
             )
 
         assert events == ["start", "stop"]
         assert canonical_publication_delivery_primary_started() is False
+        assert canonical_publication_delivery_time_autodelete_started() is False
 
     asyncio.run(run())
 
@@ -128,6 +135,7 @@ def test_common_shutdown_releases_authority_before_primary_stop() -> None:
         class Primary:
             async def stop(self) -> None:
                 assert canonical_publication_delivery_primary_started() is False
+                assert canonical_publication_delivery_time_autodelete_started() is False
                 events.append("primary")
 
         class Recovery:
@@ -135,8 +143,12 @@ def test_common_shutdown_releases_authority_before_primary_stop() -> None:
                 events.append("recovery")
 
         primary = Primary()
-        set_canonical_publication_delivery_primary_worker(primary)
+        set_canonical_publication_delivery_primary_worker(
+            primary,
+            time_autodelete_available=True,
+        )
         assert canonical_publication_delivery_primary_started() is True
+        assert canonical_publication_delivery_time_autodelete_started() is True
 
         await runtime_control.stop_canonical_publication_delivery_workers(
             primary_worker=primary,
@@ -145,5 +157,6 @@ def test_common_shutdown_releases_authority_before_primary_stop() -> None:
 
         assert events == ["primary", "recovery"]
         assert canonical_publication_delivery_primary_started() is False
+        assert canonical_publication_delivery_time_autodelete_started() is False
 
     asyncio.run(run())

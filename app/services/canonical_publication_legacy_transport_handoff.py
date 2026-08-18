@@ -234,17 +234,10 @@ def _silent_intent_matches(
         intended = runtime_options.get("silent")
         if type(intended) is not bool:
             return False
-        # The explicit canonical runtime bit must also be durably represented in the
-        # legacy PostTask, and legacy's *effective* provider behavior must already equal
-        # that value. This is especially important for rich_document, where historical
-        # legacy dispatch ignores the top-level `silent` key and re-renders post_document.
         if type(current.get("silent")) is not bool or current.get("silent") is not intended:
             return False
         return current_effective is intended
 
-    # Without explicit runtime silent, do not infer a top-level legacy effect into
-    # canonical authority. Immutable rich-document Telegram settings are allowed only
-    # when both transport representations have the same effective behavior.
     for payload in (current, expected):
         if "silent" in payload and not _neutral_bool(payload.get("silent")):
             return False
@@ -303,6 +296,51 @@ def _legacy_intent_matches(
     return current_clean == expected_clean
 
 
+def _authority_intent_matches(
+    *,
+    task: PostTask,
+    publication: Publication,
+    plan: CanonicalPublicationDeliveryPlan,
+    allow_time_autodelete: bool,
+) -> bool:
+    if _legacy_intent_matches(
+        task=task,
+        publication=publication,
+        plan=plan,
+    ):
+        return True
+    if not allow_time_autodelete:
+        return False
+
+    # Reuse the exact atomic handoff capability lattice rather than defining another
+    # timer parser/matcher here. The local import avoids the module-init dependency cycle:
+    # the atomic service imports baseline helpers from this module at import time.
+    from app.services.canonical_publication_delivery_atomic_handoff_claim import (
+        _atomic_legacy_intent_matches,
+        _atomic_runtime_profile,
+    )
+
+    profile = _atomic_runtime_profile(
+        plan,
+        allow_time_autodelete=True,
+        allow_views_autodelete=False,
+    )
+    if (
+        profile is None
+        or not profile.timer_requested
+        or profile.pin_on
+        or profile.views_requested
+        or profile.autodelete_report
+    ):
+        return False
+    return _atomic_legacy_intent_matches(
+        task=task,
+        publication=publication,
+        plan=plan,
+        profile=profile,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CanonicalPublicationLegacyTransportHandoffResult:
     outcome: str
@@ -322,9 +360,10 @@ class CanonicalPublicationLegacyTransportHandoffService:
     handoff. This service never deletes or takes a scheduler lease and never calls a
     provider. Canonical delivery remains `queued` until a later exact canonical claim.
 
-    Current capability is non-repeat with empty runtime options plus explicit boolean
-    `silent` and `pin_on` intent. Legacy effective silence and explicit pin intent must
-    exactly match canonical runtime intent; hidden legacy effects are never inferred.
+    Baseline capability is non-repeat empty/silent/pin parity. A caller may additionally
+    prove a started canonical time-autodelete dependency; timer-only admission then reuses
+    the existing atomic handoff runtime profile and legacy-intent matcher. Pin+time, views,
+    report and forward remain closed here. Hidden legacy effects are never inferred.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -348,6 +387,7 @@ class CanonicalPublicationLegacyTransportHandoffService:
         publication_id: int,
         *,
         at: datetime | None = None,
+        allow_time_autodelete: bool = False,
     ) -> CanonicalPublicationLegacyTransportHandoffResult:
         try:
             safe_publication_id = int(publication_id)
@@ -468,12 +508,12 @@ class CanonicalPublicationLegacyTransportHandoffService:
                 or int(plan.content_item_id) != int(item.id)
                 or int(plan.content_revision) != int(revision.revision)
                 or int(plan.channel_id) != int(channel.id)
-                or _supported_runtime_options(plan) is None
                 or not _nonrepeat(plan)
-                or not _legacy_intent_matches(
+                or not _authority_intent_matches(
                     task=task,
                     publication=publication,
                     plan=plan,
+                    allow_time_autodelete=allow_time_autodelete,
                 )
             ):
                 return await self._result(_INELIGIBLE, safe_publication_id, task_id)
