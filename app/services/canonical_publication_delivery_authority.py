@@ -8,6 +8,7 @@ _time_autodelete_available = False
 _views_autodelete_available = False
 _repeat_continuation_available = False
 _repeat_owner_policy_enforced = False
+_repeat_time_available = False
 
 
 def canonical_publication_delivery_primary_started() -> bool:
@@ -38,6 +39,16 @@ def canonical_publication_delivery_repeat_started() -> bool:
     )
 
 
+def canonical_publication_delivery_repeat_time_started() -> bool:
+    """Return the live repeat+time fact only from all started destructive dependencies."""
+
+    return (
+        canonical_publication_delivery_repeat_started()
+        and canonical_publication_delivery_time_autodelete_started()
+        and _repeat_time_available
+    )
+
+
 def set_canonical_publication_delivery_primary_worker(
     worker: object | None,
     *,
@@ -45,12 +56,14 @@ def set_canonical_publication_delivery_primary_worker(
     views_autodelete_available: bool = False,
     repeat_continuation_available: bool = False,
     repeat_owner_policy_enforced: bool = False,
+    repeat_time_available: bool = False,
 ) -> None:
     """Publish primary authority only with capabilities proven at successful startup."""
 
     global _primary_worker_ref
     global _time_autodelete_available, _views_autodelete_available
     global _repeat_continuation_available, _repeat_owner_policy_enforced
+    global _repeat_time_available
 
     _primary_worker_ref = None if worker is None else weakref.ref(worker)
     _time_autodelete_available = bool(
@@ -65,3 +78,4 @@ def set_canonical_publication_delivery_primary_worker(
     _repeat_owner_policy_enforced = bool(
         worker is not None and repeat_owner_policy_enforced
     )
+    _repeat_time_available = bool(worker is not None and repeat_time_available)
