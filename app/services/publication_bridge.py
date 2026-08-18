@@ -11,7 +11,10 @@ from app.domain.content import PostDocument
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
-from app.services.publication_execution_mode import execution_mode_from_runtime_options
+from app.services.publication_execution_mode import (
+    CANONICAL_EXECUTION_MODE,
+    execution_mode_from_runtime_options,
+)
 from app.services.rich_media_assets import RichMediaAssetError, RichMediaAssetResolver
 from app.services.scheduler_errors import (
     MISSING_SCHEDULER_TASK_ERROR,
@@ -121,7 +124,7 @@ def _delivery_meta(
 
 
 class LegacyPublicationBridge:
-    """Bridge the new content/planner domain onto the proven PostTask scheduler."""
+    """Bridge the new content/planner domain onto canonical or retained legacy delivery."""
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -213,6 +216,24 @@ class LegacyPublicationBridge:
             await self.session.flush()
             publication.schedule_entry_id = int(schedule.id)
 
+            if execution_mode == CANONICAL_EXECUTION_MODE:
+                if rule.get("enabled"):
+                    # Canonical roots are deliberately PostTask-free. Use the durable
+                    # Publication identity as the repeat-group anchor, matching the
+                    # direct canonical materializer and continuation contract.
+                    repeat_group_id = int(publication.id)
+                    schedule.meta = {
+                        **deepcopy(dict(schedule.meta or {})),
+                        "repeat_group_id": repeat_group_id,
+                    }
+                    publication.meta = {
+                        **deepcopy(dict(publication.meta or {})),
+                        "repeat_group_id": repeat_group_id,
+                    }
+                await self.session.commit()
+                await self.session.refresh(publication)
+                return publication
+
             task = PostTask(
                 channel_id=int(item.channel_id),
                 status="pending",
@@ -230,9 +251,7 @@ class LegacyPublicationBridge:
                 "legacy_post_task_id": task_id,
             }
             if rule.get("enabled"):
-                # The root repeat identity becomes known only after the transport row
-                # is flushed. Persist it immediately in canonical metadata so later
-                # repeat occurrences can keep provenance even after root retirement.
+                # Retained legacy repeat identity remains tied to its transport row.
                 schedule_meta["repeat_group_id"] = task_id
                 publication.meta = {
                     **deepcopy(dict(publication.meta or {})),
@@ -508,6 +527,8 @@ class LegacyPublicationBridge:
             else None
         )
         if legacy_task_id is None:
+            if publication.execution_mode == CANONICAL_EXECUTION_MODE:
+                return publication
             return await self._fail_missing_transport(
                 publication,
                 legacy_task_id=None,

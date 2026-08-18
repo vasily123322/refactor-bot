@@ -15,6 +15,12 @@ from app.services.publication_bridge import LegacyPublicationBridge
 from app.services.scheduling import as_utc
 
 
+_INTENTIONAL_LEGACY_RUNTIME = {
+    "autodelete_seconds": 60,
+    "autodelete_views": 1,
+}
+
+
 def test_publication_bridge_queues_content_on_existing_scheduler() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -67,6 +73,75 @@ def test_publication_bridge_queues_content_on_existing_scheduler() -> None:
     asyncio.run(run())
 
 
+def test_publication_bridge_keeps_supported_schedule_posttask_free() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                item = await ContentRepo(session).create(
+                    channel_id=1,
+                    document=PostDocument(
+                        blocks=[{"id": "b1", "type": "text", "text": "Canonical"}]
+                    ),
+                )
+                bridge = LegacyPublicationBridge(session)
+                publication = await bridge.queue(content_item_id=item.id)
+
+                assert publication.execution_mode == "canonical"
+                assert publication.legacy_post_task_id is None
+                assert list((await session.execute(select(PostTask))).scalars().all()) == []
+
+                schedule = await session.get(ScheduleEntry, publication.schedule_entry_id)
+                assert schedule is not None
+                assert "legacy_post_task_id" not in dict(schedule.meta or {})
+
+                reconciled = await bridge.reconcile(int(publication.id))
+                assert reconciled.status == "queued"
+                assert reconciled.last_error is None
+                assert reconciled.legacy_post_task_id is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_publication_bridge_uses_publication_repeat_anchor_without_posttask() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                item = await ContentRepo(session).create(
+                    channel_id=1,
+                    document=PostDocument(
+                        blocks=[{"id": "b1", "type": "text", "text": "Repeat"}]
+                    ),
+                )
+                publication = await LegacyPublicationBridge(session).queue(
+                    content_item_id=item.id,
+                    repeat_rule={"enabled": True, "seconds": 3600},
+                )
+
+                assert publication.execution_mode == "canonical"
+                assert publication.legacy_post_task_id is None
+                assert publication.meta["repeat_group_id"] == publication.id
+                assert list((await session.execute(select(PostTask))).scalars().all()) == []
+
+                schedule = await session.get(ScheduleEntry, publication.schedule_entry_id)
+                assert schedule is not None
+                assert schedule.meta["repeat_group_id"] == publication.id
+                assert "legacy_post_task_id" not in dict(schedule.meta or {})
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_publication_bridge_reconciles_success_and_records_attempt() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -82,7 +157,11 @@ def test_publication_bridge_reconciles_success_and_records_attempt() -> None:
                     ),
                 )
                 bridge = LegacyPublicationBridge(session)
-                publication = await bridge.queue(content_item_id=item.id)
+                publication = await bridge.queue(
+                    content_item_id=item.id,
+                    runtime_options=_INTENTIONAL_LEGACY_RUNTIME,
+                )
+                assert publication.execution_mode == "intentional_legacy"
                 task = await session.get(PostTask, publication.legacy_post_task_id)
                 assert task is not None
                 task.status = "done"
@@ -152,8 +231,14 @@ def test_reconcile_task_uses_db_link_not_stale_payload_marker() -> None:
                     ),
                 )
                 bridge = LegacyPublicationBridge(session)
-                first = await bridge.queue(content_item_id=first_item.id)
-                second = await bridge.queue(content_item_id=second_item.id)
+                first = await bridge.queue(
+                    content_item_id=first_item.id,
+                    runtime_options=_INTENTIONAL_LEGACY_RUNTIME,
+                )
+                second = await bridge.queue(
+                    content_item_id=second_item.id,
+                    runtime_options=_INTENTIONAL_LEGACY_RUNTIME,
+                )
                 second_task = await session.get(PostTask, second.legacy_post_task_id)
                 assert second_task is not None
 
@@ -208,7 +293,10 @@ def test_publication_bridge_reconciles_scheduler_failure() -> None:
                     ),
                 )
                 bridge = LegacyPublicationBridge(session)
-                publication = await bridge.queue(content_item_id=item.id)
+                publication = await bridge.queue(
+                    content_item_id=item.id,
+                    runtime_options=_INTENTIONAL_LEGACY_RUNTIME,
+                )
                 task = await session.get(PostTask, publication.legacy_post_task_id)
                 assert task is not None
                 task.status = "failed"
@@ -253,7 +341,8 @@ def test_publication_bridge_queues_rich_document_for_shared_renderer() -> None:
                 )
                 item = await ContentRepo(session).create(channel_id=1, document=document)
                 publication = await LegacyPublicationBridge(session).queue(
-                    content_item_id=item.id
+                    content_item_id=item.id,
+                    runtime_options=_INTENTIONAL_LEGACY_RUNTIME,
                 )
 
                 task = await session.get(PostTask, publication.legacy_post_task_id)
