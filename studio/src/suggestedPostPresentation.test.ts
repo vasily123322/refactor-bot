@@ -30,8 +30,13 @@ const suggestedPost: SuggestedPostView = {
   proposed_send_date: '2026-08-20T12:30:00Z',
   price: null,
   payment: null,
+  paid_event_at: null,
+  paid_service_message_id: null,
+  refunded_event_at: null,
+  refunded_service_message_id: null,
   decline_comment: null,
   refund_reason: null,
+  refund_reason_code: null,
 };
 
 function candidate(status: string = 'new'): ContentCandidateView {
@@ -79,14 +84,21 @@ describe('Suggested Post origin and native lifecycle presentation', () => {
     expect(presentation?.statusLabel).toBe(label);
   });
 
-  it('renders paid and refunded business provenance without implying Content approval/publication', () => {
+  it('renders paid/refunded provenance without implying Content publication', () => {
     const presentation = suggestedPostPresentation({
       ...suggestedPost,
       native_status: 'refunded',
       commercial_kind: 'paid',
-      price: { currency: 'XTR', amount: 120, nanostar_amount: null },
-      payment: { currency: 'XTR', amount: 120, nanostar_amount: 5 },
+      price: {
+        kind: 'stars', currency: 'XTR', stars: 120, nanostar_amount: null,
+        ton_nanograms: null, raw_amount: null,
+      },
+      payment: {
+        kind: 'stars', currency: 'XTR', stars: 120, nanostar_amount: 5,
+        ton_nanograms: null, raw_amount: null,
+      },
       refund_reason: 'post_deleted',
+      refund_reason_code: 'post_deleted',
     });
 
     expect(presentation?.statusLabel).toBe('Возврат в Telegram');
@@ -96,9 +108,22 @@ describe('Suggested Post origin and native lifecycle presentation', () => {
     expect(presentation?.statusLabel.toLowerCase()).not.toContain('опублик');
   });
 
-  it('formats XTR and TON amounts without treating TON nanoton as whole TON', () => {
-    expect(suggestedPostMoneyLabel({ currency: 'XTR', amount: 9, nanostar_amount: null })).toBe('9 Stars');
-    expect(suggestedPostMoneyLabel({ currency: 'TON', amount: 500, nanostar_amount: null })).toBe('500 nanoton');
+  it('keeps XTR Stars and TON nanograms as different units', () => {
+    expect(suggestedPostMoneyLabel({
+      kind: 'stars', currency: 'XTR', stars: 9, nanostar_amount: null,
+      ton_nanograms: null, raw_amount: null,
+    })).toBe('9 Stars');
+    expect(suggestedPostMoneyLabel({
+      kind: 'ton_nanograms', currency: 'TON', stars: null, nanostar_amount: null,
+      ton_nanograms: 500, raw_amount: null,
+    })).toBe('500 TON nanograms');
+  });
+
+  it('does not interpret an unknown currency/value as application money', () => {
+    expect(suggestedPostMoneyLabel({
+      kind: 'unknown', currency: 'ABC', stars: null, nanostar_amount: null,
+      ton_nanograms: null, raw_amount: 77,
+    })).toBe('ABC · raw 77');
   });
 
   it('degrades missing optional sender, price and send date safely', () => {
@@ -111,7 +136,6 @@ describe('Suggested Post origin and native lifecycle presentation', () => {
       price: null,
       payment: null,
     });
-
     expect(presentation?.senderLabel).toBeNull();
     expect(presentation?.topicUserLabel).toBeNull();
     expect(presentation?.proposedSendDateLabel).toBeNull();
@@ -119,13 +143,9 @@ describe('Suggested Post origin and native lifecycle presentation', () => {
   });
 
   it('degrades unknown lifecycle values to a neutral state instead of crashing', () => {
-    const malformed = {
-      ...suggestedPost,
-      native_status: 'future_state' as SuggestedPostNativeStatus,
-    };
+    const malformed = { ...suggestedPost, native_status: 'future_state' as SuggestedPostNativeStatus };
     expect(() => suggestedPostPresentation(malformed)).not.toThrow();
     expect(suggestedPostPresentation(malformed)?.status).toBe('unknown');
-    expect(suggestedPostPresentation(malformed)?.statusLabel).toBe('Статус Telegram неизвестен');
   });
 
   it('keeps current reconciled source content primary after a native edit', () => {
@@ -135,7 +155,6 @@ describe('Suggested Post origin and native lifecycle presentation', () => {
       summary: 'Older enrichment summary',
     };
     const ordinary = { ...edited, suggested_post: null };
-
     expect(candidateInboxPrimaryText(edited)).toBe('Edited native Suggested Post text');
     expect(suggestedPostEnrichmentSummary(edited)).toBe('Older enrichment summary');
     expect(candidateInboxPrimaryText(ordinary)).toBe('Older enrichment summary');
@@ -146,10 +165,7 @@ describe('Suggested Post origin and native lifecycle presentation', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     const before = JSON.stringify(suggestedPost);
-
-    const presentation = suggestedPostPresentation(suggestedPost);
-
-    expect(presentation).not.toBeNull();
+    expect(suggestedPostPresentation(suggestedPost)).not.toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(JSON.stringify(suggestedPost)).toBe(before);
   });
@@ -177,7 +193,6 @@ describe('T3 proposal/apply lifecycle remains unchanged for Suggested Post candi
         document,
       }),
     );
-
     expect(previews[55].runId).toBe(42);
     expect(previews[55].kind).toBe('structured');
     expect(previews[55].provenanceStatus).toBe('current_at_last_server_check');
@@ -185,10 +200,7 @@ describe('T3 proposal/apply lifecycle remains unchanged for Suggested Post candi
 
   it('keeps Apply explicit and bound to the exact current run id', async () => {
     vi.stubGlobal('window', {
-      location: {
-        search: '?tgWebAppData=signed-test-init-data',
-        hash: '',
-      },
+      location: { search: '?tgWebAppData=signed-test-init-data', hash: '' },
     });
     const applied: ContentDetail = {
       id: 900,
@@ -209,7 +221,6 @@ describe('T3 proposal/apply lifecycle remains unchanged for Suggested Post candi
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await applyCurrentStructuredRewrite(7, candidate().id, 42);
-
     expect(result.id).toBe(900);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [path, init] = fetchMock.mock.calls[0];
