@@ -35,9 +35,8 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["candidate_id"], ["content_candidates.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["source_document_id"], ["source_documents.id"], ondelete="CASCADE"),
         sa.UniqueConstraint(
-            "candidate_id",
             "idempotency_key",
-            name="uq_channel_dm_reply_candidate_idempotency",
+            name="uq_channel_dm_reply_idempotency",
         ),
         sa.CheckConstraint(
             "state IN ('pending', 'sent', 'failed', 'uncertain')",

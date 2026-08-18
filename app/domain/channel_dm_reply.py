@@ -14,9 +14,8 @@ class ChannelDMReplyCommand(Base):
     __tablename__ = "channel_dm_reply_commands"
     __table_args__ = (
         UniqueConstraint(
-            "candidate_id",
             "idempotency_key",
-            name="uq_channel_dm_reply_candidate_idempotency",
+            name="uq_channel_dm_reply_idempotency",
         ),
         CheckConstraint(
             "state IN ('pending', 'sent', 'failed', 'uncertain')",

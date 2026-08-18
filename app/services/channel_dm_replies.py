@@ -183,9 +183,9 @@ def _result(command: ChannelDMReplyCommand, *, reused_existing: bool) -> Channel
 class ChannelDMReplyService:
     """Durable explicit text replies to ordinary Telegram Channel DMs.
 
-    The unique command row is committed before the non-idempotent Telegram call.
-    Only the request that creates the row may dispatch. Any existing row (including
-    pending/uncertain) is a no-resend evidence barrier for that idempotency key.
+    The globally unique command key is committed before the non-idempotent Telegram
+    call. Only the request that creates the row may dispatch. Any existing row
+    (including pending/uncertain) is a no-resend evidence barrier for that key.
     """
 
     def __init__(self, session: AsyncSession, *, bot: ChannelDMReplyBot) -> None:
@@ -282,16 +282,12 @@ class ChannelDMReplyService:
     async def _existing_command(
         self,
         *,
-        candidate_id: int,
         idempotency_key: str,
     ) -> ChannelDMReplyCommand | None:
         return (
             await self.session.execute(
                 select(ChannelDMReplyCommand)
-                .where(
-                    ChannelDMReplyCommand.candidate_id == int(candidate_id),
-                    ChannelDMReplyCommand.idempotency_key == idempotency_key,
-                )
+                .where(ChannelDMReplyCommand.idempotency_key == idempotency_key)
                 .with_for_update()
             )
         ).scalar_one_or_none()
@@ -300,11 +296,13 @@ class ChannelDMReplyService:
     def _assert_existing_matches(
         command: ChannelDMReplyCommand,
         *,
+        candidate_id: int,
         source_document_id: int,
         reply_text: str,
     ) -> None:
         if (
-            int(command.source_document_id) != int(source_document_id)
+            int(command.candidate_id) != int(candidate_id)
+            or int(command.source_document_id) != int(source_document_id)
             or str(command.reply_text) != reply_text
         ):
             raise ChannelDMReplyError(
@@ -320,14 +318,12 @@ class ChannelDMReplyService:
         idempotency_key: str,
     ) -> tuple[ChannelDMReplyCommand, bool]:
         # Recheck after authority derivation so SQLite/no-op FOR UPDATE and any future
-        # caller still receive the unique-ledger race guarantee.
-        existing = await self._existing_command(
-            candidate_id=authority.candidate_id,
-            idempotency_key=idempotency_key,
-        )
+        # caller still receive the globally unique-ledger race guarantee.
+        existing = await self._existing_command(idempotency_key=idempotency_key)
         if existing is not None:
             self._assert_existing_matches(
                 existing,
+                candidate_id=authority.candidate_id,
                 source_document_id=authority.source_document_id,
                 reply_text=reply_text,
             )
@@ -348,14 +344,12 @@ class ChannelDMReplyService:
             return command, False
         except IntegrityError:
             await self.session.rollback()
-            winner = await self._existing_command(
-                candidate_id=authority.candidate_id,
-                idempotency_key=idempotency_key,
-            )
+            winner = await self._existing_command(idempotency_key=idempotency_key)
             if winner is None:
                 raise
             self._assert_existing_matches(
                 winner,
+                candidate_id=authority.candidate_id,
                 source_document_id=authority.source_document_id,
                 reply_text=reply_text,
             )
@@ -465,13 +459,11 @@ class ChannelDMReplyService:
         # the actor and immutable candidate/source binding, return it before mutable
         # connector/provenance/Telegram checks. This guarantees duplicate HTTP calls
         # never turn a late connector disable or routing drift into a second send.
-        existing = await self._existing_command(
-            candidate_id=int(candidate.id),
-            idempotency_key=key,
-        )
+        existing = await self._existing_command(idempotency_key=key)
         if existing is not None:
             self._assert_existing_matches(
                 existing,
+                candidate_id=int(candidate.id),
                 source_document_id=int(document.id),
                 reply_text=text,
             )
