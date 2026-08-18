@@ -32,11 +32,11 @@ from app.workers.canonical_repeat_continuation import CanonicalRepeatContinuatio
 class Scheduler(RecoveryScheduler):
     """Recovery scheduler plus provider-free canonical repeat continuation lifecycle.
 
-    Exact plain/silent fixed-delay linked repeats may now yield before the inherited
-    legacy lease when a successfully started canonical repeat primary is live. The
-    scheduler performs no repeat cutover mutation itself; the canonical primary remains
-    the sole atomic handoff/claim owner. Unsupported repeat compositions continue through
-    the inherited legacy callback.
+    Exact plain/silent fixed-delay linked repeats and exact pin variants may now yield
+    before the inherited legacy lease when a successfully started canonical repeat
+    primary is live. The scheduler performs no repeat cutover mutation itself; the
+    canonical primary remains the sole atomic handoff/claim owner. Forward and destructive
+    repeat compositions continue through the inherited legacy callback.
 
     Production constructs the scheduler with an async session factory. A single long-lived
     AsyncSession cannot safely back an independent polling worker, so continuation stays
@@ -71,13 +71,13 @@ class Scheduler(RecoveryScheduler):
         factory = getattr(self, "session_factory", None)
         return factory if factory is not None else None
 
-    async def _yield_plain_repeat_to_canonical_primary(
+    async def _yield_proven_repeat_to_canonical_primary(
         self,
         session: AsyncSession,
         *,
         task_id: int,
     ) -> bool:
-        """Yield one exact plain/silent repeat without mutating transport authority."""
+        """Yield one exact plain/silent or pin repeat without mutating authority."""
 
         if not canonical_publication_delivery_repeat_started():
             return False
@@ -113,9 +113,7 @@ class Scheduler(RecoveryScheduler):
             runtime_options = plan.runtime_options()
         except (TypeError, ValueError):
             return False
-        if not isinstance(runtime_options, dict) or not set(runtime_options).issubset(
-            {"silent"}
-        ):
+        if not isinstance(runtime_options, dict):
             return False
 
         proof = CanonicalPublicationLinkedRepeatParityService().prove(
@@ -126,9 +124,18 @@ class Scheduler(RecoveryScheduler):
         )
         if proof is None:
             return False
+
+        runtime_keys = set(runtime_options)
+        plain_profile = runtime_keys.issubset({"silent"}) and not proof.pin_on
+        pin_profile = (
+            runtime_keys.issubset({"silent", "pin_on"})
+            and runtime_options.get("pin_on") is True
+            and proof.pin_on
+        )
+        if not (plain_profile or pin_profile):
+            return False
         if (
-            proof.pin_on
-            or proof.forward_channel_ids
+            proof.forward_channel_ids
             or proof.time_autodelete_seconds is not None
             or proof.views_autodelete_threshold is not None
             or proof.autodelete_report
@@ -137,10 +144,11 @@ class Scheduler(RecoveryScheduler):
             return False
 
         logger.info(
-            "Scheduler: yielding exact plain repeat to canonical primary post_id={} publication_id={} repeat_group_id={}",
+            "Scheduler: yielding exact repeat to canonical primary post_id={} publication_id={} repeat_group_id={} pin_on={}",
             int(task_id),
             int(publication.id),
             int(proof.repeat_group_id),
+            bool(proof.pin_on),
         )
         return True
 
@@ -204,7 +212,7 @@ class Scheduler(RecoveryScheduler):
         legacy_candidates: list[PostTask] = []
         for task_id in selected_ids:
             try:
-                yielded_repeat = await self._yield_plain_repeat_to_canonical_primary(
+                yielded_repeat = await self._yield_proven_repeat_to_canonical_primary(
                     session,
                     task_id=task_id,
                 )
