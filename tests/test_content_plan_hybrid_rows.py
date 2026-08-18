@@ -17,7 +17,7 @@ from app.services.content_plan_published_rows import PublishedContentPlanRow
 def _row(**updates) -> PublishedContentPlanRow:
     values = {
         "publication_id": 77,
-        "legacy_post_task_id": None,
+        "has_legacy_post_task_link": False,
         "scheduled_at": datetime(2026, 8, 10, 12, 30, tzinfo=timezone.utc),
         "title": "Canonical published row",
         "autodeleted": False,
@@ -49,7 +49,7 @@ def test_canonical_only_non_repeat_row_uses_publication_identity() -> None:
 def test_linked_or_repeat_canonical_rows_are_not_injected() -> None:
     assert (
         canonical_published_button_row(
-            _row(legacy_post_task_id=44),
+            _row(has_legacy_post_task_link=True),
             date_iso="2026-08-10",
             tz_code="UTC",
         )
@@ -78,6 +78,30 @@ def test_hybrid_rows_keep_chronological_order() -> None:
     merged = merge_timed_content_plan_rows([legacy], [canonical])
 
     assert [row[0].callback_data for row in merged] == ["canonical", "legacy"]
+
+
+def test_hybrid_merge_preserves_legacy_repeat_grouping_collapse_and_order() -> None:
+    repeat_group = TimedContentPlanButtonRow(
+        scheduled_at=datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc),
+        buttons=[
+            InlineKeyboardButton(text="repeat root", callback_data="repeat-root"),
+            InlineKeyboardButton(text="collapse", callback_data="repeat-collapse"),
+        ],
+    )
+    canonical = TimedContentPlanButtonRow(
+        scheduled_at=datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc),
+        buttons=[InlineKeyboardButton(text="canonical", callback_data="canonical")],
+    )
+
+    merged = merge_timed_content_plan_rows([repeat_group], [canonical])
+
+    assert [
+        [button.callback_data for button in row]
+        for row in merged
+    ] == [
+        ["canonical"],
+        ["repeat-root", "repeat-collapse"],
+    ]
 
 
 def test_canonical_listing_failure_preserves_legacy_enhancement_boundary(

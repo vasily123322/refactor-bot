@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import fields
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -75,6 +76,37 @@ async def _seed_published(Session) -> tuple[int, int, int, int]:
         return int(channel.id), int(publication.id), schedule_id, task_id
 
 
+def test_published_row_projects_link_presence_without_raw_post_task_identity(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'published-content-plan-linked-row.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            channel_id, publication_id, _, _ = await _seed_published(Session)
+
+            async with Session() as session:
+                rows = await list_published_content_plan_rows(
+                    session,
+                    channel_id=channel_id,
+                    start_at=datetime(2026, 8, 10, tzinfo=timezone.utc),
+                    end_at=datetime(2026, 8, 11, tzinfo=timezone.utc) - timedelta(microseconds=1),
+                )
+
+            assert len(rows) == 1
+            row = rows[0]
+            assert row.publication_id == publication_id
+            assert row.has_legacy_post_task_link is True
+            assert "legacy_post_task_id" not in {field.name for field in fields(type(row))}
+            assert not hasattr(row, "legacy_post_task_id")
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_published_row_survives_post_task_retirement(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
@@ -104,7 +136,8 @@ def test_published_row_survives_post_task_retirement(tmp_path) -> None:
             assert len(rows) == 1
             row = rows[0]
             assert row.publication_id == publication_id
-            assert row.legacy_post_task_id is None
+            assert row.has_legacy_post_task_link is False
+            assert not hasattr(row, "legacy_post_task_id")
             assert row.scheduled_at == datetime(2026, 8, 10, 12, 30, tzinfo=timezone.utc)
             assert row.title == "Canonical row survives transport retirement"
             assert row.autodeleted is True
