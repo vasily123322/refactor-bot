@@ -9,14 +9,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
 from app.domain.models import PostTask
-from app.domain.publishing.models import Publication
+from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.canonical_publication_delivery_authority import (
     canonical_publication_delivery_primary_started,
+    canonical_publication_delivery_repeat_started,
     canonical_publication_delivery_time_autodelete_started,
     canonical_publication_delivery_views_autodelete_started,
 )
+from app.services.canonical_publication_delivery_planner import (
+    CanonicalPublicationDeliveryPlanner,
+)
 from app.services.canonical_publication_legacy_transport_handoff import (
     CanonicalPublicationLegacyTransportHandoffService,
+)
+from app.services.canonical_publication_linked_repeat_parity import (
+    CanonicalPublicationLinkedRepeatParityService,
 )
 from app.workers.canonical_recovery_scheduler import Scheduler as RecoveryScheduler
 from app.workers.canonical_repeat_continuation import CanonicalRepeatContinuationWorker
@@ -25,10 +32,11 @@ from app.workers.canonical_repeat_continuation import CanonicalRepeatContinuatio
 class Scheduler(RecoveryScheduler):
     """Recovery scheduler plus provider-free canonical repeat continuation lifecycle.
 
-    The existing successful-repeat flag remains the single operator intent. Legacy-linked
-    successful repeats continue through the inherited scheduler callback; transport-
-    retired canonical-delivered repeat sources are disjoint and handled by the child
-    continuation worker.
+    Exact plain/silent fixed-delay linked repeats may now yield before the inherited
+    legacy lease when a successfully started canonical repeat primary is live. The
+    scheduler performs no repeat cutover mutation itself; the canonical primary remains
+    the sole atomic handoff/claim owner. Unsupported repeat compositions continue through
+    the inherited legacy callback.
 
     Production constructs the scheduler with an async session factory. A single long-lived
     AsyncSession cannot safely back an independent polling worker, so continuation stays
@@ -62,6 +70,79 @@ class Scheduler(RecoveryScheduler):
     ) -> async_sessionmaker[AsyncSession] | None:
         factory = getattr(self, "session_factory", None)
         return factory if factory is not None else None
+
+    async def _yield_plain_repeat_to_canonical_primary(
+        self,
+        session: AsyncSession,
+        *,
+        task_id: int,
+    ) -> bool:
+        """Yield one exact plain/silent repeat without mutating transport authority."""
+
+        if not canonical_publication_delivery_repeat_started():
+            return False
+
+        publications = list(
+            (
+                await session.execute(
+                    select(Publication)
+                    .where(Publication.legacy_post_task_id == int(task_id))
+                    .limit(2)
+                )
+            ).scalars().all()
+        )
+        if len(publications) != 1:
+            return False
+        publication = publications[0]
+        if publication.schedule_entry_id is None:
+            return False
+
+        task = await session.get(PostTask, int(task_id), populate_existing=True)
+        schedule = await session.get(
+            ScheduleEntry,
+            int(publication.schedule_entry_id),
+            populate_existing=True,
+        )
+        if task is None or schedule is None:
+            return False
+
+        plan = await CanonicalPublicationDeliveryPlanner(session).plan(int(publication.id))
+        if plan is None:
+            return False
+        try:
+            runtime_options = plan.runtime_options()
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(runtime_options, dict) or not set(runtime_options).issubset(
+            {"silent"}
+        ):
+            return False
+
+        proof = CanonicalPublicationLinkedRepeatParityService().prove(
+            task=task,
+            publication=publication,
+            schedule=schedule,
+            plan=plan,
+        )
+        if proof is None:
+            return False
+        if (
+            proof.pin_on
+            or proof.forward_channel_ids
+            or proof.time_autodelete_seconds is not None
+            or proof.views_autodelete_threshold is not None
+            or proof.autodelete_report
+            or proof.views_pin_forward_composed
+        ):
+            return False
+
+        logger.info(
+            "Scheduler: yielding exact plain repeat to canonical primary post_id={} publication_id={} repeat_group_id={}",
+            int(task_id),
+            int(publication.id),
+            int(proof.repeat_group_id),
+        )
+        return True
 
     async def _retire_transport_for_canonical_primary(
         self,
@@ -113,7 +194,7 @@ class Scheduler(RecoveryScheduler):
         session: AsyncSession,
         items: list[PostTask],
     ) -> None:
-        """Retire exact canonical work before inherited legacy lease claim."""
+        """Yield/retire exact canonical work before inherited legacy lease claim."""
 
         if not items or not canonical_publication_delivery_primary_started():
             await super()._mark_processing(session, items)
@@ -123,6 +204,12 @@ class Scheduler(RecoveryScheduler):
         legacy_candidates: list[PostTask] = []
         for task_id in selected_ids:
             try:
+                yielded_repeat = await self._yield_plain_repeat_to_canonical_primary(
+                    session,
+                    task_id=task_id,
+                )
+                if yielded_repeat:
+                    continue
                 retired = await self._retire_transport_for_canonical_primary(
                     session,
                     task_id=task_id,
@@ -132,7 +219,7 @@ class Scheduler(RecoveryScheduler):
             except Exception as exc:
                 await session.rollback()
                 logger.warning(
-                    "Scheduler: canonical transport retirement failed post_id={} type={}",
+                    "Scheduler: canonical authority retirement failed post_id={} type={}",
                     task_id,
                     type(exc).__name__,
                 )
