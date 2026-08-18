@@ -27,6 +27,13 @@ from app.services.source_reconciliation import (
     SourceProjection,
     SourceProjectionUpdateMode,
 )
+from app.services.suggested_post_business import (
+    effective_native_state,
+    integer,
+    mapping,
+    paid_proposal_is_safe_to_approve,
+    text,
+)
 from app.services.telegram_suggested_posts import (
     SUGGESTED_POST_CONNECTOR_KIND,
     suggested_post_external_id,
@@ -118,51 +125,12 @@ async def _candidate_action_lock(candidate_id: int) -> AsyncIterator[None]:
                 _lock_registry.pop(key, None)
 
 
-_KNOWN_NATIVE_STATES = {
-    "pending",
-    "approved",
-    "declined",
-    "approval_failed",
-    "paid",
-    "refunded",
-}
-_INITIAL_NATIVE_STATES = {"pending", "approved", "declined"}
-
-
-def _mapping(value: Any) -> Mapping[str, Any] | None:
-    return value if isinstance(value, Mapping) else None
-
-
-def _integer(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    if isinstance(value, str):
-        text = value.strip()
-        if text and text.lstrip("-").isdigit():
-            try:
-                return int(text)
-            except ValueError:
-                return None
-    return None
-
-
-def _text(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip()
-    return normalized or None
-
-
 def _stored_identity(metadata: Mapping[str, Any]) -> SuggestedPostStoredIdentity | None:
     if metadata.get("transport") != "telegram_suggested_posts":
         return None
-    dm_chat_id = _integer(metadata.get("telegram_direct_messages_chat_id"))
-    message_id = _integer(metadata.get("telegram_message_id"))
-    parent_chat_id = _integer(metadata.get("telegram_parent_chat_id"))
+    dm_chat_id = integer(metadata.get("telegram_direct_messages_chat_id"))
+    message_id = integer(metadata.get("telegram_message_id"))
+    parent_chat_id = integer(metadata.get("telegram_parent_chat_id"))
     if dm_chat_id in (None, 0) or message_id is None or message_id <= 0:
         return None
     if parent_chat_id in (None, 0):
@@ -174,23 +142,12 @@ def _stored_identity(metadata: Mapping[str, Any]) -> SuggestedPostStoredIdentity
     )
 
 
-def _stored_native_state(metadata: Mapping[str, Any]) -> str:
-    if "telegram_suggested_post_lifecycle" in metadata:
-        lifecycle = _mapping(metadata.get("telegram_suggested_post_lifecycle"))
-        event = _text(lifecycle.get("event")) if lifecycle is not None else None
-        return event if event in _KNOWN_NATIVE_STATES else "unknown"
-
-    info = _mapping(metadata.get("telegram_suggested_post_info"))
-    state = _text(info.get("state")) if info is not None else None
-    return state if state in _INITIAL_NATIVE_STATES else "unknown"
-
-
 def _target_state(action: SuggestedPostAction) -> str:
     return "approved" if action is SuggestedPostAction.APPROVE else "declined"
 
 
 def _normalize_comment(action: SuggestedPostAction, comment: str | None) -> str | None:
-    normalized = _text(comment)
+    normalized = text(comment)
     if action is SuggestedPostAction.APPROVE:
         if normalized is not None:
             raise SuggestedPostActionError(
@@ -326,7 +283,7 @@ class SuggestedPostActionService:
                 "connector Telegram channel no longer matches canonical Channel",
             )
 
-        metadata = _mapping(document.meta)
+        metadata = mapping(document.meta)
         identity = _stored_identity(metadata or {})
         if metadata is None or identity is None:
             raise SuggestedPostActionError(
@@ -378,7 +335,7 @@ class SuggestedPostActionService:
                 "Telegram chat is no longer a channel direct-messages chat",
             )
         parent_chat = getattr(chat, "parent_chat", None)
-        parent_chat_id = _integer(getattr(parent_chat, "id", None))
+        parent_chat_id = integer(getattr(parent_chat, "id", None))
         if parent_chat_id is None or int(parent_chat_id) != int(channel.tg_chat_id):
             raise SuggestedPostActionError(
                 SuggestedPostActionFailure.ROUTING_MISMATCH,
@@ -420,8 +377,8 @@ class SuggestedPostActionService:
     ) -> None:
         try:
             if action is SuggestedPostAction.APPROVE:
-                # Intentionally omit send_date. T4.4 does not create a second
-                # scheduling authority and preserves Telegram's existing semantics.
+                # Price and send_date are deliberately omitted. Telegram's stored
+                # Suggested Post terms remain the only native business authority.
                 success = await self.bot.approve_suggested_post(
                     chat_id=int(identity.direct_messages_chat_id),
                     message_id=int(identity.message_id),
@@ -496,8 +453,8 @@ class SuggestedPostActionService:
                     candidate_id=candidate_id,
                     actor_client_id=actor_client_id,
                 )
-                metadata = _mapping(document.meta) or {}
-                current_state = _stored_native_state(metadata)
+                metadata = mapping(document.meta) or {}
+                current_state = effective_native_state(metadata)
                 target_state = _target_state(action)
 
                 if current_state == target_state:
@@ -511,6 +468,14 @@ class SuggestedPostActionService:
                     raise SuggestedPostActionError(
                         SuggestedPostActionFailure.NOT_ACTIONABLE,
                         f"stored Suggested Post state {current_state!r} is not actionable",
+                    )
+                if (
+                    action is SuggestedPostAction.APPROVE
+                    and not paid_proposal_is_safe_to_approve(metadata)
+                ):
+                    raise SuggestedPostActionError(
+                        SuggestedPostActionFailure.INVALID_REQUEST,
+                        "stored Suggested Post price is not understood",
                     )
 
                 await self._fresh_parent_check(channel=channel, identity=identity)
