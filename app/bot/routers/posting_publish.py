@@ -26,7 +26,6 @@ from app.bot.routers.utils.post_payload import (
     _set_autodelete_effective,
     _gate_short_autodelete_in_payload,
     _apply_autosign_if_enabled,
-    _schedule_next_repeat_if_pro,
     _build_scheduled_confirmation,
     _render_forward_menu,
     _add_author_meta_from_user,
@@ -337,7 +336,6 @@ async def cb_post_settings_publish(callback: CallbackQuery, state: FSMContext):
             service = PostingService(tg_bot, session)
         payload = _add_author_meta_from_user(callback.from_user, payload)  # type: ignore[name-defined]
         await service.schedule(chan_id, payload, when)
-        await _schedule_next_repeat_if_pro(service, chan_id, payload, data, when)
         text, kb = await _build_scheduled_confirmation(chan_id, defer_iso)
         with suppress(TelegramBadRequest):
             await callback.message.edit_text(

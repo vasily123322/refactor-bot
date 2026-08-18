@@ -301,19 +301,6 @@ async def _apply_autosign_if_enabled(
         return payload
 
 
-async def _schedule_next_repeat_if_pro(
-    service, chan_id: int, payload: dict, state_data: dict, when: _dt
-) -> None:
-    """Compatibility no-op: canonical continuation owns deferred repeat successors.
-
-    A deferred repeat root is already atomically mirrored by ``PostingService.schedule``.
-    Pre-seeding another task here independently decided a second occurrence and, when
-    ``repeat_group_id`` was absent, created a second canonical repeat root. Keep the
-    helper temporarily for import compatibility while removing its execution authority.
-    """
-    return None
-
-
 async def _build_scheduled_confirmation(chan_id: int, defer_iso: str):
     link = None
     title = "канал"
