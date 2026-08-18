@@ -15,6 +15,7 @@ from app.services.source_reconciliation import (
 from app.services.telegram_channel_dm_context import (
     ChannelDMContextResolver,
     ChannelDMContextRoutingError,
+    channel_dm_external_id,
 )
 
 
@@ -51,10 +52,6 @@ class TelegramChannelDMRoutingError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class TelegramChannelDMResult:
     reconciliation: SourceReconciliationResult
-
-
-def channel_dm_external_id(chat_id: int, message_id: int) -> str:
-    return f"dm:{int(chat_id)}:{int(message_id)}"
 
 
 def _dump(value: Any) -> Any:
