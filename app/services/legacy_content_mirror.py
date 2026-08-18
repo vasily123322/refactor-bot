@@ -477,34 +477,3 @@ async def mirror_legacy_post_task(
         if commit:
             await session.rollback()
         raise
-
-
-async def mirror_unlinked_legacy_tasks(
-    session: AsyncSession,
-    *,
-    limit: int = 100,
-) -> tuple[int, int]:
-    """Mirror a bounded batch. Returns (mirrored, skipped)."""
-    linked_subquery = select(Publication.legacy_post_task_id).where(
-        Publication.legacy_post_task_id.is_not(None)
-    )
-    result = await session.execute(
-        select(PostTask)
-        .where(PostTask.id.not_in(linked_subquery))
-        .order_by(PostTask.id.desc())
-        .limit(max(1, min(int(limit), 500)))
-    )
-    tasks = list(result.scalars().all())
-    mirrored = 0
-    skipped = 0
-    for task in reversed(tasks):
-        try:
-            publication = await mirror_legacy_post_task(session, task)
-            if publication is None:
-                skipped += 1
-            else:
-                mirrored += 1
-        except Exception:
-            skipped += 1
-            logger.exception("Legacy content mirror failed PostTask id={}", int(task.id))
-    return mirrored, skipped
