@@ -201,9 +201,6 @@ class TelegramSuggestedPostIngestionService:
         if topic is None or info is None:
             return TelegramSuggestedPostResult(TelegramSuggestedPostDisposition.IGNORED)
 
-        # A real inbound proposal is authored by the user who owns this native DM
-        # topic. Bot/channel senders and human admin/output in somebody else's topic
-        # are transport output, not candidate content.
         topic_user = topic.user
         if (
             topic_user is None
@@ -242,10 +239,7 @@ class TelegramSuggestedPostIngestionService:
         result = await self.reconciler.reconcile(
             connector,
             SourceProjection(
-                external_id=suggested_post_external_id(
-                    dm_chat_id,
-                    int(message.message_id),
-                ),
+                external_id=suggested_post_external_id(dm_chat_id, int(message.message_id)),
                 content=content,
                 author=_author(message),
                 published_at=message.date,
@@ -268,8 +262,6 @@ class TelegramSuggestedPostIngestionService:
         event_name, event = lifecycle
         original = getattr(event, "suggested_post_message", None)
         if original is None:
-            # Correlation is optional on the wire. Without the native original
-            # message identity there is no safe document to mutate.
             return TelegramSuggestedPostResult(TelegramSuggestedPostDisposition.IGNORED)
 
         dm_chat_id = int(original.chat.id)
@@ -282,6 +274,7 @@ class TelegramSuggestedPostIngestionService:
         lifecycle_metadata = {
             "event": event_name,
             "service_message_id": int(message.message_id),
+            "service_message_date": message.date.isoformat(),
             "payload": event_payload,
         }
         metadata = {
@@ -295,10 +288,7 @@ class TelegramSuggestedPostIngestionService:
         result = await self.reconciler.reconcile(
             connector,
             SourceProjection(
-                external_id=suggested_post_external_id(
-                    dm_chat_id,
-                    int(original.message_id),
-                ),
+                external_id=suggested_post_external_id(dm_chat_id, int(original.message_id)),
                 metadata=metadata,
                 update_mode=SourceProjectionUpdateMode.LIFECYCLE,
             ),
