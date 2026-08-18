@@ -30,6 +30,11 @@ class ChannelDMContextRoutingError(RuntimeError):
         super().__init__(code.value)
 
 
+def channel_dm_external_id(direct_messages_chat_id: int, message_id: int) -> str:
+    """Return the Telegram-native stable identity shared by all Channel-DM features."""
+    return f"dm:{int(direct_messages_chat_id)}:{int(message_id)}"
+
+
 @dataclass(frozen=True, slots=True)
 class ChannelDMContext:
     direct_messages_chat_id: int
