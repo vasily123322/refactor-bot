@@ -5,7 +5,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
@@ -435,10 +435,52 @@ class Scheduler(RecoveryScheduler):
         *,
         task_id: int,
     ) -> bool:
-        """Return whether a retired repeat profile must bypass legacy boot mutation."""
+        """Protect only an unambiguous single pending member of one repeat group.
+
+        Boot cleanup and overflow are group-level legacy mutations.  An occurrence-level
+        canonical proof is therefore insufficient when another pending member of the same
+        repeat group exists: yielding one member while legacy cleanup owns a sibling can
+        create duplicate continuation/execution authority.  Ambiguous groups fail closed
+        to the inherited legacy group cleanup; canonical protection is admitted only when
+        this task is the sole pending member of its repeat group.
+        """
 
         if not canonical_publication_delivery_repeat_started():
             return False
+
+        task = await session.get(PostTask, int(task_id), populate_existing=True)
+        if task is None or str(task.status) != "pending":
+            return False
+        payload = dict(task.payload or {})
+        if payload.get("repeat_on") is not True:
+            return False
+        raw_group_id = payload.get("repeat_group_id")
+        try:
+            group_id = int(task.id) if raw_group_id is None else int(raw_group_id)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if group_id <= 0:
+            return False
+
+        pending_group_ids = list(
+            (
+                await session.execute(
+                    select(PostTask.id)
+                    .where(
+                        PostTask.status == "pending",
+                        or_(
+                            PostTask.id == group_id,
+                            PostTask.payload["repeat_group_id"].as_integer() == group_id,
+                        ),
+                    )
+                    .order_by(PostTask.id.asc())
+                    .limit(2)
+                )
+            ).scalars().all()
+        )
+        if len(pending_group_ids) != 1 or int(pending_group_ids[0]) != int(task_id):
+            return False
+
         try:
             return await self._yield_proven_repeat_to_canonical_primary(
                 session,
@@ -558,8 +600,11 @@ class Scheduler(RecoveryScheduler):
         selected_ids = [int(post.id) for post in items]
         legacy_candidates: list[PostTask] = []
         for task_id in selected_ids:
+            current = await session.get(PostTask, task_id, populate_existing=True)
+            if current is None or str(current.status) != "pending":
+                continue
             try:
-                yielded_repeat = await self._yield_proven_repeat_to_canonical_primary(
+                yielded_repeat = await self._legacy_repeat_boot_mutation_protected(
                     session,
                     task_id=task_id,
                 )
@@ -584,7 +629,7 @@ class Scheduler(RecoveryScheduler):
                 continue
 
             post = await session.get(PostTask, task_id, populate_existing=True)
-            if post is not None:
+            if post is not None and str(post.status) == "pending":
                 legacy_candidates.append(post)
 
         items[:] = legacy_candidates
