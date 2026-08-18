@@ -17,6 +17,7 @@ from app.services.canonical_publication_delivery_authority import (
     canonical_publication_delivery_repeat_time_pin_forward_started,
     canonical_publication_delivery_repeat_time_pin_started,
     canonical_publication_delivery_repeat_time_started,
+    canonical_publication_delivery_repeat_views_started,
     canonical_publication_delivery_time_autodelete_started,
     canonical_publication_delivery_views_autodelete_started,
 )
@@ -47,11 +48,10 @@ class Scheduler(RecoveryScheduler):
 
     Exact fixed-delay linked repeats may yield before the inherited legacy lease when a
     successfully started canonical repeat primary is live. Established non-destructive
-    profiles remain eligible. Exact repeat+time compositions may yield only while their
-    dedicated canonical composition capabilities are live, including the independently
-    proven combined pin+ordered-forward profile. Scheduler admission performs no cutover
-    mutation; the canonical primary remains the sole atomic handoff/claim owner. Views and
-    other unsupported destructive compositions continue through the inherited legacy path.
+    profiles and proven repeat+time compositions remain eligible. Exact plain repeat+views
+    may also yield only while its dedicated started capability is live. Scheduler admission
+    performs no cutover mutation; the canonical primary remains the sole atomic handoff/
+    claim owner. Views+pin/forward and time+views remain on the inherited legacy path.
     """
 
     def __init__(
@@ -258,6 +258,20 @@ class Scheduler(RecoveryScheduler):
             and not proof.views_pin_forward_composed
             and runtime_options.get("autodelete_report") in (None, False)
         )
+        views_value = runtime_options.get("autodelete_views")
+        views_profile = (
+            runtime_keys.issubset({"silent", "autodelete_views", "autodelete_report"})
+            and isinstance(views_value, int)
+            and not isinstance(views_value, bool)
+            and views_value > 0
+            and proof.views_autodelete_threshold == views_value
+            and proof.time_autodelete_seconds is None
+            and not proof.pin_on
+            and not proof.forward_channel_ids
+            and not proof.autodelete_report
+            and not proof.views_pin_forward_composed
+            and runtime_options.get("autodelete_report") in (None, False)
+        )
         if time_profile and not canonical_publication_delivery_repeat_time_started():
             return False
         if time_pin_profile and not canonical_publication_delivery_repeat_time_pin_started():
@@ -269,6 +283,8 @@ class Scheduler(RecoveryScheduler):
             and not canonical_publication_delivery_repeat_time_pin_forward_started()
         ):
             return False
+        if views_profile and not canonical_publication_delivery_repeat_views_started():
+            return False
         if not (
             plain_profile
             or pin_profile
@@ -278,6 +294,7 @@ class Scheduler(RecoveryScheduler):
             or time_pin_profile
             or time_forward_profile
             or time_pin_forward_profile
+            or views_profile
         ):
             return False
         if (
@@ -290,20 +307,21 @@ class Scheduler(RecoveryScheduler):
                     or time_pin_forward_profile
                 )
             )
-            or proof.views_autodelete_threshold is not None
+            or (proof.views_autodelete_threshold is not None and not views_profile)
             or proof.autodelete_report
             or proof.views_pin_forward_composed
         ):
             return False
 
         logger.info(
-            "Scheduler: yielding exact repeat to canonical primary post_id={} publication_id={} repeat_group_id={} pin_on={} forward_targets={} time_autodelete_seconds={}",
+            "Scheduler: yielding exact repeat to canonical primary post_id={} publication_id={} repeat_group_id={} pin_on={} forward_targets={} time_autodelete_seconds={} views_autodelete_threshold={}",
             int(task_id),
             int(publication.id),
             int(proof.repeat_group_id),
             bool(proof.pin_on),
             len(proof.forward_channel_ids),
             proof.time_autodelete_seconds,
+            proof.views_autodelete_threshold,
         )
         return True
 
