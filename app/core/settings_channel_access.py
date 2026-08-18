@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
 from app.domain.models import Channel, Client, GrabSource, PostTask
+from app.domain.publishing.models import Publication
 
 
 _DIRECT_CHANNEL_PATTERNS = (
@@ -51,6 +52,14 @@ _POST_TASK_PATTERNS = (
     re.compile(r"^cp_repeat_off:(?P<post_task_id>\d+)$"),
 )
 
+_POST_TASK_MUTATION_PATTERNS = (
+    re.compile(
+        r"^cp_(?:edit_post|delete_post):(?P<post_task_id>\d+):"
+        r"\d{4}-\d{2}-\d{2}$"
+    ),
+    re.compile(r"^cp_repeat_off:(?P<post_task_id>\d+)$"),
+)
+
 
 def _direct_channel_id_from_callback(data: str | None) -> int | None:
     if not data:
@@ -87,6 +96,33 @@ def _post_task_id_from_callback(data: str | None) -> int | None:
     return None
 
 
+def _is_post_task_mutation_callback(data: str | None) -> bool:
+    if not data:
+        return False
+    return any(pattern.fullmatch(data) for pattern in _POST_TASK_MUTATION_PATTERNS)
+
+
+def _strict_positive_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _is_intentional_time_views_fallback(task: PostTask) -> bool:
+    """Return true only for the one profile intentionally still legacy-owned."""
+    payload = task.payload if isinstance(task.payload, dict) else None
+    if payload is None:
+        return False
+    return bool(
+        _strict_positive_int(payload.get("autodelete_seconds")) is not None
+        and _strict_positive_int(payload.get("autodelete_views")) is not None
+    )
+
+
 async def _resolve_grab_source_target(
     session: AsyncSession, source_ref: tuple[int, int | None]
 ) -> int | None:
@@ -111,6 +147,25 @@ async def _resolve_post_task_target(
     except (TypeError, ValueError, OverflowError):
         return None
     return channel_id if channel_id > 0 else None
+
+
+async def _canonical_link_blocks_legacy_mutation(
+    session: AsyncSession, post_task_id: int
+) -> bool:
+    """Fail closed for linked supported profiles; preserve explicit time+views fallback."""
+    task = await session.get(PostTask, int(post_task_id))
+    if task is None:
+        return True
+    linked_publication_id = (
+        await session.execute(
+            select(Publication.id)
+            .where(Publication.legacy_post_task_id == int(post_task_id))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if linked_publication_id is None:
+        return False
+    return not _is_intentional_time_views_fallback(task)
 
 
 async def _resolve_channel_target(
@@ -161,6 +216,7 @@ class SettingsChannelOwnerMiddleware(BaseMiddleware):
         if source_ref is None and direct_channel_id is None and post_task_id is None:
             return await handler(event, data)
 
+        blocked_canonical_mutation = False
         async with AsyncSessionLocal() as session:
             if source_ref is not None:
                 channel_id = await _resolve_grab_source_target(session, source_ref)
@@ -179,8 +235,22 @@ class SettingsChannelOwnerMiddleware(BaseMiddleware):
                     session, tg_user_id=user_id, channel_id=channel_id
                 )
             )
+            if (
+                allowed
+                and post_task_id is not None
+                and _is_post_task_mutation_callback(callback_data)
+            ):
+                blocked_canonical_mutation = await _canonical_link_blocks_legacy_mutation(
+                    session, post_task_id
+                )
 
         if not allowed:
             await event.answer("Нет доступа к этому каналу", show_alert=True)
+            return None
+        if blocked_canonical_mutation:
+            await event.answer(
+                "Публикация управляется через canonical карточку",
+                show_alert=True,
+            )
             return None
         return await handler(event, data)
