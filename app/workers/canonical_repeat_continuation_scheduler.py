@@ -5,7 +5,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
@@ -438,7 +438,7 @@ class Scheduler(RecoveryScheduler):
         *,
         task_id: int,
     ) -> bool:
-        """Protect canonical or ambiguous linked repeats from legacy boot mutation."""
+        """Protect only an unambiguous canonical repeat from legacy group mutation."""
 
         try:
             admission = await CanonicalSchedulerAdmissionService(session).classify(
@@ -461,6 +461,51 @@ class Scheduler(RecoveryScheduler):
             return True
         if admission.repeat is not True:
             return True
+
+        task = await session.get(PostTask, int(task_id), populate_existing=True)
+        if task is None or str(task.status) != "pending":
+            return True
+        payload = dict(task.payload or {})
+        if payload.get("repeat_on") is not True:
+            return True
+        raw_group_id = payload.get("repeat_group_id")
+        try:
+            group_id = int(task.id) if raw_group_id is None else int(raw_group_id)
+        except (TypeError, ValueError, OverflowError):
+            return True
+        if group_id <= 0:
+            return True
+
+        try:
+            pending_group_ids = list(
+                (
+                    await session.execute(
+                        select(PostTask.id)
+                        .where(
+                            PostTask.status == "pending",
+                            or_(
+                                PostTask.id == group_id,
+                                PostTask.payload["repeat_group_id"].as_integer() == group_id,
+                            ),
+                        )
+                        .order_by(PostTask.id.asc())
+                        .limit(2)
+                    )
+                ).scalars().all()
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await session.rollback()
+            logger.warning(
+                "Scheduler: repeat group lookup failed post_id={} type={}",
+                int(task_id),
+                type(exc).__name__,
+            )
+            return True
+        if len(pending_group_ids) != 1 or int(pending_group_ids[0]) != int(task_id):
+            # Group-level legacy cleanup owns ambiguous historical/preseeded groups.
+            return False
 
         try:
             yielded = await self._yield_proven_repeat_to_canonical_primary(
@@ -605,7 +650,7 @@ class Scheduler(RecoveryScheduler):
 
             if admission.legacy_allowed:
                 post = await session.get(PostTask, task_id, populate_existing=True)
-                if post is not None:
+                if post is not None and str(post.status) == "pending":
                     legacy_candidates.append(post)
                 continue
 
@@ -618,11 +663,17 @@ class Scheduler(RecoveryScheduler):
 
             try:
                 if admission.repeat is True:
-                    yielded = await self._yield_proven_repeat_to_canonical_primary(
+                    protected = await self._legacy_repeat_boot_mutation_protected(
                         session,
                         task_id=task_id,
                     )
-                elif admission.repeat is False:
+                    if protected:
+                        continue
+                    post = await session.get(PostTask, task_id, populate_existing=True)
+                    if post is not None and str(post.status) == "pending":
+                        legacy_candidates.append(post)
+                    continue
+                if admission.repeat is False:
                     yielded = await self._yield_proven_nonrepeat_to_canonical_primary(
                         session,
                         task_id=task_id,
