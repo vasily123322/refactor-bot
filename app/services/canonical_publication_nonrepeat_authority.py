@@ -19,7 +19,7 @@ _TIME_PIN = True
 _TIME_FORWARD = True
 _TIME_PIN_FORWARD = True
 _VIEWS = True
-_VIEWS_PIN = False
+_VIEWS_PIN = True
 _VIEWS_FORWARD = False
 _VIEWS_PIN_FORWARD = False
 
