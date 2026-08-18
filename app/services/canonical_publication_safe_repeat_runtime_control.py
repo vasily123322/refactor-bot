@@ -122,5 +122,6 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
     set_canonical_publication_delivery_primary_worker(
         worker,
         time_autodelete_available=time_available,
+        views_autodelete_available=views_available,
     )
     return worker

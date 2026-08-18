@@ -54,13 +54,14 @@ async def start_canonical_publication_delivery_primary_if_enabled(
         )
 
     time_available = bool(time_autodelete_executor_available)
+    views_available = bool(views_autodelete_executor_available)
     runtime = build_canonical_publication_delivery_runtime(
         bot=bot,
         session_factory=session_factory,
         lease_seconds=config.lease_ttl_seconds,
         heartbeat_interval_seconds=float(config.heartbeat_interval_seconds),
         allow_time_autodelete=time_available,
-        allow_views_autodelete=bool(views_autodelete_executor_available),
+        allow_views_autodelete=views_available,
         allow_repeat=bool(repeat_continuation_available),
     )
     handoff_executor = CanonicalPublicationDeliveryHandoffExecutor(
@@ -87,6 +88,7 @@ async def start_canonical_publication_delivery_primary_if_enabled(
     set_canonical_publication_delivery_primary_worker(
         worker,
         time_autodelete_available=time_available,
+        views_autodelete_available=views_available,
     )
     return worker
 

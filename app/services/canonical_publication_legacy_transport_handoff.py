@@ -302,6 +302,7 @@ def _authority_intent_matches(
     publication: Publication,
     plan: CanonicalPublicationDeliveryPlan,
     allow_time_autodelete: bool,
+    allow_views_autodelete: bool,
 ) -> bool:
     if _legacy_intent_matches(
         task=task,
@@ -309,12 +310,12 @@ def _authority_intent_matches(
         plan=plan,
     ):
         return True
-    if not allow_time_autodelete:
+    if not allow_time_autodelete and not allow_views_autodelete:
         return False
 
     # Reuse the exact atomic handoff capability lattice rather than defining another
-    # timer parser/matcher here. The local import avoids the module-init dependency cycle:
-    # the atomic service imports baseline helpers from this module at import time.
+    # delete parser/matcher here. The local import avoids the module-init dependency
+    # cycle: the atomic service imports baseline helpers from this module at import time.
     from app.services.canonical_publication_delivery_atomic_handoff_claim import (
         _atomic_legacy_intent_matches,
         _atomic_runtime_profile,
@@ -322,16 +323,18 @@ def _authority_intent_matches(
 
     profile = _atomic_runtime_profile(
         plan,
-        allow_time_autodelete=True,
-        allow_views_autodelete=False,
+        allow_time_autodelete=allow_time_autodelete,
+        allow_views_autodelete=allow_views_autodelete,
     )
-    if (
-        profile is None
-        or not profile.timer_requested
-        or profile.pin_on
-        or profile.views_requested
-        or profile.autodelete_report
-    ):
+    if profile is None or profile.pin_on or profile.autodelete_report:
+        return False
+    if profile.timer_requested:
+        if not allow_time_autodelete or profile.views_requested:
+            return False
+    elif profile.views_requested:
+        if not allow_views_autodelete or profile.timer_requested:
+            return False
+    else:
         return False
     return _atomic_legacy_intent_matches(
         task=task,
@@ -360,10 +363,11 @@ class CanonicalPublicationLegacyTransportHandoffService:
     handoff. This service never deletes or takes a scheduler lease and never calls a
     provider. Canonical delivery remains `queued` until a later exact canonical claim.
 
-    Baseline capability is non-repeat empty/silent/pin parity. A caller may additionally
-    prove a started canonical time-autodelete dependency; timer-only admission then reuses
-    the existing atomic handoff runtime profile and legacy-intent matcher. Pin+time, views,
-    report and forward remain closed here. Hidden legacy effects are never inferred.
+    Baseline capability is non-repeat empty/silent/pin parity. Callers may additionally
+    prove started canonical time or views autodelete dependencies; timer-only/views-only
+    admission then reuses the existing atomic handoff runtime profile and legacy-intent
+    matcher. Pin+delete, report, mixed delete modes and forward remain closed here.
+    Hidden legacy effects are never inferred.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -388,6 +392,7 @@ class CanonicalPublicationLegacyTransportHandoffService:
         *,
         at: datetime | None = None,
         allow_time_autodelete: bool = False,
+        allow_views_autodelete: bool = False,
     ) -> CanonicalPublicationLegacyTransportHandoffResult:
         try:
             safe_publication_id = int(publication_id)
@@ -514,6 +519,7 @@ class CanonicalPublicationLegacyTransportHandoffService:
                     publication=publication,
                     plan=plan,
                     allow_time_autodelete=allow_time_autodelete,
+                    allow_views_autodelete=allow_views_autodelete,
                 )
             ):
                 return await self._result(_INELIGIBLE, safe_publication_id, task_id)
