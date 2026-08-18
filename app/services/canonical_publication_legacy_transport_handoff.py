@@ -360,7 +360,7 @@ async def _forward_authority_intent_matches(
     publication: Publication,
     plan: CanonicalPublicationDeliveryPlan,
 ) -> bool:
-    """Reuse the proven linked-forward parity while keeping effect composition closed."""
+    """Reuse exact forward parity for forward-only or exact pin+forward authority."""
 
     from app.services.canonical_publication_linked_forward_parity import (
         CanonicalPublicationLinkedForwardParityService,
@@ -373,7 +373,6 @@ async def _forward_authority_intent_matches(
     )
     return bool(
         parity is not None
-        and not parity.pin_on
         and not parity.delete_requested
         and not parity.autodelete_report
     )
@@ -400,8 +399,8 @@ class CanonicalPublicationLegacyTransportHandoffService:
 
     Baseline capability is non-repeat empty/silent/pin parity. Callers may additionally
     prove started canonical time or views autodelete dependencies, admit exact pin+time
-    or pin+views, or admit the already-proven forward-only parity profile. Pin+forward,
-    delete+forward, report, mixed delete modes and repeat remain closed here. Hidden
+    or pin+views, or admit the already-proven forward and pin+forward parity profiles.
+    Delete+forward, report, mixed delete modes and repeat remain closed here. Hidden
     legacy effects are never inferred.
     """
 
