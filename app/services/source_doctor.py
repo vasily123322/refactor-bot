@@ -46,6 +46,14 @@ class SourceDoctor:
                 "auth": "mtproto_session",
                 "browser": False,
             }
+        if normalized == "telegram_channel_dms":
+            return {
+                "history": False,
+                "live": True,
+                "media": True,
+                "auth": "bot_api",
+                "browser": False,
+            }
         if normalized == "rss":
             return {
                 "history": True,
@@ -171,6 +179,15 @@ class SourceDoctor:
                     "latency_ms": round((time.monotonic() - started) * 1000),
                 },
                 success=True,
+            )
+
+        if kind == "telegram_channel_dms":
+            return SourceHealthResult(
+                status="unknown",
+                reason="Channel Direct Messages are ingested through the Bot API runtime",
+                auth_state="not_required",
+                capabilities=capabilities,
+                health={"checked": False},
             )
 
         if kind == "local_browser":
