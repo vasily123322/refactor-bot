@@ -48,11 +48,13 @@ from app.userbot.client import app as userbot
 
 router = APIRouter(prefix="/api/studio", tags=["sources"])
 
+TELEGRAM_CHANNEL_DMS_CONNECTOR_KIND = "telegram_channel_dms"
+
 
 class SourceCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["telegram", "rss", "url"]
+    kind: Literal["telegram", "rss", "url", "telegram_channel_dms"]
     value: str = Field(min_length=1, max_length=1024)
     mode: Literal["summary", "rewrite"] = "summary"
     citation_enabled: bool = True
@@ -288,17 +290,20 @@ async def create_source(
     ):
         raise HTTPException(status_code=409, detail="Source already exists")
 
-    legacy = AISource(
-        channel_id=int(channel_id),
-        source_type=request.kind,
-        source_value=value,
-        mode=request.mode,
-        enabled=True,
-        citation_enabled=request.citation_enabled,
-    )
-    session.add(legacy)
+    legacy: AISource | None = None
+    if request.kind != TELEGRAM_CHANNEL_DMS_CONNECTOR_KIND:
+        legacy = AISource(
+            channel_id=int(channel_id),
+            source_type=request.kind,
+            source_value=value,
+            mode=request.mode,
+            enabled=True,
+            citation_enabled=request.citation_enabled,
+        )
+        session.add(legacy)
     try:
-        await session.flush()
+        if legacy is not None:
+            await session.flush()
         row = SourceConnector(
             channel_id=int(channel_id),
             kind=request.kind,
@@ -311,7 +316,7 @@ async def create_source(
             auth_state=("session_required" if request.kind == "telegram" else "not_required"),
             capabilities=SourceDoctor.capabilities(request.kind),
             config={"created_from": "studio"},
-            legacy_ai_source_id=int(legacy.id),
+            legacy_ai_source_id=(int(legacy.id) if legacy is not None else None),
         )
         session.add(row)
         await session.commit()
