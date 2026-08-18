@@ -356,19 +356,20 @@ async def _render_content_plan(
             except Exception:
                 pass
             from app.services.content_plan_publication_links import (
-                content_plan_open_callback,
-                published_publication_ids_for_legacy_tasks,
+                legacy_content_plan_open_callback,
+                list_linked_content_plan_publications,
             )
+            from app.services.publication_editor import publication_open_callback
 
-            published_publication_ids = (
-                await published_publication_ids_for_legacy_tasks(
-                    session,
-                    channel_id=int(channel_id),
-                    post_task_ids=[int(item.id) for item in items],
-                )
-                if items
-                else {}
+            linked_publications = await list_linked_content_plan_publications(
+                session,
+                channel_id=int(channel_id),
+                start_at=start,
+                end_at=end,
             )
+            canonical_link_by_transport_id = {
+                row.legacy_post_task_id: row for row in linked_publications
+            }
             for p in items:
                 when = p.scheduled_at
                 if when:
@@ -415,14 +416,22 @@ async def _render_content_plan(
                     rep = None
                 suffix = (f"  {badge}" if badge else "") + (f"  {rep}" if rep else "")
                 btn_text = f"{hm} {status_emoji} {first[:40]}{suffix}"
+                canonical_link = canonical_link_by_transport_id.get(int(p.id))
+                callback_data = (
+                    publication_open_callback(
+                        canonical_link.publication_id,
+                        center_date.date().isoformat(),
+                    )
+                    if canonical_link is not None
+                    else legacy_content_plan_open_callback(
+                        post_task_id=int(p.id),
+                        date_iso=center_date.date().isoformat(),
+                    )
+                )
                 row_btns = [
                     InlineKeyboardButton(
                         text=btn_text,
-                        callback_data=content_plan_open_callback(
-                            post_task_id=int(p.id),
-                            date_iso=center_date.date().isoformat(),
-                            published_publication_ids=published_publication_ids,
-                        ),
+                        callback_data=callback_data,
                     )
                 ]
                 # Быстрая кнопка отключить автоповтор для серии

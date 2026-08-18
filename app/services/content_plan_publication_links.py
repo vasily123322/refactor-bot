@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,53 +9,40 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
-from app.services.publication_editor import publication_open_callback
 
 
-async def published_publication_ids_for_legacy_tasks(
+@dataclass(frozen=True, slots=True)
+class LinkedContentPlanPublication:
+    publication_id: int
+    legacy_post_task_id: int
+
+
+async def list_linked_content_plan_publications(
     session: AsyncSession,
     *,
     channel_id: int,
-    post_task_ids: Iterable[int],
-) -> dict[int, int]:
-    """Return linked Publication identities safe for new content-plan callbacks.
+    start_at: datetime,
+    end_at: datetime,
+) -> list[LinkedContentPlanPublication]:
+    """Load canonical linked occurrences without looking Publication up by PostTask id.
 
-    The historical function name is retained for call-site compatibility. Promotion now
-    covers both a fully queued linked occurrence and a fully published linked occurrence;
-    inconsistent state is deliberately omitted so callers keep the legacy callback.
-    Canonical lookup itself remains fail-soft: a read failure returns no promoted links
-    and never hides the content-plan row.
+    New content-plan producers start from Publication/ScheduleEntry identity for the
+    requested channel/time window. ``legacy_post_task_id`` is returned only to correlate
+    that canonical identity with an existing compatibility transport row; it is never an
+    input used to discover Publication. Historical/unlinked PostTask rows are absent from
+    this result and remain eligible for the explicit legacy callback fallback.
     """
     try:
         safe_channel_id = int(channel_id)
     except (TypeError, ValueError, OverflowError):
-        return {}
+        return []
     if safe_channel_id <= 0:
-        return {}
-
-    safe_task_ids: list[int] = []
-    for raw in post_task_ids:
-        try:
-            task_id = int(raw)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if task_id > 0:
-            safe_task_ids.append(task_id)
-    safe_task_ids = sorted(set(safe_task_ids))
-    if not safe_task_ids:
-        return {}
+        return []
 
     try:
         rows = (
             await session.execute(
-                select(Publication.legacy_post_task_id, Publication.id)
-                .join(
-                    PostTask,
-                    and_(
-                        PostTask.id == Publication.legacy_post_task_id,
-                        PostTask.channel_id == Publication.channel_id,
-                    ),
-                )
+                select(Publication.id, Publication.legacy_post_task_id)
                 .join(
                     ScheduleEntry,
                     and_(
@@ -78,9 +66,18 @@ async def published_publication_ids_for_legacy_tasks(
                         ContentRevision.revision == Publication.content_revision,
                     ),
                 )
+                .join(
+                    PostTask,
+                    and_(
+                        PostTask.id == Publication.legacy_post_task_id,
+                        PostTask.channel_id == Publication.channel_id,
+                    ),
+                )
                 .where(
                     Publication.channel_id == safe_channel_id,
-                    Publication.legacy_post_task_id.in_(safe_task_ids),
+                    Publication.legacy_post_task_id.is_not(None),
+                    ScheduleEntry.scheduled_at >= start_at,
+                    ScheduleEntry.scheduled_at <= end_at,
                     or_(
                         and_(
                             Publication.status == "queued",
@@ -94,34 +91,32 @@ async def published_publication_ids_for_legacy_tasks(
                         ),
                     ),
                 )
+                .order_by(ScheduleEntry.scheduled_at.asc(), Publication.id.asc())
             )
         ).all()
     except Exception:
-        return {}
+        return []
 
-    result: dict[int, int] = {}
-    for raw_task_id, raw_publication_id in rows:
+    result: list[LinkedContentPlanPublication] = []
+    for raw_publication_id, raw_task_id in rows:
         if raw_task_id is None:
             continue
         try:
-            task_id = int(raw_task_id)
             publication_id = int(raw_publication_id)
+            task_id = int(raw_task_id)
         except (TypeError, ValueError, OverflowError):
             continue
-        if task_id > 0 and publication_id > 0:
-            result[task_id] = publication_id
+        if publication_id > 0 and task_id > 0:
+            result.append(
+                LinkedContentPlanPublication(
+                    publication_id=publication_id,
+                    legacy_post_task_id=task_id,
+                )
+            )
     return result
 
 
-def content_plan_open_callback(
-    *,
-    post_task_id: int,
-    date_iso: str,
-    published_publication_ids: dict[int, int],
-) -> str:
-    """Prefer Publication identity only after canonical linkage was proven."""
+def legacy_content_plan_open_callback(*, post_task_id: int, date_iso: str) -> str:
+    """Compatibility callback for historical/unlinked PostTask content-plan rows."""
     task_id = int(post_task_id)
-    publication_id = published_publication_ids.get(task_id)
-    if publication_id is not None:
-        return publication_open_callback(int(publication_id), str(date_iso))
     return f"cp_open_post:{task_id}:{date_iso}"
