@@ -81,7 +81,6 @@ describe('Channel DM reply request authority', () => {
       new Response(JSON.stringify({
         candidate_id: 55,
         reply_text: 'Proposed draft only',
-        model: 'test-model',
       }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -91,7 +90,7 @@ describe('Channel DM reply request authority', () => {
 
     const result = await requestChannelDMReplyProposal(55);
 
-    expect(result.reply_text).toBe('Proposed draft only');
+    expect(result).toEqual({ candidate_id: 55, reply_text: 'Proposed draft only' });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [path, init] = fetchMock.mock.calls[0];
     expect(path).toBe('/api/studio/candidates/55/channel-dm-reply-proposal');

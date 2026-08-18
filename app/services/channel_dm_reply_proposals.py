@@ -48,12 +48,9 @@ class ChannelDMReplyProposalContext:
 class ChannelDMReplyProposalResult:
     candidate_id: int
     reply_text: str
-    model: str
 
 
 class ChannelDMReplyProposalProvider(Protocol):
-    model: str
-
     async def propose(self, *, source_text: str) -> str: ...
 
 
@@ -76,7 +73,6 @@ class ChannelAIReplyProposalProvider:
 
     def __init__(self, prepared: PreparedChannelAICompletion) -> None:
         self.prepared = prepared
-        self.model = prepared.model
 
     async def propose(self, *, source_text: str) -> str:
         system_prompt = (
@@ -88,7 +84,7 @@ class ChannelAIReplyProposalProvider:
             "Return only the proposed reply text, with no analysis, labels, JSON, or Markdown fences. "
             "The application will show this as an editable draft; a separate explicit user command is required to send it."
         )
-        user_prompt = "SOURCE MESSAGE (untrusted):\n" + str(source_text)
+        user_prompt = "SOURCE MESSAGE (untrusted, credential-redacted):\n" + str(source_text)
         try:
             raw = await self.prepared.complete(
                 system_prompt=system_prompt,
@@ -255,7 +251,7 @@ class ChannelDMReplyProposalService:
                 ChannelDMReplyProposalFailure.ROUTING_MISMATCH,
                 "trusted Channel-DM connector mapping is not unique",
             )
-        source_text = str(document.content or "").strip()
+        source_text = redact_secret_text(str(document.content or "").strip())
         if not source_text:
             raise ChannelDMReplyProposalError(
                 ChannelDMReplyProposalFailure.MALFORMED_PROVENANCE,
@@ -282,5 +278,4 @@ class ChannelDMReplyProposalService:
         return ChannelDMReplyProposalResult(
             candidate_id=context.candidate_id,
             reply_text=reply_text,
-            model=str(provider.model),
         )

@@ -49,7 +49,6 @@ class ChannelDMReplyProposalRequest(BaseModel):
 class ChannelDMReplyProposalResponse(BaseModel):
     candidate_id: int
     reply_text: str
-    model: str
 
 
 async def _session_dependency() -> AsyncIterator[AsyncSession]:
@@ -139,5 +138,4 @@ async def propose_channel_dm_reply(
     return ChannelDMReplyProposalResponse(
         candidate_id=result.candidate_id,
         reply_text=result.reply_text,
-        model=result.model,
     )

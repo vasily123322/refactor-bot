@@ -14,7 +14,6 @@ export type ChannelDMReplyResult = {
 export type ChannelDMReplyProposalResult = {
   candidate_id: number;
   reply_text: string;
-  model: string;
 };
 
 export class ChannelDMReplyApiError extends Error {

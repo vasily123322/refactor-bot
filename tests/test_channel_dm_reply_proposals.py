@@ -29,8 +29,6 @@ PARENT_CHAT_ID = -1007501
 
 
 class FakeProposalProvider:
-    model = "fake-reply-model"
-
     def __init__(self, reply_text: str = "Suggested reply") -> None:
         self.reply_text = reply_text
         self.source_texts: list[str] = []
@@ -50,7 +48,12 @@ class FakeProposalFactory:
         return self.provider
 
 
-async def _seed(session, *, transport: str = TELEGRAM_CHANNEL_DMS_CONNECTOR_KIND):
+async def _seed(
+    session,
+    *,
+    transport: str = TELEGRAM_CHANNEL_DMS_CONNECTOR_KIND,
+    content: str = "Can you send me the details tomorrow?",
+):
     channel = Channel(owner_id=1, tg_chat_id=PARENT_CHAT_ID, title="Canonical DM")
     session.add(channel)
     await session.flush()
@@ -65,7 +68,7 @@ async def _seed(session, *, transport: str = TELEGRAM_CHANNEL_DMS_CONNECTOR_KIND
         connector_id=int(connector.id),
         channel_id=int(channel.id),
         external_id=channel_dm_external_id(DM_CHAT_ID, 111),
-        content="Can you send me the details tomorrow?",
+        content=content,
         content_hash="c" * 64,
         meta={
             "transport": transport,
@@ -114,7 +117,6 @@ def test_ai_proposal_returns_editable_text_without_creating_send_or_content_auth
 
                 assert result.candidate_id == int(candidate.id)
                 assert result.reply_text == "Sure — I can send the details tomorrow."
-                assert result.model == "fake-reply-model"
                 assert factory.channel_ids == [int(channel.id)]
                 assert provider.source_texts == ["Can you send me the details tomorrow?"]
                 after = (
@@ -124,6 +126,31 @@ def test_ai_proposal_returns_editable_text_without_creating_send_or_content_auth
                     len((await session.execute(select(CandidateRewriteRun))).scalars().all()),
                 )
                 assert after == before == (0, 0, 0, 0)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_ai_proposal_redacts_credential_shaped_source_before_provider() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                _, _, _, candidate = await _seed(
+                    session,
+                    content="Please check password=supersecretvalue before replying",
+                )
+                provider = FakeProposalProvider("Draft")
+                factory = FakeProposalFactory(provider)
+                await ChannelDMReplyProposalService(
+                    session,
+                    provider_factory=factory,
+                ).propose(candidate_id=int(candidate.id), actor_client_id=1)
+                assert provider.source_texts == ["Please check password=[REDACTED] before replying"]
         finally:
             await engine.dispose()
 
