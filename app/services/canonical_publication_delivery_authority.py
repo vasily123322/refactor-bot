@@ -14,6 +14,7 @@ _repeat_time_forward_available = False
 _repeat_time_pin_forward_available = False
 _repeat_views_available = False
 _repeat_views_pin_available = False
+_repeat_views_forward_available = False
 
 
 def canonical_publication_delivery_primary_started() -> bool:
@@ -101,6 +102,15 @@ def canonical_publication_delivery_repeat_views_pin_started() -> bool:
     )
 
 
+def canonical_publication_delivery_repeat_views_forward_started() -> bool:
+    """Return the dedicated live repeat+views+forward composition fact."""
+
+    return (
+        canonical_publication_delivery_repeat_views_started()
+        and _repeat_views_forward_available
+    )
+
+
 def set_canonical_publication_delivery_primary_worker(
     worker: object | None,
     *,
@@ -114,6 +124,7 @@ def set_canonical_publication_delivery_primary_worker(
     repeat_time_pin_forward_available: bool = False,
     repeat_views_available: bool = False,
     repeat_views_pin_available: bool = False,
+    repeat_views_forward_available: bool = False,
 ) -> None:
     """Publish primary authority only with capabilities proven at successful startup."""
 
@@ -123,6 +134,7 @@ def set_canonical_publication_delivery_primary_worker(
     global _repeat_time_available, _repeat_time_pin_available
     global _repeat_time_forward_available, _repeat_time_pin_forward_available
     global _repeat_views_available, _repeat_views_pin_available
+    global _repeat_views_forward_available
 
     _primary_worker_ref = None if worker is None else weakref.ref(worker)
     _time_autodelete_available = bool(
@@ -147,3 +159,6 @@ def set_canonical_publication_delivery_primary_worker(
     )
     _repeat_views_available = bool(worker is not None and repeat_views_available)
     _repeat_views_pin_available = bool(worker is not None and repeat_views_pin_available)
+    _repeat_views_forward_available = bool(
+        worker is not None and repeat_views_forward_available
+    )
