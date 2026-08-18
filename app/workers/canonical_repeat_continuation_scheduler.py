@@ -13,6 +13,7 @@ from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.canonical_publication_delivery_authority import (
     canonical_publication_delivery_primary_started,
     canonical_publication_delivery_repeat_started,
+    canonical_publication_delivery_repeat_time_forward_started,
     canonical_publication_delivery_repeat_time_pin_started,
     canonical_publication_delivery_repeat_time_started,
     canonical_publication_delivery_time_autodelete_started,
@@ -27,6 +28,9 @@ from app.services.canonical_publication_legacy_transport_handoff import (
 from app.services.canonical_publication_linked_repeat_parity import (
     CanonicalPublicationLinkedRepeatParityService,
 )
+from app.services.canonical_publication_linked_repeat_time_forward_parity import (
+    CanonicalPublicationLinkedRepeatTimeForwardParityService,
+)
 from app.services.canonical_publication_linked_repeat_time_pin_parity import (
     CanonicalPublicationLinkedRepeatTimePinParityService,
 )
@@ -40,10 +44,11 @@ class Scheduler(RecoveryScheduler):
     Exact fixed-delay linked repeats may yield before the inherited legacy lease when a
     successfully started canonical repeat primary is live. Established non-destructive
     plain/silent, pin-only, forward-only and pin+forward profiles remain eligible. Exact
-    plain/silent repeat+time and repeat+time+pin may also yield only while their dedicated
-    canonical composition capabilities are live. The scheduler performs no repeat cutover
-    mutation itself; the canonical primary remains the sole atomic handoff/claim owner.
-    Other destructive repeat compositions continue through the inherited legacy callback.
+    plain/silent repeat+time, repeat+time+pin, and repeat+time+ordered-forward may also
+    yield only while their dedicated canonical composition capabilities are live. The
+    scheduler performs no repeat cutover mutation itself; the canonical primary remains
+    the sole atomic handoff/claim owner. Other destructive repeat compositions continue
+    through the inherited legacy callback.
 
     Production constructs the scheduler with an async session factory. A single long-lived
     AsyncSession cannot safely back an independent polling worker, so continuation stays
@@ -131,11 +136,22 @@ class Scheduler(RecoveryScheduler):
             and runtime_options.get("pin_on") is True
             and "autodelete_seconds" in runtime_options
         )
-        parity_service = (
-            CanonicalPublicationLinkedRepeatTimePinParityService()
-            if preliminary_time_pin_profile
-            else CanonicalPublicationLinkedRepeatParityService()
+        forward_value = runtime_options.get("forward_to")
+        preliminary_time_forward_profile = (
+            runtime_keys.issubset(
+                {"silent", "forward_to", "autodelete_seconds", "autodelete_report"}
+            )
+            and "forward_to" in runtime_options
+            and isinstance(forward_value, list)
+            and bool(forward_value)
+            and "autodelete_seconds" in runtime_options
         )
+        if preliminary_time_pin_profile:
+            parity_service = CanonicalPublicationLinkedRepeatTimePinParityService()
+        elif preliminary_time_forward_profile:
+            parity_service = CanonicalPublicationLinkedRepeatTimeForwardParityService()
+        else:
+            parity_service = CanonicalPublicationLinkedRepeatParityService()
         proof = parity_service.prove(
             task=task,
             publication=publication,
@@ -156,7 +172,6 @@ class Scheduler(RecoveryScheduler):
             and proof.pin_on
             and not proof.forward_channel_ids
         )
-        forward_value = runtime_options.get("forward_to")
         forward_profile = (
             runtime_keys.issubset({"silent", "forward_to"})
             and "forward_to" in runtime_options
@@ -204,9 +219,22 @@ class Scheduler(RecoveryScheduler):
             and not proof.views_pin_forward_composed
             and runtime_options.get("autodelete_report") in (None, False)
         )
+        time_forward_profile = (
+            preliminary_time_forward_profile
+            and positive_exact_time
+            and not proof.pin_on
+            and bool(proof.forward_channel_ids)
+            and tuple(proof.forward_channel_ids) == tuple(forward_value)
+            and proof.views_autodelete_threshold is None
+            and not proof.autodelete_report
+            and not proof.views_pin_forward_composed
+            and runtime_options.get("autodelete_report") in (None, False)
+        )
         if time_profile and not canonical_publication_delivery_repeat_time_started():
             return False
         if time_pin_profile and not canonical_publication_delivery_repeat_time_pin_started():
+            return False
+        if time_forward_profile and not canonical_publication_delivery_repeat_time_forward_started():
             return False
         if not (
             plain_profile
@@ -215,12 +243,13 @@ class Scheduler(RecoveryScheduler):
             or pin_forward_profile
             or time_profile
             or time_pin_profile
+            or time_forward_profile
         ):
             return False
         if (
             (
                 proof.time_autodelete_seconds is not None
-                and not (time_profile or time_pin_profile)
+                and not (time_profile or time_pin_profile or time_forward_profile)
             )
             or proof.views_autodelete_threshold is not None
             or proof.autodelete_report
@@ -323,8 +352,6 @@ class Scheduler(RecoveryScheduler):
             if retired:
                 continue
 
-            # Handoff failures deliberately roll back their temporary cutover CAS.
-            # Reload after that transaction boundary before preserving legacy fallback.
             post = await session.get(PostTask, task_id, populate_existing=True)
             if post is not None:
                 legacy_candidates.append(post)
