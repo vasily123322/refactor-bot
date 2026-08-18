@@ -12,6 +12,9 @@ from app.core.config import settings
 from app.domain.models import PostTask, Channel, Client
 from app.repositories.settings import ChannelSettingsRepo
 from app.services.posting import PostingService
+from app.services.legacy_time_views_delete_action_ledger import (
+    LegacyTimeViewsDeleteActionLedger,
+)
 from app.services.scheduling import (
     as_utc as _as_utc_svc,
     compute_next_repeat_time as _compute_next_repeat_time_svc,
@@ -35,6 +38,9 @@ class Scheduler:
             else None
         )
         self.posting = posting
+        self._legacy_time_views_delete_ledger = LegacyTimeViewsDeleteActionLedger(
+            AsyncSessionLocal
+        )
         self.interval_seconds = interval_seconds
         self._task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
@@ -79,6 +85,43 @@ class Scheduler:
         """Класс‑уровневый удалитель сообщений по таймеру (используется как primary)."""
         try:
             await asyncio.sleep(delay)
+
+            mixed_result = await self._legacy_time_views_delete_ledger.delete_once(
+                bot=bot,
+                post_task_id=int(post_id_val),
+                chat_id=int(chat_id),
+                message_ids=tuple(msg_ids),
+            )
+            if mixed_result.handled:
+                if mixed_result.succeeded:
+                    logger.info(
+                        f"Scheduler: durable mixed autodelete done for post id={post_id_val} messages={len(msg_ids)}"
+                    )
+                    if report:
+                        try:
+                            async with AsyncSessionLocal() as s2:
+                                p2 = await s2.get(PostTask, int(post_id_val))
+                                if p2:
+                                    ch2 = await s2.get(Channel, int(p2.channel_id))
+                                    owner2 = (
+                                        await s2.get(Client, int(ch2.owner_id))
+                                        if ch2 is not None
+                                        else None
+                                    )
+                                    if owner2 and getattr(owner2, "tg_user_id", None):
+                                        with suppress(Exception):
+                                            await bot.send_message(
+                                                chat_id=int(owner2.tg_user_id),
+                                                text=(
+                                                    "🗑️ Пост удалён по таймеру\n"
+                                                    + (link_val or "")
+                                                ),
+                                                disable_web_page_preview=True,
+                                            )
+                        except Exception:
+                            pass
+                return
+
             success_count = 0
             for mid in msg_ids:
                 try:
@@ -1074,6 +1117,32 @@ class Scheduler:
             if not ch:
                 continue
             chat_id = int(ch.tg_chat_id)
+
+            try:
+                mixed_views = int(pl.get("autodelete_views") or 0)
+            except (TypeError, ValueError):
+                mixed_views = 0
+            if sec_dbg > 0 and mixed_views > 0:
+                mixed_post_id = int(post.id)
+                mixed_chat_id = int(chat_id)
+                mixed_message_ids = tuple(ids)
+
+                # End the read-only scanner transaction before the durable
+                # reservation/provider path. AsyncSessionLocal keeps loaded
+                # candidates usable across commit (expire_on_commit=False).
+                await session.commit()
+                mixed_result = await self._legacy_time_views_delete_ledger.delete_once(
+                    bot=self.posting.bot,
+                    post_task_id=mixed_post_id,
+                    chat_id=mixed_chat_id,
+                    message_ids=mixed_message_ids,
+                )
+                if mixed_result.succeeded:
+                    logger.info(
+                        f"Scheduler: durable mixed autodelete success id={mixed_post_id} deleted={len(mixed_message_ids)}"
+                    )
+                continue
+
             success = 0
             not_found = 0
             cannot_delete = 0
