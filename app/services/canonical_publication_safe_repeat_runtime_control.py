@@ -126,5 +126,6 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
         repeat_continuation_available=repeat_available,
         repeat_owner_policy_enforced=bool(repeat_owner_policy_enforced),
         repeat_time_available=repeat_time_available,
+        repeat_time_pin_available=repeat_time_pin_available,
     )
     return worker
