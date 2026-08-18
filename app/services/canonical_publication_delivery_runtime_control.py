@@ -9,6 +9,9 @@ from app.core.canonical_publication_delivery_primary_config import (
     CanonicalPublicationDeliveryPrimarySettings,
 )
 from app.core.db import AsyncSessionLocal
+from app.services.canonical_publication_delivery_authority import (
+    set_canonical_publication_delivery_primary_worker,
+)
 from app.services.canonical_publication_delivery_handoff_executor import (
     CanonicalPublicationDeliveryHandoffExecutor,
 )
@@ -80,6 +83,7 @@ async def start_canonical_publication_delivery_primary_if_enabled(
                 "Boot: failed to clean up canonical publication delivery worker after startup failure"
             )
         raise
+    set_canonical_publication_delivery_primary_worker(worker)
     return worker
 
 
@@ -89,6 +93,9 @@ async def stop_canonical_publication_delivery_workers(
     recovery_worker: _StoppableWorker | None,
 ) -> None:
     """Stop canonical delivery in dependency order: primary first, recovery last."""
+
+    if primary_worker is not None:
+        set_canonical_publication_delivery_primary_worker(None)
 
     for name, worker in (
         ("canonical publication delivery", primary_worker),
