@@ -359,8 +359,10 @@ async def _forward_authority_intent_matches(
     task: PostTask,
     publication: Publication,
     plan: CanonicalPublicationDeliveryPlan,
+    allow_time_autodelete: bool,
+    allow_views_autodelete: bool,
 ) -> bool:
-    """Reuse exact forward parity for forward-only or exact pin+forward authority."""
+    """Reuse exact forward parity with independently gated delete composition."""
 
     from app.services.canonical_publication_linked_forward_parity import (
         CanonicalPublicationLinkedForwardParityService,
@@ -371,11 +373,16 @@ async def _forward_authority_intent_matches(
         publication=publication,
         plan=plan,
     )
-    return bool(
-        parity is not None
-        and not parity.delete_requested
-        and not parity.autodelete_report
-    )
+    if parity is None or parity.autodelete_report:
+        return False
+    if not parity.delete_requested:
+        return True
+    if parity.pin_on:
+        return False
+    if parity.time_autodelete_requested:
+        return bool(allow_time_autodelete and not parity.views_autodelete_requested)
+    # Views+forward remains a later independent retirement slice.
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -399,9 +406,9 @@ class CanonicalPublicationLegacyTransportHandoffService:
 
     Baseline capability is non-repeat empty/silent/pin parity. Callers may additionally
     prove started canonical time or views autodelete dependencies, admit exact pin+time
-    or pin+views, or admit the already-proven forward and pin+forward parity profiles.
-    Delete+forward, report, mixed delete modes and repeat remain closed here. Hidden
-    legacy effects are never inferred.
+    or pin+views, admit forward/pin+forward, and admit forward+time only with the live
+    time dependency. Pin+forward+delete, forward+views, report, mixed delete modes and
+    repeat remain closed here. Hidden legacy effects are never inferred.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -565,6 +572,8 @@ class CanonicalPublicationLegacyTransportHandoffService:
                     task=task,
                     publication=publication,
                     plan=plan,
+                    allow_time_autodelete=allow_time_autodelete,
+                    allow_views_autodelete=allow_views_autodelete,
                 )
             if not authority_matches:
                 return await self._result(_INELIGIBLE, safe_publication_id, task_id)
