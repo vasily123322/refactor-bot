@@ -1,10 +1,24 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel
+
+from app.services.suggested_post_business import (
+    SuggestedPostMoney,
+    classify_refund_reason,
+    effective_lifecycle_fact,
+    effective_native_state,
+    event_fact,
+    integer,
+    mapping,
+    paid_payment,
+    proposed_price,
+    text,
+    utc_timestamp,
+)
 
 
 SuggestedPostNativeStatus = Literal[
@@ -17,16 +31,8 @@ SuggestedPostNativeStatus = Literal[
     "unknown",
 ]
 SuggestedPostCommercialKind = Literal["free", "paid", "unknown"]
-
-_KNOWN_NATIVE_STATUSES = {
-    "pending",
-    "approved",
-    "declined",
-    "approval_failed",
-    "paid",
-    "refunded",
-}
-_INITIAL_NATIVE_STATUSES = {"pending", "approved", "declined"}
+SuggestedPostMoneyKind = Literal["stars", "ton_nanograms", "unknown"]
+SuggestedPostRefundReasonCode = Literal["post_deleted", "payment_refunded", "unknown"]
 
 
 class SuggestedPostPersonView(BaseModel):
@@ -36,9 +42,12 @@ class SuggestedPostPersonView(BaseModel):
 
 
 class SuggestedPostMoneyView(BaseModel):
+    kind: SuggestedPostMoneyKind
     currency: str | None = None
-    amount: int | None = None
+    stars: int | None = None
     nanostar_amount: int | None = None
+    ton_nanograms: int | None = None
+    raw_amount: int | None = None
 
 
 class SuggestedPostInboxView(BaseModel):
@@ -53,71 +62,23 @@ class SuggestedPostInboxView(BaseModel):
     proposed_send_date: datetime | None = None
     price: SuggestedPostMoneyView | None = None
     payment: SuggestedPostMoneyView | None = None
+    paid_event_at: datetime | None = None
+    paid_service_message_id: int | None = None
+    refunded_event_at: datetime | None = None
+    refunded_service_message_id: int | None = None
     decline_comment: str | None = None
     refund_reason: str | None = None
-
-
-def _mapping(value: Any) -> Mapping[str, Any] | None:
-    return value if isinstance(value, Mapping) else None
-
-
-def _integer(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    if isinstance(value, str):
-        text = value.strip()
-        if text and text.lstrip("-").isdigit():
-            try:
-                return int(text)
-            except ValueError:
-                return None
-    return None
-
-
-def _text(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip()
-    return normalized or None
-
-
-def _timestamp(value: Any) -> datetime | None:
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
-
-    numeric = _integer(value)
-    if numeric is not None:
-        try:
-            return datetime.fromtimestamp(numeric, tz=timezone.utc)
-        except (OverflowError, OSError, ValueError):
-            return None
-
-    text = _text(value)
-    if text is None:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    refund_reason_code: SuggestedPostRefundReasonCode | None = None
 
 
 def _person(value: Any) -> SuggestedPostPersonView | None:
-    raw = _mapping(value)
+    raw = mapping(value)
     if raw is None:
         return None
-    user_id = _integer(raw.get("id"))
-    username = _text(raw.get("username"))
-    first_name = _text(raw.get("first_name"))
-    last_name = _text(raw.get("last_name"))
+    user_id = integer(raw.get("id"))
+    username = text(raw.get("username"))
+    first_name = text(raw.get("first_name"))
+    last_name = text(raw.get("last_name"))
     if username:
         display_name = f"@{username.lstrip('@')}"
     else:
@@ -131,155 +92,104 @@ def _person(value: Any) -> SuggestedPostPersonView | None:
     )
 
 
-def _money(value: Any) -> SuggestedPostMoneyView | None:
-    raw = _mapping(value)
-    if raw is None:
-        return None
-
-    currency = _text(raw.get("currency"))
-    amount = _integer(raw.get("amount"))
-    nanostar_amount = _integer(raw.get("nanostar_amount"))
-
-    star_amount = _mapping(raw.get("star_amount"))
-    if star_amount is not None:
-        amount = _integer(star_amount.get("amount"))
-        nanostar_amount = _integer(star_amount.get("nanostar_amount"))
-        currency = currency or "XTR"
-
-    if currency is None and amount is None and nanostar_amount is None:
+def _money(value: SuggestedPostMoney | None) -> SuggestedPostMoneyView | None:
+    if value is None:
         return None
     return SuggestedPostMoneyView(
-        currency=currency,
-        amount=amount,
-        nanostar_amount=nanostar_amount,
+        kind=value.kind,
+        currency=value.currency,
+        stars=value.stars,
+        nanostar_amount=value.nanostar_amount,
+        ton_nanograms=value.ton_nanograms,
+        raw_amount=value.raw_amount,
     )
-
-
-def _event_payload(metadata: Mapping[str, Any], event: str) -> Mapping[str, Any] | None:
-    event_meta = _mapping(metadata.get(f"telegram_suggested_post_{event}"))
-    if event_meta is None:
-        return None
-    return _mapping(event_meta.get("payload"))
-
-
-def _current_lifecycle_payload(
-    lifecycle: Mapping[str, Any] | None,
-) -> Mapping[str, Any] | None:
-    if lifecycle is None:
-        return None
-    return _mapping(lifecycle.get("payload"))
-
-
-def _first_money(*values: Any) -> SuggestedPostMoneyView | None:
-    for value in values:
-        parsed = _money(value)
-        if parsed is not None:
-            return parsed
-    return None
 
 
 def _first_timestamp(*values: Any) -> datetime | None:
     for value in values:
-        parsed = _timestamp(value)
+        parsed = utc_timestamp(value)
         if parsed is not None:
             return parsed
     return None
-
-
-def _native_status(
-    metadata: Mapping[str, Any],
-    info: Mapping[str, Any] | None,
-) -> SuggestedPostNativeStatus:
-    if "telegram_suggested_post_lifecycle" in metadata:
-        lifecycle = _mapping(metadata.get("telegram_suggested_post_lifecycle"))
-        event = _text(lifecycle.get("event")) if lifecycle is not None else None
-        if event in _KNOWN_NATIVE_STATUSES:
-            return cast(SuggestedPostNativeStatus, event)
-        return "unknown"
-
-    state = _text(info.get("state")) if info is not None else None
-    if state in _INITIAL_NATIVE_STATUSES:
-        return cast(SuggestedPostNativeStatus, state)
-    return "unknown"
 
 
 def project_suggested_post_inbox(
     metadata: Mapping[str, Any] | None,
 ) -> SuggestedPostInboxView | None:
-    """Project persisted T4.2 provenance into a narrow, read-only Inbox model.
+    """Project persisted Suggested Post provenance without creating product authority.
 
-    The explicit transport marker is the only origin discriminator. Unknown or
-    malformed lifecycle data degrades to a neutral state instead of reviving an
-    older Telegram state. No routing, Content, approval, or publication authority
-    is derived here.
+    Payment values stay tagged by Telegram currency/unit, lifecycle ordering uses the
+    provider service-message evidence retained by T4.2, and all native business facts
+    remain independent from candidate/Content/publication lifecycle.
     """
 
-    raw = _mapping(metadata)
+    raw = mapping(metadata)
     if raw is None or raw.get("transport") != "telegram_suggested_posts":
         return None
 
-    info = _mapping(raw.get("telegram_suggested_post_info"))
-    lifecycle = _mapping(raw.get("telegram_suggested_post_lifecycle"))
-    lifecycle_payload = _current_lifecycle_payload(lifecycle)
-    native_status = _native_status(raw, info)
-    initial_state = _text(info.get("state")) if info is not None else None
-    has_lifecycle = "telegram_suggested_post_lifecycle" in raw
+    native = effective_native_state(raw)
+    if native in {
+        "pending",
+        "approved",
+        "declined",
+        "approval_failed",
+        "paid",
+        "refunded",
+    }:
+        native_status = cast(SuggestedPostNativeStatus, native)
+    else:
+        native_status = "unknown"
 
-    approved_payload = _event_payload(raw, "approved")
-    approval_failed_payload = _event_payload(raw, "approval_failed")
-    paid_payload = _event_payload(raw, "paid")
-    declined_payload = _event_payload(raw, "declined")
-    refunded_payload = _event_payload(raw, "refunded")
+    info = mapping(raw.get("telegram_suggested_post_info"))
+    initial_state = text(info.get("state")) if info is not None else None
+    current = effective_lifecycle_fact(raw)
+    approved = event_fact(raw, "approved")
+    declined = event_fact(raw, "declined")
+    paid = event_fact(raw, "paid")
+    refunded = event_fact(raw, "refunded")
 
-    # Prefer the current lifecycle payload. Once an approval is known, retain its
-    # business terms through later paid/refunded events instead of reviving an
-    # older proposal price from SuggestedPostInfo.
-    price = _first_money(
-        lifecycle_payload.get("price") if lifecycle_payload is not None else None,
-        approved_payload.get("price") if approved_payload is not None else None,
-        info.get("price") if info is not None else None,
-        approval_failed_payload.get("price")
-        if approval_failed_payload is not None
-        else None,
-    )
-    payment = _first_money(
-        paid_payload,
-        lifecycle_payload if native_status == "paid" else None,
-    )
-    if price is not None or payment is not None or native_status in {"paid", "refunded"}:
+    price_value = proposed_price(raw)
+    payment_value = paid_payment(raw)
+    price = _money(price_value)
+    payment = _money(payment_value)
+
+    if native_status in {"paid", "refunded"}:
         commercial_kind: SuggestedPostCommercialKind = "paid"
-    elif has_lifecycle and native_status == "unknown":
+    elif (price_value is not None and price_value.understood) or (
+        payment_value is not None and payment_value.understood
+    ):
+        commercial_kind = "paid"
+    elif price_value is not None or payment_value is not None:
+        commercial_kind = "unknown"
+    elif "telegram_suggested_post_lifecycle" in raw and native_status == "unknown":
         commercial_kind = "unknown"
     elif native_status == "approval_failed":
-        # A well-formed approval failure carries business data. If it is absent,
-        # do not reinterpret the older proposal as free.
         commercial_kind = "unknown"
-    elif native_status == "approved" and lifecycle is not None and lifecycle_payload is not None:
-        # For a known approved event, omitted price is explicit unpaid/free state.
+    elif native_status == "approved" and current is not None:
         commercial_kind = "free"
-    elif initial_state in _INITIAL_NATIVE_STATUSES:
-        # SuggestedPostInfo is valid and price is absent, so this is an unpaid proposal.
+    elif initial_state in {"pending", "approved", "declined"}:
         commercial_kind = "free"
     else:
         commercial_kind = "unknown"
 
-    topic = _mapping(raw.get("telegram_direct_messages_topic"))
-    sender = _mapping(raw.get("telegram_sender"))
-    sender_user = _mapping(sender.get("user")) if sender is not None else None
+    topic = mapping(raw.get("telegram_direct_messages_topic"))
+    sender = mapping(raw.get("telegram_sender"))
+    sender_user = mapping(sender.get("user")) if sender is not None else None
 
-    # An approved send date is newer evidence than the initial proposal date; the
-    # initial SuggestedPostInfo remains the fallback for a still-pending proposal.
     proposed_send_date = _first_timestamp(
-        approved_payload.get("send_date") if approved_payload is not None else None,
-        lifecycle_payload.get("send_date") if lifecycle_payload is not None else None,
+        approved.payload.get("send_date") if approved is not None else None,
+        current.payload.get("send_date") if current is not None else None,
         info.get("send_date") if info is not None else None,
     )
 
-    decline_payload = declined_payload or (
-        lifecycle_payload if native_status == "declined" else None
+    decline_fact = declined if declined is not None else (
+        current if current is not None and current.event == "declined" else None
     )
-    refund_payload = refunded_payload or (
-        lifecycle_payload if native_status == "refunded" else None
+    refund_fact = refunded if refunded is not None else (
+        current if current is not None and current.event == "refunded" else None
+    )
+    refund_reason = (
+        text(refund_fact.payload.get("reason")) if refund_fact is not None else None
     )
 
     return SuggestedPostInboxView(
@@ -287,18 +197,25 @@ def project_suggested_post_inbox(
         commercial_kind=commercial_kind,
         sender=_person(sender_user),
         topic_user=_person(topic.get("user") if topic is not None else None),
-        topic_id=_integer(topic.get("topic_id")) if topic is not None else None,
-        direct_messages_chat_id=_integer(raw.get("telegram_direct_messages_chat_id")),
-        message_id=_integer(raw.get("telegram_message_id")),
+        topic_id=integer(topic.get("topic_id")) if topic is not None else None,
+        direct_messages_chat_id=integer(raw.get("telegram_direct_messages_chat_id")),
+        message_id=integer(raw.get("telegram_message_id")),
         proposed_send_date=proposed_send_date,
         price=price,
         payment=payment,
+        paid_event_at=paid.event_at if paid is not None else None,
+        paid_service_message_id=paid.service_message_id if paid is not None else None,
+        refunded_event_at=refunded.event_at if refunded is not None else None,
+        refunded_service_message_id=(
+            refunded.service_message_id if refunded is not None else None
+        ),
         decline_comment=(
-            _text(decline_payload.get("comment"))
-            if decline_payload is not None
+            text(decline_fact.payload.get("comment"))
+            if decline_fact is not None
             else None
         ),
-        refund_reason=(
-            _text(refund_payload.get("reason")) if refund_payload is not None else None
+        refund_reason=refund_reason,
+        refund_reason_code=(
+            classify_refund_reason(refund_reason) if refund_reason is not None else None
         ),
     )
