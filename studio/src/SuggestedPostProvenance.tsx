@@ -13,6 +13,16 @@ function actionErrorMessage(error: unknown): string {
   return 'Не удалось изменить Suggested Post.';
 }
 
+function refundReasonLabel(suggestedPost: SuggestedPostView): string | null {
+  if (suggestedPost.refund_reason_code === 'post_deleted') {
+    return 'post_deleted · native post удалён/снят до завершения Telegram payment window';
+  }
+  if (suggestedPost.refund_reason_code === 'payment_refunded') {
+    return 'payment_refunded · платёж возвращён плательщику';
+  }
+  return suggestedPost.refund_reason;
+}
+
 export function SuggestedPostProvenance({
   candidateId,
   suggestedPost,
@@ -43,6 +53,7 @@ export function SuggestedPostProvenance({
     current.topic_id == null ? null : `topic ${current.topic_id}`,
   ].filter(Boolean);
   const canRequestAction = presentation.status === 'pending';
+  const refundLabel = refundReasonLabel(current);
 
   const requestAction = async (action: SuggestedPostAction) => {
     if (busyAction !== null || !canRequestAction) return;
@@ -57,7 +68,6 @@ export function SuggestedPostProvenance({
       if (!result.suggested_post) {
         throw new Error('Сервер не вернул актуальный Suggested Post status.');
       }
-      // No optimistic terminal state: render only the server-returned read model.
       setCurrent(result.suggested_post);
       if (action === 'decline') setDeclineComment('');
     } catch (error) {
@@ -86,8 +96,10 @@ export function SuggestedPostProvenance({
           <span>Предложенная отправка: {presentation.proposedSendDateLabel}</span>
         )}
         {presentation.paymentLabel && <span>Получено: {presentation.paymentLabel}</span>}
+        {presentation.paidEventLabel && <span>Payment event: {presentation.paidEventLabel}</span>}
+        {presentation.refundedEventLabel && <span>Refund event: {presentation.refundedEventLabel}</span>}
         {current.decline_comment && <span>Комментарий: {current.decline_comment}</span>}
-        {current.refund_reason && <span>Причина возврата: {current.refund_reason}</span>}
+        {refundLabel && <span>Причина возврата: {refundLabel}</span>}
       </div>
 
       <p className="suggested-post-authority-note">
@@ -125,7 +137,7 @@ export function SuggestedPostProvenance({
             />
           </label>
           <small>
-            Studio не задаёт новый send_date: native timing остаётся под authority Telegram.
+            Studio не задаёт новый send_date или price: native terms остаются под authority Telegram.
           </small>
           {actionError && <div className="suggested-post-action-error" role="alert">{actionError}</div>}
         </div>
@@ -146,6 +158,12 @@ export function SuggestedPostProvenance({
           )}
           {presentation.paymentLabel && (
             <div><dt>Payment</dt><dd>{presentation.paymentLabel}</dd></div>
+          )}
+          {current.paid_service_message_id != null && (
+            <div><dt>Paid service message</dt><dd>{current.paid_service_message_id}</dd></div>
+          )}
+          {current.refunded_service_message_id != null && (
+            <div><dt>Refund service message</dt><dd>{current.refunded_service_message_id}</dd></div>
           )}
         </dl>
       </details>
