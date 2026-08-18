@@ -13,7 +13,7 @@ from app.services.canonical_publication_delivery_authority import (
 _PLAIN = True
 _PIN = True
 _FORWARD = True
-_PIN_FORWARD = False
+_PIN_FORWARD = True
 _TIME = False
 _TIME_PIN = False
 _TIME_FORWARD = False
