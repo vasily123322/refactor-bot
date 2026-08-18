@@ -12,6 +12,7 @@ from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.services.content import LegacyPayloadError, document_from_legacy_payload
+from app.services.publication_execution_mode import execution_mode_from_legacy_payload
 from app.services.publication_runtime import (
     AUTODELETE_RUNTIME_META_KEY,
     normalize_autodelete_runtime,
@@ -271,6 +272,7 @@ async def mirror_legacy_post_task(
     task_id = int(task.id)
     channel_id = int(task.channel_id)
     payload = deepcopy(dict(task.payload or {}))
+    execution_mode = execution_mode_from_legacy_payload(payload)
     existing = (
         await session.execute(
             select(Publication).where(Publication.legacy_post_task_id == task_id)
@@ -435,6 +437,7 @@ async def mirror_legacy_post_task(
             content_revision=revision_number,
             channel_id=channel_id,
             status=publication_status,
+            execution_mode=execution_mode,
             legacy_post_task_id=task_id,
             telegram_message_ids=ids or None,
             result_link=result_link,
