@@ -12,7 +12,7 @@ from app.services.canonical_publication_delivery_authority import (
 # strict child retirement slice is opened.
 _PLAIN = True
 _PIN = True
-_FORWARD = False
+_FORWARD = True
 _PIN_FORWARD = False
 _TIME = False
 _TIME_PIN = False
