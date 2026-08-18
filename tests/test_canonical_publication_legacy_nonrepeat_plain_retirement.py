@@ -20,6 +20,7 @@ from app.services.canonical_publication_delivery_atomic_handoff_claim import (
 from app.services.canonical_publication_delivery_authority import (
     set_canonical_publication_delivery_primary_worker,
 )
+from app.services.canonical_publication_legacy_transport_handoff import CUTOVER_META_KEY
 from app.services.canonical_publication_nonrepeat_authority import (
     canonical_publication_delivery_nonrepeat_plain_started,
 )
@@ -128,6 +129,7 @@ def test_scheduler_plain_yield_is_read_only_before_atomic_handoff(tmp_path) -> N
                 assert publication is not None
                 assert publication.status == "queued"
                 assert publication.legacy_post_task_id == task_id
+                assert CUTOVER_META_KEY not in dict(publication.meta or {})
                 assert scheduler_leases == []
 
             async with Session() as claim_session:
@@ -145,6 +147,10 @@ def test_scheduler_plain_yield_is_read_only_before_atomic_handoff(tmp_path) -> N
                 publication = await check.get(Publication, publication_id)
                 assert publication is not None
                 assert publication.legacy_post_task_id is None
+                cutover = dict(publication.meta or {}).get(CUTOVER_META_KEY)
+                assert isinstance(cutover, dict)
+                assert cutover.get("retired") is True
+                assert cutover.get("legacy_post_task_id") == task_id
         finally:
             set_canonical_publication_delivery_primary_worker(None)
             await engine.dispose()
