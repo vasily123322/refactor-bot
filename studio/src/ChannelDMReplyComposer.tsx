@@ -1,16 +1,26 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import {
   ChannelDMReplyApiError,
+  channelDMReplyErrorLabel,
+  channelDMReplyLifecycleWarning,
   channelDMReplyStatusLabel,
   newChannelDMReplyKey,
+  requestChannelDMReplyLifecycle,
   requestChannelDMReplyProposal,
   submitChannelDMReply,
+  type ChannelDMReplyLifecycleCommand,
   type ChannelDMReplyResult,
 } from './channelDMReplies';
 
 
 type LocalDeliveryState = 'idle' | 'submitting' | 'request_unknown';
+
+function lifecycleTime(value: string | null): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('ru-RU');
+}
 
 export function ChannelDMReplyComposer({ candidateId }: { candidateId: number }) {
   const [text, setText] = useState('');
@@ -20,6 +30,67 @@ export function ChannelDMReplyComposer({ candidateId }: { candidateId: number })
   const [error, setError] = useState<string | null>(null);
   const [proposalPending, setProposalPending] = useState(false);
   const [proposalError, setProposalError] = useState<string | null>(null);
+  const [history, setHistory] = useState<ChannelDMReplyLifecycleCommand[]>([]);
+  const [historyPending, setHistoryPending] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setHistory([]);
+    setHistoryPending(true);
+    setHistoryError(null);
+    void requestChannelDMReplyLifecycle(candidateId)
+      .then((result) => {
+        if (active) setHistory(result.commands);
+      })
+      .catch((reason) => {
+        if (!active) return;
+        const detail = reason instanceof ChannelDMReplyApiError
+          ? reason.message
+          : 'Не удалось загрузить историю отправки.';
+        setHistoryError(
+          `${detail} Новая отправка заблокирована, пока durable status предыдущих команд неизвестен.`,
+        );
+      })
+      .finally(() => {
+        if (active) setHistoryPending(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [candidateId]);
+
+  const retryHistoryRead = () => {
+    setHistoryPending(true);
+    setHistoryError(null);
+    void requestChannelDMReplyLifecycle(candidateId)
+      .then((result) => {
+        setHistory(result.commands);
+      })
+      .catch((reason) => {
+        const detail = reason instanceof ChannelDMReplyApiError
+          ? reason.message
+          : 'Не удалось загрузить историю отправки.';
+        setHistoryError(
+          `${detail} Новая отправка заблокирована, пока durable status предыдущих команд неизвестен.`,
+        );
+      })
+      .finally(() => {
+        setHistoryPending(false);
+      });
+  };
+
+  const refreshHistory = () => {
+    void requestChannelDMReplyLifecycle(candidateId)
+      .then((result) => {
+        setHistory(result.commands);
+        setHistoryError(null);
+      })
+      .catch(() => {
+        // Immediate POST result remains visible. A failed readback must never cause
+        // another Telegram mutation or turn a terminal result into a retry.
+      });
+  };
 
   const propose = async () => {
     if (proposalPending || localState === 'submitting' || commandKey != null || delivery != null) return;
@@ -50,6 +121,7 @@ export function ChannelDMReplyComposer({ candidateId }: { candidateId: number })
       const result = await submitChannelDMReply(candidateId, normalized, key);
       setDelivery(result);
       setLocalState('idle');
+      refreshHistory();
     } catch (reason) {
       if (reason instanceof ChannelDMReplyApiError) {
         setError(reason.message);
@@ -73,15 +145,25 @@ export function ChannelDMReplyComposer({ candidateId }: { candidateId: number })
   };
 
   const intentLocked = localState === 'request_unknown' || delivery != null;
+  const historyReady = !historyPending && historyError == null;
   const canSubmit = text.trim().length > 0
     && text.trim().length <= 4096
     && localState !== 'submitting'
-    && !intentLocked;
+    && !intentLocked
+    && historyReady;
   const canPropose = localState === 'idle'
     && !intentLocked
     && commandKey == null
     && !proposalPending;
   const canReconcileSameKey = localState === 'request_unknown' || delivery?.state === 'pending';
+  const latestPersisted = history[0] ?? null;
+  const persistedRisk = channelDMReplyLifecycleWarning(latestPersisted?.state ?? null);
+
+  const prepareFailedRetry = () => {
+    if (!latestPersisted || latestPersisted.state !== 'failed' || intentLocked || !historyReady) return;
+    startNewIntent(false);
+    setText(latestPersisted.reply_text);
+  };
 
   return (
     <div className="channel-dm-composer" aria-label="Ответить в Telegram">
@@ -119,9 +201,14 @@ export function ChannelDMReplyComposer({ candidateId }: { candidateId: number })
             Проверить статус тем же запросом
           </button>
         )}
-        {(delivery?.state === 'failed' || delivery?.state === 'uncertain') && (
+        {delivery?.state === 'failed' && (
           <button className="button secondary compact" onClick={() => startNewIntent(false)}>
             Новая попытка
+          </button>
+        )}
+        {delivery?.state === 'uncertain' && (
+          <button className="button secondary compact" onClick={() => startNewIntent(false)}>
+            Новая команда — может продублировать
           </button>
         )}
         {delivery?.state === 'sent' && (
@@ -140,9 +227,60 @@ export function ChannelDMReplyComposer({ candidateId }: { candidateId: number })
         <p className={`channel-dm-delivery-state channel-dm-delivery-${delivery.state}`} role="status">
           {channelDMReplyStatusLabel(delivery.state)}
           {delivery.state === 'uncertain' && ' · Автоповтора в Telegram нет.'}
+          {channelDMReplyErrorLabel(delivery.error_class) && ` · ${channelDMReplyErrorLabel(delivery.error_class)}`}
         </p>
       )}
       {error && <p className="channel-dm-reply-error" role="alert">{error}</p>}
+
+      {persistedRisk && (
+        <p className="channel-dm-delivery-state channel-dm-delivery-unknown" role="status">
+          {persistedRisk}
+        </p>
+      )}
+      {latestPersisted?.state === 'failed' && !intentLocked && historyReady && (
+        <button className="button secondary compact" onClick={prepareFailedRetry}>
+          Повторить как новую команду
+        </button>
+      )}
+      {historyPending && <small>Загрузка сохранённого статуса отправки…</small>}
+      {historyError && (
+        <div>
+          <p className="channel-dm-reply-error" role="alert">{historyError}</p>
+          <button
+            className="button secondary compact"
+            disabled={historyPending}
+            onClick={retryHistoryRead}
+          >
+            Повторить загрузку статуса
+          </button>
+        </div>
+      )}
+      {history.length > 0 && (
+        <div className="channel-dm-reply-history" aria-label="История явных ответов">
+          <strong>Последние явные отправки</strong>
+          <ul>
+            {history.map((command) => {
+              const completedAt = lifecycleTime(command.sent_at || command.finished_at);
+              const safeError = channelDMReplyErrorLabel(command.error_class);
+              return (
+                <li key={command.command_id}>
+                  <span>{channelDMReplyStatusLabel(command.state)}</span>
+                  {' · '}
+                  <span>{lifecycleTime(command.requested_at)}</span>
+                  {completedAt && ` → ${completedAt}`}
+                  {' · '}
+                  <span>{command.reply_text}</span>
+                  {safeError && ` · ${safeError}`}
+                </li>
+              );
+            })}
+          </ul>
+          <small>
+            История только показывает durable status. Любая новая отправка создаёт новую явную команду;
+            старый результат не переотправляется автоматически.
+          </small>
+        </div>
+      )}
       <small>AI только заполняет черновик · отправка остаётся отдельной явной командой</small>
     </div>
   );
