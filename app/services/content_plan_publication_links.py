@@ -7,8 +7,8 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content.models import ContentItem, ContentRevision
-from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
+from app.services.publication_execution_mode import CANONICAL_EXECUTION_MODE
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,13 +24,12 @@ async def list_linked_content_plan_publications(
     start_at: datetime,
     end_at: datetime,
 ) -> list[LinkedContentPlanPublication]:
-    """Load canonical linked occurrences without looking Publication up by PostTask id.
+    """Map live compatibility ids to canonical content-plan identity without PostTask.
 
-    New content-plan producers start from Publication/ScheduleEntry identity for the
-    requested channel/time window. ``legacy_post_task_id`` is returned only to correlate
-    that canonical identity with an existing compatibility transport row; it is never an
-    input used to discover Publication. Historical/unlinked PostTask rows are absent from
-    this result and remain eligible for the explicit legacy callback fallback.
+    Publication/Schedule/Content are the complete read authority. The legacy id is only
+    an opaque callback correlation key while the compatibility row still exists; its
+    mutable status/channel/payload never decides whether a canonical occurrence is shown.
+    Intentional legacy is deliberately excluded by persisted execution mode.
     """
     try:
         safe_channel_id = int(channel_id)
@@ -66,15 +65,9 @@ async def list_linked_content_plan_publications(
                         ContentRevision.revision == Publication.content_revision,
                     ),
                 )
-                .join(
-                    PostTask,
-                    and_(
-                        PostTask.id == Publication.legacy_post_task_id,
-                        PostTask.channel_id == Publication.channel_id,
-                    ),
-                )
                 .where(
                     Publication.channel_id == safe_channel_id,
+                    Publication.execution_mode == CANONICAL_EXECUTION_MODE,
                     Publication.legacy_post_task_id.is_not(None),
                     ScheduleEntry.scheduled_at >= start_at,
                     ScheduleEntry.scheduled_at <= end_at,
@@ -82,12 +75,10 @@ async def list_linked_content_plan_publications(
                         and_(
                             Publication.status == "queued",
                             ScheduleEntry.status == "pending",
-                            PostTask.status == "pending",
                         ),
                         and_(
                             Publication.status == "published",
                             ScheduleEntry.status == "completed",
-                            PostTask.status == "done",
                         ),
                     ),
                 )

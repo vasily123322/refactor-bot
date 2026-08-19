@@ -17,6 +17,10 @@ from app.services.content_plan_publication_links import (
 )
 from app.services.publication_bridge import LegacyPublicationBridge
 from app.services.publication_editor import publication_open_callback
+from app.services.publication_execution_mode import (
+    CANONICAL_EXECUTION_MODE,
+    INTENTIONAL_LEGACY_EXECUTION_MODE,
+)
 
 
 async def _seed(Session, *, published: bool = True) -> tuple[int, int, int, int, int]:
@@ -50,6 +54,7 @@ async def _seed(Session, *, published: bool = True) -> tuple[int, int, int, int,
             content_item_id=int(item.id),
             scheduled_at=scheduled,
         )
+        publication.execution_mode = CANONICAL_EXECUTION_MODE
         task_id = int(publication.legacy_post_task_id or 0)
         schedule_id = int(publication.schedule_entry_id or 0)
         publication_id = int(publication.id)
@@ -173,22 +178,55 @@ def test_incomplete_canonical_linkage_is_not_promoted(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_cross_channel_or_stale_transport_status_is_not_promoted(tmp_path) -> None:
+def test_mutated_posttask_status_does_not_override_canonical_read_authority(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'content-plan-links-guards.db'}"
+            f"sqlite+aiosqlite:///{tmp_path / 'content-plan-links-transport-state.db'}"
         )
         try:
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
-            channel_id, task_id, publication_id, schedule_id, _ = await _seed(Session)
+            channel_id, task_id, publication_id, _, _ = await _seed(Session)
             start, end = _window()
 
             async with Session() as session:
                 task = await session.get(PostTask, task_id)
                 assert task is not None
                 task.status = "pending"
+                await session.commit()
+                links = await list_linked_content_plan_publications(
+                    session,
+                    channel_id=channel_id,
+                    start_at=start,
+                    end_at=end,
+                )
+
+            assert [(row.publication_id, row.legacy_post_task_id) for row in links] == [
+                (publication_id, task_id)
+            ]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_intentional_legacy_link_is_not_promoted_to_canonical_read(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'content-plan-links-legacy.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            channel_id, _, publication_id, _, _ = await _seed(Session)
+            start, end = _window()
+
+            async with Session() as session:
+                publication = await session.get(Publication, publication_id)
+                assert publication is not None
+                publication.execution_mode = INTENTIONAL_LEGACY_EXECUTION_MODE
                 await session.commit()
                 assert (
                     await list_linked_content_plan_publications(
@@ -199,8 +237,25 @@ def test_cross_channel_or_stale_transport_status_is_not_promoted(tmp_path) -> No
                     )
                     == []
                 )
+        finally:
+            await engine.dispose()
 
-                task.status = "done"
+    asyncio.run(run())
+
+
+def test_cross_channel_canonical_linkage_is_not_promoted(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'content-plan-links-channel-guard.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            channel_id, _, publication_id, schedule_id, _ = await _seed(Session)
+            start, end = _window()
+
+            async with Session() as session:
                 publication = await session.get(Publication, publication_id)
                 schedule = await session.get(ScheduleEntry, schedule_id)
                 assert publication is not None and schedule is not None
