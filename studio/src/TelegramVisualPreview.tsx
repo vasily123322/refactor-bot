@@ -1,3 +1,6 @@
+import './rich-collections.css';
+
+import { richCollectionVisualModel } from './richCollections';
 import type { Channel, PostBlock, PostDocument, RichSegmentValue } from './types';
 import { documentText } from './types';
 
@@ -10,6 +13,38 @@ function richText(value: unknown): string {
 }
 
 function RichPreviewBlock({ block }: { block: PostBlock }) {
+  const collection = richCollectionVisualModel(block);
+  if (collection) {
+    const visibleItems = collection.items.slice(0, 6);
+    return (
+      <div className={`visual-rich-collection ${collection.type}`}>
+        <div className="visual-rich-collection-head">
+          <span>{collection.icon}</span>
+          <strong>{collection.label}</strong>
+          <small>{collection.items.length} медиа</small>
+        </div>
+        {visibleItems.length > 0 ? (
+          <div className="visual-rich-collection-grid">
+            {visibleItems.map((item, index) => (
+              <div className="visual-rich-collection-item" key={`${item.asset_id}:${index}`}>
+                <strong>{item.kind}</strong>
+                <small>asset #{item.asset_id}</small>
+              </div>
+            ))}
+            {collection.items.length > visibleItems.length ? (
+              <div className="visual-rich-collection-item more">
+                +{collection.items.length - visibleItems.length}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <small className="visual-rich-collection-empty">media assets не выбраны</small>
+        )}
+        {block.caption ? <p>{richText(block.caption)}</p> : null}
+      </div>
+    );
+  }
+
   switch (block.type) {
     case 'paragraph':
       return <p className="visual-rich-paragraph">{richText(block.content)}</p>;
