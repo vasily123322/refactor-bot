@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content.models import ContentItem, ContentRevision
+from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.content import LegacyPayloadError, document_from_legacy_payload
 from app.services.legacy_content_mirror import (
@@ -17,6 +18,7 @@ from app.services.legacy_content_mirror import (
     _repeat_rule,
     _title_from_document_text,
 )
+from app.services.posting_dedupe import acquire_posting_dedupe_lock
 from app.services.publication_bridge import _delivery_meta
 from app.services.publication_execution_mode import (
     CANONICAL_EXECUTION_MODE,
@@ -59,6 +61,23 @@ async def find_direct_canonical_by_dedupe(
     ).scalar_one_or_none()
 
 
+async def _find_existing_posting_owner(
+    session: AsyncSession,
+    dedupe_key: str,
+) -> PostTask | Publication | None:
+    """Resolve the single current owner only after the shared dedupe mutex is held."""
+
+    key = str(dedupe_key)
+    legacy = (
+        await session.execute(
+            select(PostTask).where(PostTask.dedupe_key == key).limit(1)
+        )
+    ).scalar_one_or_none()
+    if legacy is not None:
+        return legacy
+    return await find_direct_canonical_by_dedupe(session, key)
+
+
 def _is_new_canonical_payload(payload: Mapping[str, Any]) -> bool:
     if any(key in payload for key in _DIRECT_PROVENANCE_MARKERS):
         return False
@@ -69,6 +88,24 @@ def _is_new_canonical_payload(payload: Mapping[str, Any]) -> bool:
     return execution_mode_from_legacy_payload(payload) == CANONICAL_EXECUTION_MODE
 
 
+async def _locked_existing_owner(
+    session: AsyncSession,
+    *,
+    dedupe_key: str | None,
+    commit: bool,
+) -> PostTask | Publication | None:
+    if not dedupe_key:
+        return None
+    await acquire_posting_dedupe_lock(session, str(dedupe_key))
+    existing = await _find_existing_posting_owner(session, str(dedupe_key))
+    if existing is not None and commit:
+        # A standalone materializer owns its transaction when commit=True. Committing
+        # here releases the mutex while preserving the already-existing owner unchanged.
+        await session.commit()
+        await session.refresh(existing)
+    return existing
+
+
 async def materialize_new_canonical_occurrence(
     session: AsyncSession,
     *,
@@ -77,7 +114,7 @@ async def materialize_new_canonical_occurrence(
     scheduled_at: datetime | None,
     dedupe_key: str | None = None,
     commit: bool = True,
-) -> Publication | None:
+) -> PostTask | Publication | None:
     """Persist one new supported queue occurrence without compatibility PostTask.
 
     Eligibility and runtime normalization reuse the same intrinsic legacy-payload
@@ -85,25 +122,56 @@ async def materialize_new_canonical_occurrence(
     normalized content boundary, while `_delivery_meta` remains the canonical writer
     for immutable queue-time runtime intent.
 
-    Returning ``None`` is an explicit request for the caller to keep the existing
-    intentional-legacy/unsupported PostTask path. No DB rows are added before all
-    eligibility and content checks have succeeded.
+    ``PostingService.schedule()`` calls this helper with ``commit=False`` before its
+    legacy fallback. For that caller, every fallback path first acquires the same durable
+    dedupe mutex used by canonical creation and leaves it held until the caller commits
+    either the canonical owner or the compatibility PostTask. This preserves the old
+    DB-global dedupe boundary across the new two-store execution split.
     """
 
     data = deepcopy(dict(payload or {}))
-    if not _is_new_canonical_payload(data):
+    canonical_eligible = _is_new_canonical_payload(data)
+    if not canonical_eligible:
+        if not commit:
+            existing = await _locked_existing_owner(
+                session,
+                dedupe_key=dedupe_key,
+                commit=False,
+            )
+            if existing is not None:
+                return existing
         return None
 
     runtime_options = runtime_options_from_legacy_payload(data)
     if runtime_options is None:
+        if not commit:
+            existing = await _locked_existing_owner(
+                session,
+                dedupe_key=dedupe_key,
+                commit=False,
+            )
+            if existing is not None:
+                return existing
         return None
 
     try:
         document = document_from_legacy_payload(_content_payload(data))
     except LegacyPayloadError:
+        if not commit:
+            existing = await _locked_existing_owner(
+                session,
+                dedupe_key=dedupe_key,
+                commit=False,
+            )
+            if existing is not None:
+                return existing
         return None
 
-    existing = await find_direct_canonical_by_dedupe(session, dedupe_key)
+    existing = await _locked_existing_owner(
+        session,
+        dedupe_key=dedupe_key,
+        commit=commit,
+    )
     if existing is not None:
         return existing
 
@@ -124,9 +192,9 @@ async def materialize_new_canonical_occurrence(
 
     publication: Publication
     try:
-        # Keep the whole direct graph behind a savepoint. Besides making helper-level
-        # same-mode races recoverable, this prevents a losing UNIQUE insert from leaving
-        # partial ContentItem/Revision/Schedule rows in a caller-owned transaction.
+        # Keep the whole direct graph behind a savepoint. The shared mutex serializes
+        # PostingService cross-mode ownership; the Publication UNIQUE column remains an
+        # independent same-store defense for direct helper callers and malformed races.
         async with session.begin_nested():
             item = ContentItem(
                 channel_id=channel_pk,
@@ -190,12 +258,12 @@ async def materialize_new_canonical_occurrence(
                 }
                 await session.flush()
     except IntegrityError:
-        # A direct helper caller may race another direct caller even without the broader
-        # PostingService cross-mode mutex. The UNIQUE column makes one winner durable;
-        # after the savepoint rollback the loser can reuse that exact canonical owner.
         if dedupe_key:
-            existing = await find_direct_canonical_by_dedupe(session, dedupe_key)
+            existing = await _find_existing_posting_owner(session, str(dedupe_key))
             if existing is not None:
+                if commit:
+                    await session.commit()
+                    await session.refresh(existing)
                 return existing
         if commit:
             await session.rollback()
