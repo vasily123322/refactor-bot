@@ -49,7 +49,7 @@ async def find_direct_canonical_by_dedupe(
 ) -> Publication | None:
     """Return an already materialized direct canonical occurrence for one caller key."""
 
-    if not dedupe_key:
+    if dedupe_key is None:
         return None
     return (
         await session.execute(
@@ -94,7 +94,7 @@ async def _locked_existing_owner(
     dedupe_key: str | None,
     commit: bool,
 ) -> PostTask | Publication | None:
-    if not dedupe_key:
+    if dedupe_key is None:
         return None
     await acquire_posting_dedupe_lock(session, str(dedupe_key))
     existing = await _find_existing_posting_owner(session, str(dedupe_key))
@@ -184,7 +184,7 @@ async def materialize_new_canonical_occurrence(
         "scheduled_direct_canonical": True,
         "canonical_posttask_free": True,
     }
-    if dedupe_key:
+    if dedupe_key is not None:
         meta_seed[_POSTING_DEDUPE_META_KEY] = str(dedupe_key)
     if autodelete_runtime is not None:
         meta_seed[AUTODELETE_RUNTIME_META_KEY] = deepcopy(autodelete_runtime)
@@ -234,7 +234,9 @@ async def materialize_new_canonical_occurrence(
                 channel_id=channel_pk,
                 status="queued",
                 execution_mode=CANONICAL_EXECUTION_MODE,
-                posting_dedupe_key=(str(dedupe_key) if dedupe_key else None),
+                posting_dedupe_key=(
+                    str(dedupe_key) if dedupe_key is not None else None
+                ),
                 legacy_post_task_id=None,
                 meta=deepcopy(canonical_meta),
             )
@@ -258,7 +260,7 @@ async def materialize_new_canonical_occurrence(
                 }
                 await session.flush()
     except IntegrityError:
-        if dedupe_key:
+        if dedupe_key is not None:
             existing = await _find_existing_posting_owner(session, str(dedupe_key))
             if existing is not None:
                 if commit:
