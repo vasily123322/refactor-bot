@@ -47,6 +47,14 @@ class ScheduleEntry(Base):
     )
 
 
+class PostingDedupeLock(Base):
+    """Stable database mutex row for one PostingService dedupe identity."""
+
+    __tablename__ = "posting_dedupe_locks"
+
+    dedupe_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+
+
 class Publication(Base):
     """Observable delivery state for one content revision and destination."""
 
