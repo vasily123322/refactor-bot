@@ -31,7 +31,9 @@ export function validateInlineButtonDraft(draft: InlineButtonDraft): string | nu
     if (!validUrl(draft.value)) return 'URL должен начинаться с http://, https:// или tg://';
     return null;
   }
-  const size = utf8Bytes(draft.value);
+  // Persisted callback_data is trimmed by inlineButtonFromDraft(), so validate the
+  // exact canonical bytes that will be written rather than the pre-normalized draft.
+  const size = utf8Bytes(draft.value.trim());
   if (size < 1 || size > 64) return 'callback_data должен занимать от 1 до 64 bytes';
   return null;
 }
