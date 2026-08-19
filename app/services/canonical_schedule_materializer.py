@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any, Mapping
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content.models import ContentItem, ContentRevision
@@ -51,10 +52,7 @@ async def find_direct_canonical_by_dedupe(
     return (
         await session.execute(
             select(Publication)
-            .where(
-                Publication.meta[_POSTING_DEDUPE_META_KEY].as_string()
-                == str(dedupe_key)
-            )
+            .where(Publication.posting_dedupe_key == str(dedupe_key))
             .order_by(Publication.id.asc())
             .limit(1)
         )
@@ -124,73 +122,94 @@ async def materialize_new_canonical_occurrence(
         meta_seed[AUTODELETE_RUNTIME_META_KEY] = deepcopy(autodelete_runtime)
     canonical_meta = _delivery_meta(meta_seed, runtime_options)
 
-    item = ContentItem(
-        channel_id=channel_pk,
-        kind="post",
-        status="ready",
-        title=_title_from_document_text(document.primary_text()),
-        current_revision=1,
-        meta={"scheduled_direct_canonical": True},
-    )
-    session.add(item)
-    await session.flush()
-
-    revision = ContentRevision(
-        content_item_id=int(item.id),
-        revision=1,
-        document=document.to_dict(),
-        source="posting_schedule",
-        created_by_tg_user_id=_author_id(data),
-        meta={"scheduled_direct_canonical": True},
-    )
-    session.add(revision)
-
-    schedule = ScheduleEntry(
-        content_item_id=int(item.id),
-        content_revision=1,
-        channel_id=channel_pk,
-        scheduled_at=when,
-        timezone=None,
-        status="pending",
-        repeat_rule=deepcopy(rule),
-        meta=deepcopy(canonical_meta),
-    )
-    publication = Publication(
-        schedule_entry_id=None,
-        content_item_id=int(item.id),
-        content_revision=1,
-        channel_id=channel_pk,
-        status="queued",
-        execution_mode=CANONICAL_EXECUTION_MODE,
-        legacy_post_task_id=None,
-        meta=deepcopy(canonical_meta),
-    )
-    session.add_all([schedule, publication])
-
+    publication: Publication
     try:
-        await session.flush()
-        publication.schedule_entry_id = int(schedule.id)
-
-        if rule.get("enabled") is True:
-            # A direct canonical repeat root has no PostTask identity. Its durable
-            # Publication identity is therefore the root group anchor consumed by the
-            # already PostTask-free Stage 5 continuation path.
-            repeat_group_id = int(publication.id)
-            publication.meta = {
-                **deepcopy(dict(publication.meta or {})),
-                "repeat_group_id": repeat_group_id,
-            }
-            schedule.meta = {
-                **deepcopy(dict(schedule.meta or {})),
-                "repeat_group_id": repeat_group_id,
-            }
+        # Keep the whole direct graph behind a savepoint. Besides making helper-level
+        # same-mode races recoverable, this prevents a losing UNIQUE insert from leaving
+        # partial ContentItem/Revision/Schedule rows in a caller-owned transaction.
+        async with session.begin_nested():
+            item = ContentItem(
+                channel_id=channel_pk,
+                kind="post",
+                status="ready",
+                title=_title_from_document_text(document.primary_text()),
+                current_revision=1,
+                meta={"scheduled_direct_canonical": True},
+            )
+            session.add(item)
             await session.flush()
 
+            revision = ContentRevision(
+                content_item_id=int(item.id),
+                revision=1,
+                document=document.to_dict(),
+                source="posting_schedule",
+                created_by_tg_user_id=_author_id(data),
+                meta={"scheduled_direct_canonical": True},
+            )
+            session.add(revision)
+
+            schedule = ScheduleEntry(
+                content_item_id=int(item.id),
+                content_revision=1,
+                channel_id=channel_pk,
+                scheduled_at=when,
+                timezone=None,
+                status="pending",
+                repeat_rule=deepcopy(rule),
+                meta=deepcopy(canonical_meta),
+            )
+            publication = Publication(
+                schedule_entry_id=None,
+                content_item_id=int(item.id),
+                content_revision=1,
+                channel_id=channel_pk,
+                status="queued",
+                execution_mode=CANONICAL_EXECUTION_MODE,
+                posting_dedupe_key=(str(dedupe_key) if dedupe_key else None),
+                legacy_post_task_id=None,
+                meta=deepcopy(canonical_meta),
+            )
+            session.add_all([schedule, publication])
+
+            await session.flush()
+            publication.schedule_entry_id = int(schedule.id)
+
+            if rule.get("enabled") is True:
+                # A direct canonical repeat root has no PostTask identity. Its durable
+                # Publication identity is therefore the root group anchor consumed by the
+                # already PostTask-free Stage 5 continuation path.
+                repeat_group_id = int(publication.id)
+                publication.meta = {
+                    **deepcopy(dict(publication.meta or {})),
+                    "repeat_group_id": repeat_group_id,
+                }
+                schedule.meta = {
+                    **deepcopy(dict(schedule.meta or {})),
+                    "repeat_group_id": repeat_group_id,
+                }
+                await session.flush()
+    except IntegrityError:
+        # A direct helper caller may race another direct caller even without the broader
+        # PostingService cross-mode mutex. The UNIQUE column makes one winner durable;
+        # after the savepoint rollback the loser can reuse that exact canonical owner.
+        if dedupe_key:
+            existing = await find_direct_canonical_by_dedupe(session, dedupe_key)
+            if existing is not None:
+                return existing
         if commit:
-            await session.commit()
-            await session.refresh(publication)
-        return publication
+            await session.rollback()
+        raise
     except Exception:
         if commit:
             await session.rollback()
         raise
+
+    if commit:
+        try:
+            await session.commit()
+            await session.refresh(publication)
+        except Exception:
+            await session.rollback()
+            raise
+    return publication
