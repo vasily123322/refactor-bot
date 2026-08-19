@@ -76,6 +76,37 @@ def test_direct_publication_keeps_db_unique_dedupe_and_shared_mutex_identity() -
     )
 
 
+def test_empty_dedupe_key_remains_a_real_unique_identity(tmp_path) -> None:
+    async def run() -> None:
+        engine, Session = await _new_db(tmp_path / "empty-key.db")
+        try:
+            channel = await _channel(Session, 3)
+            service = PostingService(_Bot(), Session)
+            first = await service.schedule(
+                int(channel.id),
+                {"type": "text", "text": "empty key winner"},
+                None,
+                dedupe_key="",
+            )
+            second = await service.schedule(
+                int(channel.id),
+                {"type": "text", "text": "empty key duplicate"},
+                None,
+                dedupe_key="",
+            )
+            assert isinstance(first, Publication)
+            assert isinstance(second, Publication)
+            assert int(second.id) == int(first.id)
+            async with Session() as session:
+                rows = list((await session.execute(select(Publication))).scalars().all())
+            assert [int(row.id) for row in rows] == [int(first.id)]
+            assert rows[0].posting_dedupe_key == ""
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_cross_mode_race_canonical_winner_is_reused(tmp_path, monkeypatch) -> None:
     async def run() -> None:
         engine, Session = await _new_db(tmp_path / "canonical-winner.db")
