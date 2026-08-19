@@ -64,14 +64,18 @@ def _aware_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _channel_rights(*, can_promote_members: bool) -> ChatAdministratorRights:
+def _channel_rights() -> ChatAdministratorRights:
+    # The authoritative verifier requires only the concrete post/edit/delete rights.
+    # Do not make the native picker stricter by also requiring can_promote_members:
+    # an owner/admin can legitimately manage an already-authorized bot without being
+    # allowed to appoint new administrators.
     return ChatAdministratorRights(
         is_anonymous=False,
         can_manage_chat=False,
         can_delete_messages=True,
         can_manage_video_chats=False,
         can_restrict_members=False,
-        can_promote_members=can_promote_members,
+        can_promote_members=False,
         can_change_info=False,
         can_invite_users=False,
         can_post_stories=False,
@@ -92,8 +96,8 @@ class AiogramPreparedChannelButtonProvider:
             request_chat=KeyboardButtonRequestChat(
                 request_id=request_id,
                 chat_is_channel=True,
-                user_administrator_rights=_channel_rights(can_promote_members=True),
-                bot_administrator_rights=_channel_rights(can_promote_members=False),
+                user_administrator_rights=_channel_rights(),
+                bot_administrator_rights=_channel_rights(),
                 bot_is_member=True,
                 request_title=True,
                 request_username=True,
