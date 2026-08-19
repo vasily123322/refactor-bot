@@ -1,7 +1,7 @@
 """Add durable Studio native channel onboarding requests.
 
 Revision ID: 20260817_0011
-Revises: 20260816_0010
+Revises: 20260816_0010a
 Create Date: 2026-08-17
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 revision = "20260817_0011"
-down_revision = "20260816_0010"
+down_revision = "20260816_0010a"
 branch_labels = None
 depends_on = None
 
