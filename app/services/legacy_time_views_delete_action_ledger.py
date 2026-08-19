@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from dataclasses import dataclass
@@ -12,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.legacy_time_views_delete_action import LegacyTimeViewsDeleteAction
-from app.domain.models import Channel, PostTask
+from app.domain.models import Channel, Client, PostTask
 
 
 ReserveOutcome = Literal[
@@ -33,6 +34,8 @@ DeleteOnceOutcome = Literal[
     "provider_unknown",
     "finalize_failed",
 ]
+
+_PERIODIC_SCHEDULER_AUTODELETE_TASK_NAME = "scheduler-autodelete"
 
 
 @dataclass(frozen=True)
@@ -120,6 +123,72 @@ class LegacyTimeViewsDeleteActionLedger:
         if state == "succeeded":
             return "terminal"
         return "unknown"
+
+    @staticmethod
+    def _is_periodic_scheduler_autodelete_task() -> bool:
+        task = asyncio.current_task()
+        return bool(
+            task is not None
+            and task.get_name() == _PERIODIC_SCHEDULER_AUTODELETE_TASK_NAME
+        )
+
+    async def _send_periodic_report_best_effort(
+        self,
+        *,
+        bot,
+        post_task_id: int,
+    ) -> None:
+        """Report only the inherited periodic fallback winner after terminal commit.
+
+        The local delayed-delete task already owns its timer report and the mixed views
+        observer owns its views report. Production names only the periodic deletion loop
+        ``scheduler-autodelete``; restricting this compatibility report to that exact
+        task keeps the three callers disjoint without changing DELETE authorization.
+        """
+
+        if not self._is_periodic_scheduler_autodelete_task():
+            return
+
+        try:
+            async with self._session_factory() as session:
+                post = await session.get(PostTask, int(post_task_id))
+                if post is None:
+                    await session.rollback()
+                    return
+                payload = dict(post.payload or {})
+                if not bool(payload.get("autodelete_report", False)):
+                    await session.rollback()
+                    return
+                channel = await session.get(Channel, int(post.channel_id))
+                owner = (
+                    await session.get(Client, int(channel.owner_id))
+                    if channel is not None
+                    else None
+                )
+                recipient = (
+                    int(owner.tg_user_id)
+                    if owner is not None and getattr(owner, "tg_user_id", None)
+                    else None
+                )
+                link = payload.get("result_link")
+                await session.rollback()
+
+            if recipient is None:
+                return
+            text = "🗑️ Пост удалён по таймеру"
+            if isinstance(link, str) and link:
+                text = f"{text}\n{link}"
+            await bot.send_message(
+                chat_id=recipient,
+                text=text,
+                disable_web_page_preview=True,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Reporting is deliberately best-effort and happens only after the
+            # destructive result has been durably finalized as succeeded.
+            return
 
     async def reserve(
         self,
@@ -337,6 +406,11 @@ class LegacyTimeViewsDeleteActionLedger:
             return LegacyTimeViewsDeleteOnceResult(
                 "finalize_failed", reservation=reservation
             )
+
+        await self._send_periodic_report_best_effort(
+            bot=bot,
+            post_task_id=reservation.post_task_id,
+        )
         return LegacyTimeViewsDeleteOnceResult(
             "succeeded", reservation=reservation
         )
