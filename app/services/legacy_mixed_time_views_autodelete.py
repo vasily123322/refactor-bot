@@ -8,7 +8,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.legacy_time_views_delete_action import LegacyTimeViewsDeleteAction
-from app.domain.models import Channel, PostTask
+from app.domain.models import Channel, Client, PostTask
 from app.services.legacy_time_views_delete_action_ledger import (
     LegacyTimeViewsDeleteActionLedger,
 )
@@ -147,6 +147,46 @@ class LegacyMixedTimeViewsAutodeleteObserver:
                 return None
             return chat_id, threshold, message_ids
 
+    async def _send_report_best_effort(self, post_task_id: int) -> None:
+        try:
+            async with self.session_factory() as session:
+                post = await session.get(PostTask, int(post_task_id))
+                if post is None:
+                    await session.rollback()
+                    return
+                payload = dict(post.payload or {})
+                if payload.get("autodelete_report") is not True:
+                    await session.rollback()
+                    return
+                channel = await session.get(Channel, int(post.channel_id))
+                owner = (
+                    await session.get(Client, int(channel.owner_id))
+                    if channel is not None
+                    else None
+                )
+                recipient = getattr(owner, "tg_user_id", None) if owner is not None else None
+                result_link = payload.get("result_link")
+                await session.rollback()
+
+            if recipient is None:
+                return
+            text = "🗑️ Пост удалён по просмотрам"
+            if result_link:
+                text = f"{text}\n{result_link}"
+            await self.delete_provider.send_message(
+                chat_id=int(recipient),
+                text=text,
+                disable_web_page_preview=True,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Legacy mixed views observer: report failed post_task_id={} type={}",
+                int(post_task_id),
+                type(exc).__name__,
+            )
+
     async def run_once(self) -> LegacyMixedTimeViewsTick:
         try:
             candidate_ids = await self._select_candidate_ids()
@@ -211,6 +251,7 @@ class LegacyMixedTimeViewsAutodeleteObserver:
                 )
                 if result.succeeded:
                     delete_winners += 1
+                    await self._send_report_best_effort(int(post_task_id))
                 elif result.handled:
                     already_handled += 1
             except asyncio.CancelledError:
