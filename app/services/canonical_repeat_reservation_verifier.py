@@ -15,6 +15,10 @@ from app.services.canonical_repeat_continuation_authority import (
 from app.services.canonical_repeat_plan_reservation import (
     CANONICAL_REPEAT_PLAN_RESERVATION_META_KEY,
 )
+from app.services.publication_execution_mode import (
+    CANONICAL_EXECUTION_MODE,
+    execution_mode_from_runtime_options,
+)
 from app.services.scheduling import as_utc
 
 
@@ -68,10 +72,11 @@ def _runtime_options(meta: Mapping[str, Any]) -> dict[str, Any] | None:
 class CanonicalRepeatReservationVerifier:
     """Prove reservation/successor state only while canonical source authority is live.
 
-    The source authority is transactionally locked before reservation or successor state is
-    interpreted. If legacy transport is relinked, canonical-origin evidence drifts, or the
-    exact terminal linkage changes, verification fails closed as `conflict`; it must never
-    report a normal `pending` or `matched` state outside canonical continuation authority.
+    New successors are matched by canonical Publication/Schedule state, persisted
+    execution mode and a unique durable source lineage key. Historical adapter-created
+    successors may still be recognized in their exact old shape so a restart does not
+    create a duplicate; recognizing that shape does not backfill or grant it new
+    execution authority.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -156,6 +161,8 @@ class CanonicalRepeatReservationVerifier:
             or content_revision != int(publication.content_revision)
             or repeat_seconds != int(authority.repeat_seconds)
             or reserved_options != authority.runtime_options
+            or execution_mode_from_runtime_options(reserved_options)
+            != CANONICAL_EXECUTION_MODE
         ):
             return CanonicalRepeatReservationVerification(safe_source_id, "conflict")
 
@@ -193,15 +200,21 @@ class CanonicalRepeatReservationVerifier:
         successor_meta = _mapping(successor.meta)
         successor_schedule_meta = _mapping(successor_schedule.meta)
         successor_rule = _mapping(successor_schedule.repeat_rule)
-        legacy_task_id = _positive_int(successor.legacy_post_task_id)
         if (
             successor_meta is None
             or successor_schedule_meta is None
             or successor_rule is None
-            or legacy_task_id is None
             or _positive_int(successor_meta.get("repeat_group_id")) != repeat_group_id
             or _positive_int(successor_schedule_meta.get("repeat_group_id"))
             != repeat_group_id
+            or _positive_int(
+                successor_meta.get("canonical_repeat_source_publication_id")
+            )
+            != safe_source_id
+            or _positive_int(
+                successor_schedule_meta.get("canonical_repeat_source_publication_id")
+            )
+            != safe_source_id
             or successor_rule.get("enabled") is not True
             or _positive_int(successor_rule.get("seconds")) != repeat_seconds
             or _runtime_options(successor_meta) != reserved_options
@@ -210,10 +223,32 @@ class CanonicalRepeatReservationVerifier:
         ):
             return CanonicalRepeatReservationVerification(safe_source_id, "conflict")
 
+        legacy_task_id = _positive_int(successor.legacy_post_task_id)
+        new_canonical_shape = (
+            successor.execution_mode == CANONICAL_EXECUTION_MODE
+            and successor.repeat_source_publication_id == safe_source_id
+            and successor.legacy_post_task_id is None
+            and successor_meta.get("canonical_repeat_posttask_free") is True
+            and successor_schedule_meta.get("canonical_repeat_posttask_free") is True
+        )
+        historical_transport_shape = (
+            successor.execution_mode is None
+            and successor.repeat_source_publication_id is None
+            and legacy_task_id is not None
+            and successor_meta.get("canonical_repeat_transport_adapter") is True
+            and successor_meta.get("canonical_repeat_posttask_free") is not True
+            and successor_schedule_meta.get("canonical_repeat_transport_adapter") is True
+            and successor_schedule_meta.get("canonical_repeat_posttask_free") is not True
+        )
+        if not new_canonical_shape and not historical_transport_shape:
+            return CanonicalRepeatReservationVerification(safe_source_id, "conflict")
+
         return CanonicalRepeatReservationVerification(
             source_publication_id=safe_source_id,
             outcome="matched",
             successor_publication_id=int(successor.id),
             successor_schedule_entry_id=int(successor_schedule.id),
-            successor_legacy_post_task_id=legacy_task_id,
+            successor_legacy_post_task_id=(
+                legacy_task_id if historical_transport_shape else None
+            ),
         )

@@ -3,14 +3,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Literal
 
 from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.content import PostDocument
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
@@ -20,13 +19,11 @@ from app.services.canonical_repeat_plan_reservation import (
 from app.services.canonical_repeat_reservation_verifier import (
     CanonicalRepeatReservationVerifier,
 )
-from app.services.publication_bridge import (
-    PublicationBridgeError,
-    _delivery_meta,
-    _runtime_intent,
-    _scheduler_payload,
+from app.services.publication_bridge import _delivery_meta
+from app.services.publication_execution_mode import (
+    CANONICAL_EXECUTION_MODE,
+    execution_mode_from_runtime_options,
 )
-from app.services.rich_media_assets import RichMediaAssetError, RichMediaAssetResolver
 from app.services.scheduling import as_utc
 
 
@@ -75,17 +72,14 @@ def _scheduled_at(value: Any) -> datetime | None:
         return None
 
 
-def _dedupe_key(source_publication_id: int, scheduled_at: datetime) -> str:
-    return f"canonical-repeat:{int(source_publication_id)}:{as_utc(scheduled_at).isoformat()}"
-
-
 class CanonicalRepeatTransportAdapter:
-    """Materialize one reserved canonical repeat plan into legacy transport.
+    """Materialize one reserved canonical repeat plan into canonical durable state.
 
-    Canonical reservation is the planning authority. The resulting PostTask remains the
-    delivery adapter/executor for this migration stage. The service is intentionally
-    not wired into runtime yet; legacy repeat scheduling remains authoritative until a
-    later guarded cutover.
+    Reservation is the planning authority. Supported canonical successors no longer
+    need a compatibility PostTask as their execution representation: exact content,
+    schedule, repeat cadence, runtime intent, ownership mode and source lineage are all
+    persisted on canonical rows. Existing exact legacy transport is still detected and
+    blocks creation so this cutover cannot introduce a second execution owner.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -236,6 +230,13 @@ class CanonicalRepeatTransportAdapter:
         assert expected_at is not None
         assert runtime_options is not None
 
+        # This Stage 5 cutover is canonical-only. Intentional legacy fallback (including
+        # time+views/report) keeps its existing legacy scheduler path and is never
+        # silently converted into canonical ownership here.
+        if execution_mode_from_runtime_options(runtime_options) != CANONICAL_EXECUTION_MODE:
+            await self.session.rollback()
+            return CanonicalRepeatTransportResult(safe_source_id, "conflict")
+
         transport_ids = await self._exact_transport_ids(
             channel_id=channel_id,
             repeat_group_id=repeat_group_id,
@@ -269,39 +270,16 @@ class CanonicalRepeatTransportAdapter:
             await self.session.rollback()
             return CanonicalRepeatTransportResult(safe_source_id, "conflict")
 
-        try:
-            document = PostDocument.from_dict(revision.document)
-            render_document = await RichMediaAssetResolver(self.session).resolve(
-                document,
-                channel_id=channel_id,
-            )
-            payload = _scheduler_payload(document, render_document=render_document)
-            payload["repeat_on"] = True
-            payload["repeat_seconds"] = repeat_seconds
-            payload["repeat_group_id"] = repeat_group_id
-            runtime_intent = _runtime_intent(runtime_options, payload=payload)
-            for key, value in runtime_intent.items():
-                payload[key] = deepcopy(value)
-        except (PublicationBridgeError, RichMediaAssetError, ValueError, TypeError):
-            await self.session.rollback()
-            return CanonicalRepeatTransportResult(safe_source_id, "conflict")
-
-        autodelete_seconds = _positive_int(runtime_intent.get("autodelete_seconds"))
-        if autodelete_seconds is not None:
-            payload["autodelete_at"] = (
-                expected_at + timedelta(seconds=autodelete_seconds)
-            ).isoformat()
-
-        canonical_meta = _delivery_meta(None, runtime_intent)
+        canonical_meta = _delivery_meta(None, runtime_options)
         canonical_meta = {
             **canonical_meta,
             "repeat_group_id": repeat_group_id,
             "canonical_repeat_source_publication_id": safe_source_id,
             "canonical_repeat_transport_adapter": True,
+            "canonical_repeat_posttask_free": True,
             "reused_content_provenance": True,
             "repeat_root_provenance": True,
         }
-        schedule_meta = deepcopy(canonical_meta)
         schedule = ScheduleEntry(
             content_item_id=content_item_id,
             content_revision=content_revision,
@@ -310,7 +288,7 @@ class CanonicalRepeatTransportAdapter:
             timezone=source_schedule.timezone,
             status="pending",
             repeat_rule={"enabled": True, "seconds": repeat_seconds},
-            meta=schedule_meta,
+            meta=deepcopy(canonical_meta),
         )
         publication = Publication(
             schedule_entry_id=None,
@@ -318,6 +296,8 @@ class CanonicalRepeatTransportAdapter:
             content_revision=content_revision,
             channel_id=channel_id,
             status="queued",
+            execution_mode=CANONICAL_EXECUTION_MODE,
+            repeat_source_publication_id=safe_source_id,
             meta=deepcopy(canonical_meta),
         )
         self.session.add_all([schedule, publication])
@@ -325,28 +305,13 @@ class CanonicalRepeatTransportAdapter:
         try:
             await self.session.flush()
             publication.schedule_entry_id = int(schedule.id)
-            task = PostTask(
-                channel_id=channel_id,
-                status="pending",
-                payload=payload,
-                dedupe_key=_dedupe_key(safe_source_id, expected_at),
-                scheduled_at=expected_at,
-            )
-            self.session.add(task)
-            await self.session.flush()
-            task_id = int(task.id)
-            publication.legacy_post_task_id = task_id
-            schedule.meta = {
-                **dict(schedule.meta or {}),
-                "legacy_post_task_id": task_id,
-            }
             await self.session.commit()
             return CanonicalRepeatTransportResult(
                 source_publication_id=safe_source_id,
                 outcome="created",
                 publication_id=int(publication.id),
                 schedule_entry_id=int(schedule.id),
-                legacy_post_task_id=task_id,
+                legacy_post_task_id=None,
             )
         except IntegrityError:
             await self.session.rollback()
