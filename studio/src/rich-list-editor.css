@@ -1,0 +1,36 @@
+.rich-list-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.rich-list-item-card {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle, #e5e7eb);
+  border-radius: 8px;
+}
+
+.rich-list-item-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.rich-list-item-head strong {
+  font-size: 12px;
+}
+
+.rich-list-label-field {
+  display: grid;
+  gap: 4px;
+}
+
+.rich-list-label-field > span {
+  font-size: 12px;
+  color: var(--text-muted, #6b7280);
+}
+
+.rich-list-add {
+  justify-self: start;
+}

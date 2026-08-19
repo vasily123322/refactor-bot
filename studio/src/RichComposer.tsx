@@ -8,6 +8,7 @@ import {
 } from './api';
 import { MapBlockEditor } from './MapBlockEditor';
 import { MediaCollectionEditor } from './MediaCollectionEditor';
+import { RichListEditor } from './RichListEditor';
 import { RichMediaOptionsEditor } from './RichMediaOptionsEditor';
 import {
   isRichCollectionBlockType,
@@ -189,29 +190,7 @@ function BlockEditor({
         )}
 
         {block.type === 'list' && (
-          <label className="rich-field-label">
-            <span>Один пункт на строку</span>
-            <textarea
-              className="rich-list-input"
-              value={
-                Array.isArray(block.items)
-                  ? block.items.map((item) =>
-                      typeof item === 'string'
-                        ? item
-                        : typeof item === 'object' && item !== null
-                          ? textValue((item as { content?: unknown; text?: unknown }).content ?? (item as { text?: unknown }).text)
-                          : textValue(item),
-                    ).join('\n')
-                  : ''
-              }
-              onChange={(event) =>
-                onPatch({
-                  items: event.target.value.split('\n').filter((value) => value.length > 0),
-                })
-              }
-              placeholder="Первый пункт\nВторой пункт"
-            />
-          </label>
+          <RichListEditor block={block} onPatch={onPatch} />
         )}
 
         {block.type === 'details' && (
