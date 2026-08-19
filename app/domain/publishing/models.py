@@ -59,6 +59,10 @@ class Publication(Base):
             "repeat_source_publication_id",
             name="uq_publication_repeat_source",
         ),
+        UniqueConstraint(
+            "posting_dedupe_key",
+            name="uq_publication_posting_dedupe",
+        ),
         CheckConstraint(
             "execution_mode IS NULL OR execution_mode IN ('canonical', 'intentional_legacy')",
             name="ck_publication_execution_mode",
@@ -79,6 +83,7 @@ class Publication(Base):
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
     execution_mode: Mapped[str | None] = mapped_column(String(32))
     repeat_source_publication_id: Mapped[int | None] = mapped_column(Integer)
+    posting_dedupe_key: Mapped[str | None] = mapped_column(String(255))
     legacy_post_task_id: Mapped[int | None] = mapped_column(
         ForeignKey("post_tasks.id", ondelete="SET NULL"), index=True
     )
