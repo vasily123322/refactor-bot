@@ -26,12 +26,19 @@ function RichPreviewBlock({ block }: { block: PostBlock }) {
         </div>
         {visibleItems.length > 0 ? (
           <div className="visual-rich-collection-grid">
-            {visibleItems.map((item, index) => (
-              <div className="visual-rich-collection-item" key={`${item.asset_id}:${index}`}>
-                <strong>{item.kind}</strong>
-                <small>asset #{item.asset_id}</small>
-              </div>
-            ))}
+            {visibleItems.map((item, index) => {
+              const badges = richMediaVisualBadges({
+                id: `${block.id}:preview:${index}`,
+                ...item,
+              });
+              return (
+                <div className="visual-rich-collection-item" key={`${item.asset_id}:${index}`}>
+                  <strong>{item.kind}</strong>
+                  <small>asset #{item.asset_id}</small>
+                  {badges.length > 0 ? <small>{badges.join(' · ')}</small> : null}
+                </div>
+              );
+            })}
             {collection.items.length > visibleItems.length ? (
               <div className="visual-rich-collection-item more">
                 +{collection.items.length - visibleItems.length}

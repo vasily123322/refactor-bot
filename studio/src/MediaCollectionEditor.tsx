@@ -1,11 +1,16 @@
+import './rich-media-collection-options.css';
+
 import { useState } from 'react';
 
 import type { MediaAssetView } from './api';
+import { RichMediaOptionsEditor } from './RichMediaOptionsEditor';
 import {
   mediaAssetOptionLabel,
   mediaCollectionItem,
   mediaCollectionItems,
+  mediaCollectionItemWithAsset,
   moveMediaCollectionItem,
+  patchMediaCollectionItem,
 } from './richMediaAssets';
 import type { PostBlock } from './types';
 
@@ -25,7 +30,17 @@ export function MediaCollectionEditor({
     const asset = assets.find((candidate) => candidate.id === assetId);
     if (!asset) return;
     onPatch({
-      items: items.map((item, current) => current === index ? mediaCollectionItem(asset) : item),
+      items: items.map((item, current) =>
+        current === index ? mediaCollectionItemWithAsset(item, asset) : item,
+      ),
+    });
+  };
+
+  const patchItem = (index: number, value: Partial<PostBlock>) => {
+    onPatch({
+      items: items.map((item, current) =>
+        current === index ? patchMediaCollectionItem(item, value) : item,
+      ),
     });
   };
 
@@ -40,33 +55,46 @@ export function MediaCollectionEditor({
   return (
     <div className="rich-media-collection-editor">
       <div className="rich-media-collection-items">
-        {items.map((item, index) => (
-          <div className="rich-media-collection-row" key={`${item.asset_id}:${index}`}>
-            <span className="rich-media-collection-index">{index + 1}</span>
-            <select
-              value={item.asset_id}
-              onChange={(event) => replaceItem(index, Number(event.target.value))}
-            >
-              {assets.map((asset) => (
-                <option key={asset.id} value={asset.id}>{mediaAssetOptionLabel(asset)}</option>
-              ))}
-            </select>
-            <button
-              disabled={index === 0}
-              onClick={() => onPatch({ items: moveMediaCollectionItem(items, index, -1) })}
-              title="Выше"
-            >↑</button>
-            <button
-              disabled={index === items.length - 1}
-              onClick={() => onPatch({ items: moveMediaCollectionItem(items, index, 1) })}
-              title="Ниже"
-            >↓</button>
-            <button
-              onClick={() => onPatch({ items: items.filter((_, current) => current !== index) })}
-              title="Удалить"
-            >×</button>
-          </div>
-        ))}
+        {items.map((item, index) => {
+          const asset = assets.find((candidate) => candidate.id === item.asset_id) ?? null;
+          return (
+            <div className="rich-media-collection-card" key={`${item.asset_id}:${index}`}>
+              <div className="rich-media-collection-row">
+                <span className="rich-media-collection-index">{index + 1}</span>
+                <select
+                  value={item.asset_id}
+                  onChange={(event) => replaceItem(index, Number(event.target.value))}
+                >
+                  {assets.map((candidate) => (
+                    <option key={candidate.id} value={candidate.id}>{mediaAssetOptionLabel(candidate)}</option>
+                  ))}
+                </select>
+                <button
+                  disabled={index === 0}
+                  onClick={() => onPatch({ items: moveMediaCollectionItem(items, index, -1) })}
+                  title="Выше"
+                >↑</button>
+                <button
+                  disabled={index === items.length - 1}
+                  onClick={() => onPatch({ items: moveMediaCollectionItem(items, index, 1) })}
+                  title="Ниже"
+                >↓</button>
+                <button
+                  onClick={() => onPatch({ items: items.filter((_, current) => current !== index) })}
+                  title="Удалить"
+                >×</button>
+              </div>
+              <details className="rich-media-collection-options">
+                <summary>Параметры media item</summary>
+                <RichMediaOptionsEditor
+                  block={{ id: `${block.id}:item:${index}`, ...item }}
+                  asset={asset}
+                  onPatch={(value) => patchItem(index, value)}
+                />
+              </details>
+            </div>
+          );
+        })}
       </div>
 
       <div className="rich-media-collection-add">
