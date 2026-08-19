@@ -4,6 +4,7 @@ import { richCaptionPreview, type RichCaptionSource } from './richCaption';
 import { richCollectionVisualModel } from './richCollections';
 import { richListItems, richListItemPreview } from './richListItems';
 import { richMediaVisualBadges } from './richMediaOptions';
+import { canAuthorNestedBlocks, nestedBlocksState } from './richNestedBlocks';
 import type { Channel, PostBlock, PostDocument, RichSegmentValue } from './types';
 import { documentText } from './types';
 
@@ -26,7 +27,7 @@ function CaptionPreview({ source }: { source: RichCaptionSource }) {
   );
 }
 
-function RichPreviewBlock({ block }: { block: PostBlock }) {
+function RichPreviewBlock({ block, depth = 0 }: { block: PostBlock; depth?: number }) {
   const collection = richCollectionVisualModel(block);
   if (collection) {
     const visibleItems = collection.items.slice(0, 6);
@@ -78,13 +79,23 @@ function RichPreviewBlock({ block }: { block: PostBlock }) {
     }
     case 'divider':
       return <hr className="visual-rich-divider" />;
-    case 'quote':
+    case 'quote': {
+      const nested = nestedBlocksState(block.blocks);
       return (
         <blockquote className="visual-rich-quote">
-          {richText(block.content)}
+          {nested.kind === 'editable'
+            ? canAuthorNestedBlocks(depth)
+              ? nested.blocks.map((child) => (
+                  <RichPreviewBlock key={`${block.id}:${child.id}`} block={child} depth={depth + 1} />
+                ))
+              : <small>{nested.blocks.length} deeper blocks · exact preview</small>
+            : nested.kind === 'invalid'
+              ? <small>Некорректные quote.blocks · exact preview</small>
+              : richText(block.content)}
           {block.credit ? <cite>{richText(block.credit)}</cite> : null}
         </blockquote>
       );
+    }
     case 'pull_quote':
       return (
         <blockquote className="visual-rich-pullquote">
@@ -106,13 +117,23 @@ function RichPreviewBlock({ block }: { block: PostBlock }) {
           })}
         </ul>
       );
-    case 'details':
+    case 'details': {
+      const nested = nestedBlocksState(block.blocks);
       return (
         <details className="visual-rich-details" open={Boolean(block.is_open)}>
           <summary>{richText(block.summary)}</summary>
-          <p>{richText(block.content)}</p>
+          {nested.kind === 'editable'
+            ? canAuthorNestedBlocks(depth)
+              ? nested.blocks.map((child) => (
+                  <RichPreviewBlock key={`${block.id}:${child.id}`} block={child} depth={depth + 1} />
+                ))
+              : <small>{nested.blocks.length} deeper blocks · exact preview</small>
+            : nested.kind === 'invalid'
+              ? <small>Некорректные details.blocks · exact preview</small>
+              : <p>{richText(block.content)}</p>}
         </details>
       );
+    }
     case 'math':
       return <div className="visual-rich-math">{String(block.formula ?? '')}</div>;
     case 'anchor':
