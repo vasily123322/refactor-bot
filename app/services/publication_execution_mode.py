@@ -116,6 +116,20 @@ def _mode_from_normalized_options(options: Mapping[str, Any]) -> str | None:
     return CANONICAL_EXECUTION_MODE
 
 
+def runtime_options_from_legacy_payload(
+    payload: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Normalize immutable runtime intent carried by a legacy-shaped queue payload."""
+
+    if payload is None:
+        source: dict[str, Any] = {}
+    elif isinstance(payload, Mapping):
+        source = {str(key): item for key, item in payload.items()}
+    else:
+        return None
+    return _normalize_runtime_options(source, allow_unrelated_keys=True)
+
+
 def execution_mode_from_runtime_options(
     runtime_options: Mapping[str, Any] | None,
 ) -> str | None:
@@ -157,7 +171,7 @@ def execution_mode_from_legacy_payload(
             if repeat_seconds is None:
                 return None
 
-    options = _normalize_runtime_options(source, allow_unrelated_keys=True)
+    options = runtime_options_from_legacy_payload(source)
     if options is None:
         return None
     return _mode_from_normalized_options(options)

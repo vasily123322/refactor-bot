@@ -18,6 +18,7 @@ from app.services.content_plan_cancellation import ContentPlanCancellationServic
 from app.services.content_plan_publication_cancellation import (
     ContentPlanPublicationCancellationService,
 )
+from app.services.legacy_content_mirror import mirror_legacy_post_task
 from app.services.posting import PostingService
 from app.services.publication_execution_mode import (
     CANONICAL_EXECUTION_MODE,
@@ -57,22 +58,25 @@ async def _channel(Session, suffix: int) -> Channel:
 
 
 async def _linked(Session, suffix: int, *, when: datetime | None = None):
+    """Build a historical canonical-linked PostTask row without using new scheduling."""
+
     channel = await _channel(Session, suffix)
     scheduled_at = when or datetime.now(timezone.utc) + timedelta(hours=1)
-    task = await PostingService(_Bot(), Session).schedule(
-        int(channel.id),
-        {"type": "text", "text": f"Cancellation {suffix}"},
-        scheduled_at,
-        dedupe_key=f"canonical-cancel-{suffix}",
-    )
     async with Session() as session:
-        publication = (
-            await session.execute(
-                select(Publication).where(
-                    Publication.legacy_post_task_id == int(task.id)
-                )
-            )
-        ).scalar_one()
+        task = PostTask(
+            channel_id=int(channel.id),
+            status="pending",
+            payload={"type": "text", "text": f"Cancellation {suffix}"},
+            scheduled_at=scheduled_at,
+            dedupe_key=f"canonical-cancel-{suffix}",
+        )
+        session.add(task)
+        await session.flush()
+        publication = await mirror_legacy_post_task(session, task, commit=False)
+        assert publication is not None
+        await session.commit()
+        await session.refresh(task)
+        await session.refresh(publication)
         schedule = await session.get(ScheduleEntry, int(publication.schedule_entry_id))
         assert schedule is not None
         return (
@@ -90,29 +94,37 @@ async def _posttask_free_occurrence(
     *,
     execution_mode: str | None = CANONICAL_EXECUTION_MODE,
 ):
-    """Reuse the real planner fixture, then model the Stage 6 PostTask-free seam."""
+    """Create the real Stage 7 direct canonical root, optionally mutating authority."""
 
-    channel_id, task_id, publication_id, schedule_id, scheduled_at = await _linked(
-        Session, suffix
+    channel = await _channel(Session, suffix)
+    scheduled_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    result = await PostingService(_Bot(), Session).schedule(
+        int(channel.id),
+        {"type": "text", "text": f"Cancellation {suffix}"},
+        scheduled_at,
+        dedupe_key=f"canonical-cancel-direct-{suffix}",
     )
+    assert isinstance(result, Publication)
+    publication_id = int(result.id)
+
     async with Session() as session:
         publication = await session.get(Publication, publication_id)
-        task = await session.get(PostTask, task_id)
-        assert publication is not None and task is not None
-        publication.legacy_post_task_id = None
-        publication.execution_mode = execution_mode
-        await session.flush()
-        await session.delete(task)
-        await session.commit()
+        assert publication is not None
+        assert publication.legacy_post_task_id is None
+        schedule_id = int(publication.schedule_entry_id)
+        if execution_mode != CANONICAL_EXECUTION_MODE:
+            publication.execution_mode = execution_mode
+            await session.commit()
+        tasks = list((await session.execute(select(PostTask))).scalars())
+        assert tasks == []
 
     async with Session() as session:
-        assert await session.get(PostTask, task_id) is None
         publication = await session.get(Publication, publication_id)
         assert publication is not None
         assert publication.legacy_post_task_id is None
         assert publication.execution_mode == execution_mode
 
-    return channel_id, publication_id, schedule_id, scheduled_at
+    return int(channel.id), publication_id, schedule_id, scheduled_at
 
 
 def test_queued_linked_delete_cancels_publication_before_retiring_task() -> None:
