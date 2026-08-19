@@ -23,9 +23,30 @@ describe('Telegram Mini App version foundation', () => {
     expect(isTelegramMiniAppVersionAtLeast('unknown', '8.0')).toBe(false);
   });
 
-  it('gates the verified 8.0, 9.0 and 9.6 capabilities', () => {
-    expect(telegramCapabilitiesForVersion('7.10')).toEqual({
-      version: '7.10',
+  it('gates the verified lifecycle and platform capability boundaries', () => {
+    expect(telegramCapabilitiesForVersion('6.0')).toMatchObject({
+      backButton: false,
+      hapticFeedback: false,
+      closingConfirmation: false,
+      secondaryButton: false,
+    });
+    expect(telegramCapabilitiesForVersion('6.1')).toMatchObject({
+      backButton: true,
+      hapticFeedback: true,
+      closingConfirmation: false,
+      secondaryButton: false,
+    });
+    expect(telegramCapabilitiesForVersion('6.2')).toMatchObject({
+      backButton: true,
+      hapticFeedback: true,
+      closingConfirmation: true,
+      secondaryButton: false,
+    });
+    expect(telegramCapabilitiesForVersion('7.10')).toMatchObject({
+      backButton: true,
+      hapticFeedback: true,
+      closingConfirmation: true,
+      secondaryButton: true,
       fullscreen: false,
       safeArea: false,
       contentSafeArea: false,
@@ -59,6 +80,10 @@ describe('Telegram Mini App version foundation', () => {
   it('returns no capabilities when Telegram does not provide a usable version', () => {
     expect(telegramCapabilitiesForVersion(null)).toEqual({
       version: null,
+      backButton: false,
+      hapticFeedback: false,
+      closingConfirmation: false,
+      secondaryButton: false,
       fullscreen: false,
       safeArea: false,
       contentSafeArea: false,

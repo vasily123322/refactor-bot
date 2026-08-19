@@ -1,5 +1,9 @@
 export type TelegramMiniAppCapabilities = Readonly<{
   version: string | null;
+  backButton: boolean;
+  hapticFeedback: boolean;
+  closingConfirmation: boolean;
+  secondaryButton: boolean;
   fullscreen: boolean;
   safeArea: boolean;
   contentSafeArea: boolean;
@@ -52,11 +56,16 @@ export function telegramCapabilitiesForVersion(
   version: string | null | undefined,
 ): TelegramMiniAppCapabilities {
   const normalized = normalizeTelegramMiniAppVersion(version);
+  const atLeast61 = isTelegramMiniAppVersionAtLeast(normalized, '6.1');
   const atLeast8 = isTelegramMiniAppVersionAtLeast(normalized, '8.0');
   const atLeast9 = isTelegramMiniAppVersionAtLeast(normalized, '9.0');
 
   return Object.freeze({
     version: normalized,
+    backButton: atLeast61,
+    hapticFeedback: atLeast61,
+    closingConfirmation: isTelegramMiniAppVersionAtLeast(normalized, '6.2'),
+    secondaryButton: isTelegramMiniAppVersionAtLeast(normalized, '7.10'),
     fullscreen: atLeast8,
     safeArea: atLeast8,
     contentSafeArea: atLeast8,

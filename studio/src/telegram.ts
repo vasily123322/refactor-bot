@@ -1,4 +1,6 @@
 import {
+  closingBehavior,
+  hapticFeedback,
   init as initSDK,
   miniApp,
   setDebug,
@@ -19,6 +21,14 @@ export type TelegramFullscreenActionResult =
   | 'already-fullscreen'
   | 'already-windowed'
   | 'unavailable';
+
+export type TelegramHapticImpactStyle =
+  | 'light'
+  | 'medium'
+  | 'heavy'
+  | 'rigid'
+  | 'soft';
+export type TelegramHapticNotificationType = 'error' | 'success' | 'warning';
 
 function rawLaunchParam(name: string): string | null {
   return readTelegramLaunchParam(window.location.search, window.location.hash, name);
@@ -66,6 +76,70 @@ export async function exitTelegramFullscreen(): Promise<TelegramFullscreenAction
   if (!viewport.isFullscreen()) return 'already-windowed';
   await viewport.exitFullscreen();
   return 'exited';
+}
+
+function ensureClosingBehaviorReady(): boolean {
+  if (
+    !getTelegramMiniAppCapabilities().closingConfirmation ||
+    !closingBehavior.mount.isAvailable()
+  ) {
+    return false;
+  }
+  if (!closingBehavior.isMounted()) closingBehavior.mount();
+  return closingBehavior.isMounted();
+}
+
+export function getTelegramClosingConfirmationState(): boolean | null {
+  return ensureClosingBehaviorReady()
+    ? closingBehavior.isConfirmationEnabled()
+    : null;
+}
+
+export function setTelegramClosingConfirmation(enabled: boolean): boolean {
+  if (!ensureClosingBehaviorReady()) return false;
+  const action = enabled
+    ? closingBehavior.enableConfirmation
+    : closingBehavior.disableConfirmation;
+  if (!action.isAvailable()) return false;
+  action();
+  return true;
+}
+
+export function triggerTelegramHapticImpact(
+  style: TelegramHapticImpactStyle,
+): boolean {
+  if (
+    !getTelegramMiniAppCapabilities().hapticFeedback ||
+    !hapticFeedback.impactOccurred.isAvailable()
+  ) {
+    return false;
+  }
+  hapticFeedback.impactOccurred(style);
+  return true;
+}
+
+export function triggerTelegramHapticNotification(
+  type: TelegramHapticNotificationType,
+): boolean {
+  if (
+    !getTelegramMiniAppCapabilities().hapticFeedback ||
+    !hapticFeedback.notificationOccurred.isAvailable()
+  ) {
+    return false;
+  }
+  hapticFeedback.notificationOccurred(type);
+  return true;
+}
+
+export function triggerTelegramHapticSelectionChanged(): boolean {
+  if (
+    !getTelegramMiniAppCapabilities().hapticFeedback ||
+    !hapticFeedback.selectionChanged.isAvailable()
+  ) {
+    return false;
+  }
+  hapticFeedback.selectionChanged();
+  return true;
 }
 
 export async function initTelegram(): Promise<void> {
