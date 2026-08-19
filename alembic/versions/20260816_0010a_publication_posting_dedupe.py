@@ -1,4 +1,4 @@
-"""Add durable direct canonical posting dedupe key.
+"""Preserve global posting dedupe across PostTask-free scheduling.
 
 Revision ID: 20260816_0010a
 Revises: 20260816_0010
@@ -18,9 +18,17 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Historical rows stay NULL. New direct canonical scheduling persists the caller's
-    # dedupe identity here so the PostTask-free path retains the old DB-global UNIQUE
-    # idempotency boundary.
+    # Stable rows in this table are mutex identities, not execution owners. Scheduling
+    # locks one row before re-checking both the legacy and canonical owner stores, so a
+    # canonical-vs-legacy race cannot bypass the former global PostTask UNIQUE boundary.
+    op.create_table(
+        "posting_dedupe_locks",
+        sa.Column("dedupe_key", sa.String(length=255), primary_key=True),
+    )
+
+    # Historical Publications stay NULL. New direct canonical occurrences keep their
+    # caller dedupe identity durably for lookup and an additional same-store UNIQUE
+    # defense; compatibility PostTask retains its existing unique dedupe key.
     with op.batch_alter_table("publications") as batch_op:
         batch_op.add_column(
             sa.Column("posting_dedupe_key", sa.String(length=255), nullable=True)
@@ -38,3 +46,4 @@ def downgrade() -> None:
             type_="unique",
         )
         batch_op.drop_column("posting_dedupe_key")
+    op.drop_table("posting_dedupe_locks")
