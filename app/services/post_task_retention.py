@@ -13,6 +13,9 @@ from app.domain.models import PostTask
 from app.domain.publication_autodelete import PublicationAutodeleteViewState
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.domain.scheduler import SchedulerTaskLease
+from app.services.content_plan_history_identity import (
+    LEGACY_POST_TASK_CALLBACK_ID_META_KEY,
+)
 from app.services.publication_execution_mode import CANONICAL_EXECUTION_MODE
 from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
 from app.services.telegram_results import (
@@ -757,14 +760,60 @@ class PostTaskRetentionService:
                     skipped_delivery_evidence += 1
                     continue
 
-                # Execution/destructive completion retires runtime authority, not the
-                # current compatibility/serialization B-seam. Until a separate durable
-                # compatibility-retirement fact exists, a Publication that still names
-                # this PostTask must keep both the link and the row.
+                # Only the fully proven successful canonical class-B slice may retire
+                # its live compatibility link. Unsuccessful, intentional legacy and
+                # unknown-mode rows remain protected even if other lifecycle evidence
+                # happens to be terminal.
                 if publication.legacy_post_task_id is not None:
-                    await self.session.rollback()
-                    skipped_content_linkage += 1
-                    continue
+                    if (
+                        not successful
+                        or publication.execution_mode != CANONICAL_EXECUTION_MODE
+                        or int(publication.legacy_post_task_id) != int(task_id)
+                    ):
+                        await self.session.rollback()
+                        skipped_content_linkage += 1
+                        continue
+
+                    publication_meta = _safe_mapping(publication.meta)
+                    if publication_meta is None:
+                        await self.session.rollback()
+                        skipped_content_linkage += 1
+                        continue
+                    existing_alias = publication_meta.get(
+                        LEGACY_POST_TASK_CALLBACK_ID_META_KEY
+                    )
+                    if existing_alias is not None:
+                        alias_valid, alias_id = _optional_positive_int(existing_alias)
+                        if not alias_valid or alias_id != int(task_id):
+                            await self.session.rollback()
+                            skipped_content_linkage += 1
+                            continue
+
+                    identity_rows = list(
+                        (
+                            await self.session.execute(
+                                select(Publication.id)
+                                .where(
+                                    or_(
+                                        Publication.legacy_post_task_id == int(task_id),
+                                        Publication.meta[
+                                            LEGACY_POST_TASK_CALLBACK_ID_META_KEY
+                                        ].as_integer()
+                                        == int(task_id),
+                                    )
+                                )
+                                .order_by(Publication.id.asc())
+                                .limit(2)
+                                .with_for_update()
+                            )
+                        ).scalars().all()
+                    )
+                    if len(identity_rows) != 1 or int(identity_rows[0]) != int(
+                        publication.id
+                    ):
+                        await self.session.rollback()
+                        skipped_content_linkage += 1
+                        continue
 
                 # Re-check the lease row while the candidate is locked. Terminal tasks
                 # should not normally acquire a fresh lease, but a late active lease
@@ -804,6 +853,7 @@ class PostTaskRetentionService:
                 publication.legacy_post_task_id = None
                 publication.meta = {
                     **dict(publication.meta or {}),
+                    LEGACY_POST_TASK_CALLBACK_ID_META_KEY: int(task_id),
                     _RETENTION_META_KEY: retention_meta,
                 }
                 await self.session.delete(task)

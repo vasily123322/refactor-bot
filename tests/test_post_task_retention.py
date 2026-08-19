@@ -361,7 +361,7 @@ def test_retention_does_not_mutate_expired_lease_behind_current_link(tmp_path) -
     asyncio.run(run())
 
 
-def test_retention_recognizes_posttask_free_canonical_repeat_handoff_but_keeps_linked_root(
+def test_retention_recognizes_posttask_free_canonical_repeat_handoff_and_retires_linked_root(
     tmp_path,
 ) -> None:
     async def run() -> None:
@@ -390,20 +390,22 @@ def test_retention_recognizes_posttask_free_canonical_repeat_handoff_but_keeps_l
                     retire_successful_repeat_occurrences=True,
                 ).run_once(now=now)
                 assert tick.selected == 1
-                assert tick.eligible == 0
-                assert tick.deleted == 0
+                assert tick.eligible == 1
+                assert tick.deleted == 1
                 assert tick.skipped_repeat == 0
-                assert tick.skipped_content_linkage == 1
+                assert tick.skipped_content_linkage == 0
                 assert tick.failures == 0
 
             async with Session() as session:
                 task = await session.get(PostTask, task_id)
                 root = await session.get(Publication, publication_id)
                 successor = await session.get(Publication, successor_id)
-                assert task is not None
+                assert task is None
                 assert root is not None
-                assert root.legacy_post_task_id == task_id
-                assert "legacy_transport_retention" not in dict(root.meta or {})
+                assert root.legacy_post_task_id is None
+                retention_meta = dict(root.meta or {}).get("legacy_transport_retention")
+                assert isinstance(retention_meta, dict)
+                assert retention_meta["repeat_successor_publication_id"] == successor_id
                 assert successor is not None
                 assert successor.execution_mode == CANONICAL_EXECUTION_MODE
                 assert successor.legacy_post_task_id is None
