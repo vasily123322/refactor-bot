@@ -4,11 +4,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AIStudioPanel } from './AIStudioPanel';
 import { StudioApiError, studioApi } from './api';
 import { DRAFT_AUTOSAVE_DELAY_MS, isCurrentDraftSave } from './draftAutosave';
+import {
+  isEditorDocumentDirty,
+  reconcileSuccessfulDraftSave,
+} from './editorDirty';
 import { InboxPanel } from './InboxPanel';
 import { PlannerPanel } from './PlannerPanel';
 import { RichComposer } from './RichComposer';
 import { SourcesPanel } from './SourcesPanel';
 import { TelegramComposer } from './TelegramComposer';
+import { useTelegramDirtyClosingProtection } from './telegramDirtyClosingProtection';
 import { TelegramVisualPreview } from './TelegramVisualPreview';
 import type {
   Channel,
@@ -140,9 +145,12 @@ export default function App() {
   const selectedRef = useRef<ContentDetail | null>(selected);
   const channelIdRef = useRef<number | null>(selectedChannelId);
   const documentRef = useRef<PostDocument>(document);
+  const baselineDocumentRef = useRef<PostDocument>(document);
   const dirtyRef = useRef(dirty);
   const editVersionRef = useRef(0);
   const inFlightSaveRef = useRef<Promise<boolean> | null>(null);
+
+  useTelegramDirtyClosingProtection(dirty);
 
   selectedRef.current = selected;
   channelIdRef.current = selectedChannelId;
@@ -164,6 +172,7 @@ export default function App() {
       editVersionRef.current += 1;
       selectedRef.current = detail;
       documentRef.current = nextDocument;
+      baselineDocumentRef.current = structuredClone(nextDocument);
       dirtyRef.current = false;
       setSelected(detail);
       setDocument(nextDocument);
@@ -212,6 +221,11 @@ export default function App() {
         if (targetStillOpen) {
           selectedRef.current = detail;
           setSelected(detail);
+          const reconciled = reconcileSuccessfulDraftSave(
+            detail.document,
+            documentRef.current,
+          );
+          baselineDocumentRef.current = structuredClone(reconciled.baseline);
           if (current) {
             documentRef.current = detail.document;
             dirtyRef.current = false;
@@ -220,7 +234,9 @@ export default function App() {
             setSaveState('saved');
             if (notify) setNotice(`Сохранена версия ${detail.current_revision}`);
           } else {
-            setSaveState('dirty');
+            dirtyRef.current = reconciled.dirty;
+            setDirty(reconciled.dirty);
+            setSaveState(reconciled.dirty ? 'dirty' : 'saved');
           }
         }
         if (channelIdRef.current === snapshot.channelId) {
@@ -400,12 +416,15 @@ export default function App() {
 
   const text = documentText(document);
   const editDocument = (next: PostDocument) => {
+    const nextDirty = isEditorDocumentDirty(baselineDocumentRef.current, next);
     editVersionRef.current += 1;
     documentRef.current = next;
-    dirtyRef.current = true;
+    dirtyRef.current = nextDirty;
     setDocument(next);
-    setDirty(true);
-    setSaveState('dirty');
+    setDirty(nextDirty);
+    setSaveState(
+      nextDirty ? 'dirty' : inFlightSaveRef.current ? 'saving' : 'saved',
+    );
   };
 
   const saveButtonLabel = saveState === 'saving'
