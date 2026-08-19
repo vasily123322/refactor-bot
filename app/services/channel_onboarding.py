@@ -5,6 +5,7 @@ from typing import Any, Protocol
 
 from aiogram.exceptions import TelegramForbiddenError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.models import Channel, Client
@@ -55,6 +56,38 @@ def _missing_channel_rights(member: Any) -> tuple[str, ...] | None:
     )
 
 
+async def _reconcile_existing_channel(
+    session: AsyncSession,
+    *,
+    existing: Channel,
+    requester_client_id: int,
+    title: str | None,
+) -> ChannelOnboardingResult:
+    """Return/reconcile an already durable channel without ever changing its owner."""
+
+    if int(existing.owner_id) != int(requester_client_id):
+        await session.rollback()
+        return ChannelOnboardingResult(ok=False, reason="owner-conflict")
+
+    changed = False
+    if title and existing.title != title:
+        existing.title = title
+        changed = True
+    if not existing.is_active:
+        existing.is_active = True
+        changed = True
+    if changed:
+        await session.commit()
+        await session.refresh(existing)
+    return ChannelOnboardingResult(
+        ok=True,
+        reason="connected",
+        channel_id=int(existing.id),
+        created=False,
+        title=existing.title,
+    )
+
+
 class ChannelOnboardingService:
     """Verify Telegram authority before persisting a Studio/legacy channel owner."""
 
@@ -84,7 +117,13 @@ class ChannelOnboardingService:
 
         try:
             chat = await self._telegram.get_chat(chat_id)
-            if str(getattr(getattr(chat, "type", ""), "value", getattr(chat, "type", ""))) != "channel":
+            if str(
+                getattr(
+                    getattr(chat, "type", ""),
+                    "value",
+                    getattr(chat, "type", ""),
+                )
+            ) != "channel":
                 return ChannelOnboardingResult(ok=False, reason="not-channel")
 
             bot_user = await self._telegram.get_me()
@@ -123,11 +162,31 @@ class ChannelOnboardingService:
 
         async with self._session_factory() as session:
             clients = ClientsRepo(session)
-            client = await clients.create_or_get(
-                requester_tg_user_id,
-                requester_username,
-                requester_full_name,
-            )
+            try:
+                client = await clients.create_or_get(
+                    requester_tg_user_id,
+                    requester_username,
+                    requester_full_name,
+                )
+            except IntegrityError:
+                # A concurrent first request for the same Telegram user may win the
+                # globally unique Client.tg_user_id insert. Re-read that durable winner
+                # instead of leaking an IntegrityError out of the authority boundary.
+                await session.rollback()
+                client = (
+                    await session.execute(
+                        select(Client).where(
+                            Client.tg_user_id == int(requester_tg_user_id)
+                        )
+                    )
+                ).scalars().first()
+                if client is None:
+                    return ChannelOnboardingResult(
+                        ok=False,
+                        reason="persistence-conflict",
+                    )
+
+            requester_client_id = int(client.id)
             existing = (
                 await session.execute(
                     select(Channel).where(Channel.tg_chat_id == chat_id)
@@ -135,36 +194,45 @@ class ChannelOnboardingService:
             ).scalars().first()
 
             if existing is not None:
-                if existing.owner_id != client.id:
-                    await session.rollback()
-                    return ChannelOnboardingResult(ok=False, reason="owner-conflict")
-                changed = False
-                if title and existing.title != title:
-                    existing.title = title
-                    changed = True
-                if not existing.is_active:
-                    existing.is_active = True
-                    changed = True
-                if changed:
-                    await session.commit()
-                    await session.refresh(existing)
-                return ChannelOnboardingResult(
-                    ok=True,
-                    reason="connected",
-                    channel_id=existing.id,
-                    created=False,
-                    title=existing.title,
+                return await _reconcile_existing_channel(
+                    session,
+                    existing=existing,
+                    requester_client_id=requester_client_id,
+                    title=title,
                 )
 
-            channel = await ChannelsRepo(session).create(
-                owner_id=client.id,
-                tg_chat_id=chat_id,
-                title=title,
-            )
+            try:
+                channel = await ChannelsRepo(session).create(
+                    owner_id=requester_client_id,
+                    tg_chat_id=chat_id,
+                    title=title,
+                )
+            except IntegrityError:
+                # Channel.tg_chat_id is globally unique. If another verified onboarding
+                # wins after our SELECT, resolve the committed winner deterministically:
+                # same owner is an idempotent reconnect; another owner is a hard conflict.
+                await session.rollback()
+                existing = (
+                    await session.execute(
+                        select(Channel).where(Channel.tg_chat_id == chat_id)
+                    )
+                ).scalars().first()
+                if existing is None:
+                    return ChannelOnboardingResult(
+                        ok=False,
+                        reason="persistence-conflict",
+                    )
+                return await _reconcile_existing_channel(
+                    session,
+                    existing=existing,
+                    requester_client_id=requester_client_id,
+                    title=title,
+                )
+
             return ChannelOnboardingResult(
                 ok=True,
                 reason="connected",
-                channel_id=channel.id,
+                channel_id=int(channel.id),
                 created=True,
                 title=channel.title,
             )
