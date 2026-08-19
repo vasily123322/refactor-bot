@@ -12,6 +12,7 @@ import { InboxPanel } from './InboxPanel';
 import { PlannerPanel } from './PlannerPanel';
 import { RichComposer } from './RichComposer';
 import { SourcesPanel } from './SourcesPanel';
+import { emitStudioHaptic } from './studioHaptics';
 import type { StudioView } from './studioNavigation';
 import { TelegramComposer } from './TelegramComposer';
 import { useTelegramDirtyClosingProtection } from './telegramDirtyClosingProtection';
@@ -234,7 +235,10 @@ export default function App() {
             setDocument(detail.document);
             setDirty(false);
             setSaveState('saved');
-            if (notify) setNotice(`Сохранена версия ${detail.current_revision}`);
+            if (notify) {
+              setNotice(`Сохранена версия ${detail.current_revision}`);
+              emitStudioHaptic('manual-save-success');
+            }
           } else {
             dirtyRef.current = reconciled.dirty;
             setDirty(reconciled.dirty);
@@ -257,6 +261,7 @@ export default function App() {
         if (targetStillOpen) {
           setSaveState('error');
           setError(errorMessage(reason));
+          if (notify) emitStudioHaptic('manual-save-error');
         }
         return false;
       }
@@ -397,6 +402,7 @@ export default function App() {
     if (dirtyRef.current) {
       const saved = await persistDraft(false);
       if (!saved && dirtyRef.current) {
+        emitStudioHaptic('publish-error');
         setError('Не удалось сохранить последние изменения перед публикацией.');
         return;
       }
@@ -409,7 +415,9 @@ export default function App() {
     try {
       const publication = await studioApi.publishNow(channelId, currentSelected.id);
       setNotice(`Публикация #${publication.id} поставлена в очередь`);
+      emitStudioHaptic('publish-success');
     } catch (reason) {
+      emitStudioHaptic('publish-error');
       setError(errorMessage(reason));
     } finally {
       setBusy(false);

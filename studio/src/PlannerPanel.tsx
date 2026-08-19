@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
 import { plannerAttemptLabel } from './plannerAttempts';
+import { emitStudioHaptic } from './studioHaptics';
 import type { Channel, PlannerEntry } from './types';
 import './planner.css';
 
@@ -110,6 +111,7 @@ export function PlannerPanel({
     if (!channel || !editingValue) return;
     const next = new Date(editingValue);
     if (Number.isNaN(next.getTime())) {
+      emitStudioHaptic('validation-error');
       setError('Некорректная дата');
       return;
     }
@@ -123,6 +125,7 @@ export function PlannerPanel({
       setEditingId(null);
       await load();
     } catch (reason) {
+      emitStudioHaptic('action-error');
       setError(errorText(reason));
       setLoading(false);
     }
@@ -130,6 +133,7 @@ export function PlannerPanel({
 
   const cancel = async (entry: PlannerEntry) => {
     if (!channel) return;
+    emitStudioHaptic('destructive-confirmation');
     if (!window.confirm('Отменить эту запланированную публикацию?')) return;
     setLoading(true);
     setError(null);
@@ -139,6 +143,7 @@ export function PlannerPanel({
         current.map((row) => (row.schedule_id === updated.schedule_id ? updated : row)),
       );
     } catch (reason) {
+      emitStudioHaptic('action-error');
       setError(errorText(reason));
     } finally {
       setLoading(false);
