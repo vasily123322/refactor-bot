@@ -14,6 +14,7 @@ from app.domain.scheduler import SchedulerTaskLease
 from app.repositories.content import ContentRepo
 from app.services.post_task_retention import PostTaskRetentionService
 from app.services.publication_bridge import LegacyPublicationBridge
+from app.services.publication_execution_mode import CANONICAL_EXECUTION_MODE
 
 
 async def _seed_terminal(
@@ -53,6 +54,94 @@ async def _seed_terminal(
         schedule = await session.get(ScheduleEntry, int(publication.schedule_entry_id or 0))
         assert schedule is not None
         return int(task.id), int(publication.id), int(attempt.id), int(schedule.id)
+
+
+async def _seed_successful_repeat_with_posttask_free_successor(
+    Session,
+    *,
+    channel_id: int,
+    now: datetime,
+    successor_group_offset: int = 0,
+) -> tuple[int, int, int]:
+    task_id, publication_id, attempt_id, schedule_id = await _seed_terminal(
+        Session,
+        channel_id=channel_id,
+        status="done",
+        repeat=True,
+    )
+    async with Session() as session:
+        task = await session.get(PostTask, task_id)
+        publication = await session.get(Publication, publication_id)
+        attempt = await session.get(PublicationAttempt, attempt_id)
+        schedule = await session.get(ScheduleEntry, schedule_id)
+        assert task is not None
+        assert publication is not None
+        assert attempt is not None
+        assert schedule is not None
+
+        root_at = now - timedelta(days=121)
+        message_id = 8_000_000 + channel_id
+        task.status = "done"
+        task.scheduled_at = root_at
+        task.payload = {
+            **dict(task.payload or {}),
+            "repeat_on": True,
+            "repeat_seconds": 3600,
+            "repeat_group_id": task_id,
+            "result_ids": [message_id],
+        }
+        publication.status = "published"
+        publication.telegram_message_ids = [message_id]
+        publication.result_link = None
+        publication.meta = {
+            **dict(publication.meta or {}),
+            "repeat_group_id": task_id,
+            "runtime_options": {},
+        }
+        attempt.status = "published"
+        attempt.telegram_message_ids = [message_id]
+        attempt.finished_at = now - timedelta(days=120)
+        schedule.status = "completed"
+        schedule.scheduled_at = root_at
+        schedule.repeat_rule = {"enabled": True, "seconds": 3600}
+        schedule.meta = {
+            **dict(schedule.meta or {}),
+            "repeat_group_id": task_id,
+        }
+
+        successor_group_id = task_id + int(successor_group_offset)
+        successor_meta = {
+            "runtime_options": {},
+            "repeat_group_id": successor_group_id,
+            "canonical_repeat_source_publication_id": publication_id,
+            "canonical_repeat_transport_adapter": True,
+            "canonical_repeat_posttask_free": True,
+        }
+        successor_schedule = ScheduleEntry(
+            content_item_id=int(publication.content_item_id),
+            content_revision=int(publication.content_revision),
+            channel_id=int(publication.channel_id),
+            scheduled_at=root_at + timedelta(hours=1),
+            timezone=schedule.timezone,
+            status="pending",
+            repeat_rule={"enabled": True, "seconds": 3600},
+            meta=dict(successor_meta),
+        )
+        successor = Publication(
+            schedule_entry_id=None,
+            content_item_id=int(publication.content_item_id),
+            content_revision=int(publication.content_revision),
+            channel_id=int(publication.channel_id),
+            status="queued",
+            execution_mode=CANONICAL_EXECUTION_MODE,
+            repeat_source_publication_id=publication_id,
+            meta=dict(successor_meta),
+        )
+        session.add_all([successor_schedule, successor])
+        await session.flush()
+        successor.schedule_entry_id = int(successor_schedule.id)
+        await session.commit()
+        return task_id, publication_id, int(successor.id)
 
 
 def test_retention_fail_closes_current_linked_non_repeat_transport(tmp_path) -> None:
@@ -266,6 +355,105 @@ def test_retention_does_not_mutate_expired_lease_behind_current_link(tmp_path) -
                 publication = await session.get(Publication, publication_id)
                 assert publication is not None
                 assert publication.legacy_post_task_id == task_id
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_retention_recognizes_posttask_free_canonical_repeat_handoff_but_keeps_linked_root(
+    tmp_path,
+) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'retention-canonical-repeat-handoff.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            now = datetime(2026, 12, 1, 12, 0, tzinfo=timezone.utc)
+            task_id, publication_id, successor_id = (
+                await _seed_successful_repeat_with_posttask_free_successor(
+                    Session,
+                    channel_id=927,
+                    now=now,
+                )
+            )
+
+            async with Session() as session:
+                tick = await PostTaskRetentionService(
+                    session,
+                    retention_days=90,
+                    batch_size=10,
+                    retire_successful=True,
+                    retire_successful_repeat_occurrences=True,
+                ).run_once(now=now)
+                assert tick.selected == 1
+                assert tick.eligible == 0
+                assert tick.deleted == 0
+                assert tick.skipped_repeat == 0
+                assert tick.skipped_content_linkage == 1
+                assert tick.failures == 0
+
+            async with Session() as session:
+                task = await session.get(PostTask, task_id)
+                root = await session.get(Publication, publication_id)
+                successor = await session.get(Publication, successor_id)
+                assert task is not None
+                assert root is not None
+                assert root.legacy_post_task_id == task_id
+                assert "legacy_transport_retention" not in dict(root.meta or {})
+                assert successor is not None
+                assert successor.execution_mode == CANONICAL_EXECUTION_MODE
+                assert successor.legacy_post_task_id is None
+                assert successor.repeat_source_publication_id == publication_id
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_retention_rejects_posttask_free_repeat_successor_with_wrong_group(tmp_path) -> None:
+    async def run() -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'retention-canonical-repeat-wrong-group.db'}"
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            now = datetime(2026, 12, 1, 12, 0, tzinfo=timezone.utc)
+            task_id, publication_id, successor_id = (
+                await _seed_successful_repeat_with_posttask_free_successor(
+                    Session,
+                    channel_id=928,
+                    now=now,
+                    successor_group_offset=1,
+                )
+            )
+
+            async with Session() as session:
+                tick = await PostTaskRetentionService(
+                    session,
+                    retention_days=90,
+                    batch_size=10,
+                    retire_successful=True,
+                    retire_successful_repeat_occurrences=True,
+                ).run_once(now=now)
+                assert tick.selected == 1
+                assert tick.eligible == 0
+                assert tick.deleted == 0
+                assert tick.skipped_repeat == 1
+                assert tick.skipped_content_linkage == 0
+                assert tick.failures == 0
+
+            async with Session() as session:
+                assert await session.get(PostTask, task_id) is not None
+                root = await session.get(Publication, publication_id)
+                successor = await session.get(Publication, successor_id)
+                assert root is not None and root.legacy_post_task_id == task_id
+                assert successor is not None and successor.legacy_post_task_id is None
         finally:
             await engine.dispose()
 
