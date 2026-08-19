@@ -15,6 +15,8 @@ import {
   viewport,
 } from '@tma.js/sdk-react';
 
+import { createTelegramButtonBridge } from './telegramButtons';
+export type { TelegramSecondaryButtonPosition } from './telegramButtons';
 import {
   normalizeTelegramMiniAppVersion,
   readTelegramLaunchParam,
@@ -52,7 +54,6 @@ export type TelegramHapticImpactStyle =
   | 'rigid'
   | 'soft';
 export type TelegramHapticNotificationType = 'error' | 'success' | 'warning';
-export type TelegramSecondaryButtonPosition = 'left' | 'right' | 'top' | 'bottom';
 
 type OfficialTelegramRequestChatWebApp = Readonly<{
   requestChat?: (
@@ -62,6 +63,7 @@ type OfficialTelegramRequestChatWebApp = Readonly<{
 }>;
 
 function rawLaunchParam(name: string): string | null {
+  if (typeof window === 'undefined') return null;
   return readTelegramLaunchParam(window.location.search, window.location.hash, name);
 }
 
@@ -185,6 +187,16 @@ export function setTelegramClosingConfirmation(enabled: boolean): boolean {
   return true;
 }
 
+export function disposeTelegramClosingConfirmation(): boolean {
+  if (!closingBehavior.isMounted()) return true;
+  if (closingBehavior.isConfirmationEnabled()) {
+    if (!closingBehavior.disableConfirmation.isAvailable()) return false;
+    closingBehavior.disableConfirmation();
+  }
+  closingBehavior.unmount();
+  return true;
+}
+
 export function triggerTelegramHapticImpact(
   style: TelegramHapticImpactStyle,
 ): boolean {
@@ -222,104 +234,23 @@ export function triggerTelegramHapticSelectionChanged(): boolean {
   return true;
 }
 
-function ensureBackButtonReady(): boolean {
-  if (
-    !getTelegramMiniAppCapabilities().backButton ||
-    !backButton.isSupported() ||
-    !backButton.mount.isAvailable()
-  ) {
-    return false;
-  }
-  if (!backButton.isMounted()) backButton.mount();
-  return backButton.isMounted();
-}
+const telegramButtons = createTelegramButtonBridge({
+  isBackButtonSupported: () => getTelegramMiniAppCapabilities().backButton,
+  isSecondaryButtonSupported: () =>
+    getTelegramMiniAppCapabilities().secondaryButton,
+  backButton,
+  mainButton,
+  secondaryButton,
+});
 
-export function bindTelegramBackButton(listener: VoidFunction): VoidFunction | null {
-  if (
-    !ensureBackButtonReady() ||
-    !backButton.onClick.isAvailable() ||
-    !backButton.show.isAvailable()
-  ) {
-    return null;
-  }
-  const off = backButton.onClick(listener);
-  backButton.show();
-  return () => {
-    off();
-    if (backButton.isMounted() && backButton.hide.isAvailable()) backButton.hide();
-  };
-}
-
-function ensureMainButtonReady(): boolean {
-  if (!mainButton.mount.isAvailable()) return false;
-  if (!mainButton.isMounted()) mainButton.mount();
-  return mainButton.isMounted();
-}
-
-export function bindTelegramMainButton(
-  text: string,
-  listener: VoidFunction,
-): VoidFunction | null {
-  const normalizedText = text.trim();
-  if (
-    !normalizedText ||
-    !ensureMainButtonReady() ||
-    !mainButton.setText.isAvailable() ||
-    !mainButton.onClick.isAvailable() ||
-    !mainButton.show.isAvailable()
-  ) {
-    return null;
-  }
-  mainButton.setText(normalizedText);
-  const off = mainButton.onClick(listener);
-  mainButton.show();
-  return () => {
-    off();
-    if (mainButton.isMounted() && mainButton.hide.isAvailable()) mainButton.hide();
-  };
-}
-
-function ensureSecondaryButtonReady(): boolean {
-  if (
-    !getTelegramMiniAppCapabilities().secondaryButton ||
-    !secondaryButton.isSupported() ||
-    !secondaryButton.mount.isAvailable()
-  ) {
-    return false;
-  }
-  if (!secondaryButton.isMounted()) secondaryButton.mount();
-  return secondaryButton.isMounted();
-}
-
-export function bindTelegramSecondaryButton(
-  text: string,
-  listener: VoidFunction,
-  position: TelegramSecondaryButtonPosition = 'left',
-): VoidFunction | null {
-  const normalizedText = text.trim();
-  if (
-    !normalizedText ||
-    !ensureSecondaryButtonReady() ||
-    !secondaryButton.setText.isAvailable() ||
-    !secondaryButton.setPosition.isAvailable() ||
-    !secondaryButton.onClick.isAvailable() ||
-    !secondaryButton.show.isAvailable()
-  ) {
-    return null;
-  }
-  secondaryButton.setText(normalizedText);
-  secondaryButton.setPosition(position);
-  const off = secondaryButton.onClick(listener);
-  secondaryButton.show();
-  return () => {
-    off();
-    if (secondaryButton.isMounted() && secondaryButton.hide.isAvailable()) {
-      secondaryButton.hide();
-    }
-  };
-}
+export const bindTelegramBackButton = telegramButtons.bindBack;
+export const bindTelegramMainButton = telegramButtons.bindMain;
+export const bindTelegramSecondaryButton = telegramButtons.bindSecondary;
+export const disposeTelegramNativeButtons = telegramButtons.disposeAll;
 
 export async function initTelegram(): Promise<void> {
+  if (typeof window === 'undefined') return;
+
   setDebug(import.meta.env.DEV);
   initSDK();
 
