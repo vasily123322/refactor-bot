@@ -19,6 +19,11 @@ import {
   telegramCapabilitiesForVersion,
 } from './telegramPlatform';
 import type { TelegramMiniAppCapabilities } from './telegramPlatform';
+import { createTelegramRequestChatBridge } from './telegramRequestChat';
+export type {
+  TelegramRequestChatError,
+  TelegramRequestChatResult,
+} from './telegramRequestChat';
 import { createTelegramStorageBridge } from './telegramStorage';
 export type {
   StudioDeviceStorageKey,
@@ -41,6 +46,13 @@ export type TelegramHapticImpactStyle =
   | 'soft';
 export type TelegramHapticNotificationType = 'error' | 'success' | 'warning';
 export type TelegramSecondaryButtonPosition = 'left' | 'right' | 'top' | 'bottom';
+
+type OfficialTelegramRequestChatWebApp = Readonly<{
+  requestChat?: (
+    preparedRequestId: string,
+    callback?: (sent: boolean) => void,
+  ) => void;
+}>;
 
 function rawLaunchParam(name: string): string | null {
   return readTelegramLaunchParam(window.location.search, window.location.hash, name);
@@ -79,6 +91,27 @@ export const setTelegramSecureStorageItem = telegramStorage.secureSet;
 export const removeTelegramSecureStorageItem = telegramStorage.secureRemove;
 export const clearTelegramSecureStorage = telegramStorage.secureClear;
 export const restoreTelegramSecureStorageItem = telegramStorage.secureRestore;
+
+function getOfficialRequestChatProvider() {
+  if (typeof window === 'undefined') return undefined;
+  const telegramWindow = window as typeof window & {
+    Telegram?: { WebApp?: OfficialTelegramRequestChatWebApp };
+  };
+  const webApp = telegramWindow.Telegram?.WebApp;
+  if (!webApp || typeof webApp.requestChat !== 'function') return undefined;
+  return {
+    requestChat(preparedRequestId: string, callback: (sent: boolean) => void) {
+      webApp.requestChat!(preparedRequestId, callback);
+    },
+  };
+}
+
+const requestChatBridge = createTelegramRequestChatBridge({
+  isSupported: () => getTelegramMiniAppCapabilities().requestChat,
+  getProvider: getOfficialRequestChatProvider,
+});
+
+export const requestTelegramChat = requestChatBridge;
 
 function fullscreenBridgeReady(): boolean {
   return Boolean(
