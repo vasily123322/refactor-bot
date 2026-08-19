@@ -10,6 +10,7 @@ from app.domain import models as _legacy_models  # noqa: F401
 from app.domain import publication_autodelete as _publication_autodelete_models  # noqa: F401
 from app.domain import publication_delivery as _publication_delivery_models  # noqa: F401
 from app.domain import scheduler as _scheduler_models  # noqa: F401
+from app.domain import studio_channel_onboarding as _studio_channel_onboarding_models  # noqa: F401
 from app.domain.content import models as _content_models  # noqa: F401
 from app.domain.publishing import models as _publishing_models  # noqa: F401
 from app.domain.sources import enrichment as _source_enrichment_models  # noqa: F401

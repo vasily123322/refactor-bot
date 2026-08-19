@@ -10,10 +10,15 @@ from loguru import logger
 from aiogram.exceptions import TelegramForbiddenError
 from app.bot.bot_instance import bot as tg_bot
 from app.core.db import AsyncSessionLocal
+from app.domain.models import Client
 from app.repositories.clients import ClientsRepo
 from app.repositories.channels import ChannelsRepo
 from app.repositories.admin import AdminConfigRepo, BansRepo
 from app.services.channel_onboarding import ChannelOnboardingService
+from app.services.studio_channel_onboarding_requests import (
+    AiogramPreparedChannelButtonProvider,
+    StudioChannelOnboardingRequestService,
+)
 
 
 router = Router()
@@ -23,6 +28,10 @@ router.callback_query.filter(F.message.chat.type == "private")
 _channel_onboarding = ChannelOnboardingService(
     session_factory=AsyncSessionLocal,
     telegram=tg_bot,
+)
+_studio_channel_onboarding_requests = StudioChannelOnboardingRequestService(
+    session_factory=AsyncSessionLocal,
+    provider=AiogramPreparedChannelButtonProvider(tg_bot),
 )
 
 
@@ -177,6 +186,21 @@ def _channel_failure_text(reason: str, missing_rights: tuple[str, ...]) -> str:
     return "❌ Не удалось безопасно проверить канал. Повторите позже."
 
 
+async def _channel_success(message: Message, chat_id: int) -> None:
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Открыть список каналов/чатов",
+                    callback_data="settings_channels_list",
+                )
+            ]
+        ]
+    )
+    await message.answer("✅ Канал подключён.", reply_markup=kb)
+    await _log_added_chat(message, chat_id)
+
+
 async def _log_added_chat(message: Message, chat_id: int) -> None:
     try:
         async with AsyncSessionLocal() as session:
@@ -245,12 +269,107 @@ async def _log_added_chat(message: Message, chat_id: int) -> None:
         pass
 
 
+async def _handle_studio_channel_shared(
+    message: Message,
+    *,
+    request_id: int,
+    chat_id: int,
+) -> bool:
+    if message.from_user is None:
+        return True
+
+    claim = await _studio_channel_onboarding_requests.claim_shared(
+        request_id=request_id,
+        sender_tg_user_id=int(message.from_user.id),
+        selected_chat_id=chat_id,
+    )
+    if not claim.ok:
+        logger.warning(
+            "Studio: rejected chat_shared user_id={} chat_id={} request_id={} reason={}",
+            message.from_user.id,
+            chat_id,
+            request_id,
+            claim.reason,
+        )
+        if claim.reason != "not-found":
+            with suppress(Exception):
+                await message.answer("❌ Запрос выбора канала устарел или уже обработан.")
+            return True
+        return False
+
+    try:
+        async with AsyncSessionLocal() as session:
+            client = await session.get(Client, int(claim.client_id or 0))
+            if client is None or int(client.tg_user_id) != int(message.from_user.id):
+                await _studio_channel_onboarding_requests.complete(
+                    request_id=request_id,
+                    succeeded=False,
+                    channel_id=None,
+                    failure_reason="client-mismatch",
+                )
+                with suppress(Exception):
+                    await message.answer("❌ Не удалось подтвердить владельца запроса.")
+                return True
+            requester_username = client.username
+            requester_full_name = client.full_name
+
+        result = await _channel_onboarding.onboard_channel(
+            requester_tg_user_id=int(message.from_user.id),
+            requester_username=requester_username,
+            requester_full_name=requester_full_name,
+            chat_id=chat_id,
+        )
+        completed = await _studio_channel_onboarding_requests.complete(
+            request_id=request_id,
+            succeeded=result.ok,
+            channel_id=result.channel_id,
+            failure_reason=None if result.ok else result.reason,
+        )
+        if not completed:
+            logger.error(
+                "Studio: onboarding completion lost request_id={} chat_id={}",
+                request_id,
+                chat_id,
+            )
+            with suppress(Exception):
+                await message.answer(
+                    "⚠️ Канал проверен, но статус запроса не обновился. Обновите Studio."
+                )
+            return True
+
+        if not result.ok:
+            with suppress(Exception):
+                await message.answer(
+                    _channel_failure_text(result.reason, result.missing_rights)
+                )
+            return True
+
+        await _channel_success(message, chat_id)
+        return True
+    except Exception:
+        logger.exception(
+            "Studio: native channel onboarding failed request_id={} chat_id={}",
+            request_id,
+            chat_id,
+        )
+        with suppress(Exception):
+            await _studio_channel_onboarding_requests.complete(
+                request_id=request_id,
+                succeeded=False,
+                channel_id=None,
+                failure_reason="internal-error",
+            )
+        with suppress(Exception):
+            await message.answer("❌ Не удалось безопасно подключить канал. Повторите позже.")
+        return True
+
+
 @router.message(F.chat_shared)
 async def on_chat_shared(message: Message):
     shared: ChatShared = message.chat_shared
     if not shared or message.from_user is None:
         return
-    chat_id = shared.chat_id
+    chat_id = int(shared.chat_id)
     request_id = int(getattr(shared, "request_id", 0) or 0)
     logger.info(
         "UI: chat_shared received user_id={}, chat_id={}, request_id={}",
@@ -259,14 +378,12 @@ async def on_chat_shared(message: Message):
         request_id,
     )
 
-    # The current channel picker is request_id=201. Its persistence is now owned by
-    # one fail-closed verifier that is also reusable by Studio requestChat onboarding.
     if request_id == 201:
         result = await _channel_onboarding.onboard_channel(
             requester_tg_user_id=int(message.from_user.id),
             requester_username=getattr(message.from_user, "username", None),
             requester_full_name=getattr(message.from_user, "full_name", None),
-            chat_id=int(chat_id),
+            chat_id=chat_id,
         )
         if not result.ok:
             with suppress(Exception):
@@ -274,22 +391,17 @@ async def on_chat_shared(message: Message):
                     _channel_failure_text(result.reason, result.missing_rights)
                 )
             return
-
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="Открыть список каналов/чатов",
-                        callback_data="settings_channels_list",
-                    )
-                ]
-            ]
-        )
-        await message.answer("✅ Канал подключён.", reply_markup=kb)
-        await _log_added_chat(message, int(chat_id))
+        await _channel_success(message, chat_id)
         return
 
     if request_id != 202:
+        handled = await _handle_studio_channel_shared(
+            message,
+            request_id=request_id,
+            chat_id=chat_id,
+        )
+        if handled:
+            return
         logger.warning(
             "UI: rejected uncorrelated chat_shared user_id={} chat_id={} request_id={}",
             message.from_user.id,
@@ -301,7 +413,7 @@ async def on_chat_shared(message: Message):
         return
 
     # Preserve the existing legacy group picker flow (request_id=202). The native
-    # Studio channel flow will never authorize through this fallback.
+    # Studio channel flow never authorizes through this fallback.
     try:
         async with AsyncSessionLocal() as _sess_ban:
             if await BansRepo(_sess_ban).is_banned(chat_id):
@@ -386,4 +498,4 @@ async def on_chat_shared(message: Message):
         ]
     )
     await message.answer(text, reply_markup=kb)
-    await _log_added_chat(message, int(chat_id))
+    await _log_added_chat(message, chat_id)
