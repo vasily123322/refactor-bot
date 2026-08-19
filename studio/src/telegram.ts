@@ -2,6 +2,7 @@ import {
   backButton,
   closingBehavior,
   deviceStorage,
+  downloadFile,
   hapticFeedback,
   init as initSDK,
   mainButton,
@@ -9,6 +10,7 @@ import {
   secondaryButton,
   secureStorage,
   setDebug,
+  shareMessage,
   themeParams,
   viewport,
 } from '@tma.js/sdk-react';
@@ -30,6 +32,11 @@ export type {
   TelegramStorageError,
   TelegramStorageResult,
 } from './telegramStorage';
+import { createTelegramTransferBridge } from './telegramTransfers';
+export type {
+  TelegramTransferError,
+  TelegramTransferResult,
+} from './telegramTransfers';
 
 export type TelegramFullscreenActionResult =
   | 'requested'
@@ -112,6 +119,17 @@ const requestChatBridge = createTelegramRequestChatBridge({
 });
 
 export const requestTelegramChat = requestChatBridge;
+
+const telegramTransfers = createTelegramTransferBridge({
+  isShareMessageSupported: () =>
+    getTelegramMiniAppCapabilities().sharePreparedMessage,
+  isDownloadFileSupported: () => getTelegramMiniAppCapabilities().downloadFile,
+  shareMessage,
+  downloadFile,
+});
+
+export const shareTelegramPreparedMessage = telegramTransfers.sharePreparedMessage;
+export const downloadTelegramAsset = telegramTransfers.downloadAsset;
 
 function fullscreenBridgeReady(): boolean {
   return Boolean(
