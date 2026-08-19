@@ -1,5 +1,6 @@
 import './rich-collections.css';
 
+import { richCaptionPreview, type RichCaptionSource } from './richCaption';
 import { richCollectionVisualModel } from './richCollections';
 import { richListItems, richListItemPreview } from './richListItems';
 import { richMediaVisualBadges } from './richMediaOptions';
@@ -12,6 +13,17 @@ function richText(value: unknown): string {
     return (value as RichSegmentValue[]).map((segment) => segment.text ?? '').join('');
   }
   return '';
+}
+
+function CaptionPreview({ source }: { source: RichCaptionSource }) {
+  const caption = richCaptionPreview(source);
+  if (!caption) return null;
+  return (
+    <p>
+      {caption.text}
+      {caption.credit ? <cite> — {caption.credit}</cite> : null}
+    </p>
+  );
 }
 
 function RichPreviewBlock({ block }: { block: PostBlock }) {
@@ -32,11 +44,14 @@ function RichPreviewBlock({ block }: { block: PostBlock }) {
                 id: `${block.id}:preview:${index}`,
                 ...item,
               });
+              const caption = richCaptionPreview(item);
               return (
                 <div className="visual-rich-collection-item" key={`${item.asset_id}:${index}`}>
                   <strong>{item.kind}</strong>
                   <small>asset #{item.asset_id}</small>
                   {badges.length > 0 ? <small>{badges.join(' · ')}</small> : null}
+                  {caption?.text ? <small>{caption.text}</small> : null}
+                  {caption?.credit ? <small>— {caption.credit}</small> : null}
                 </div>
               );
             })}
@@ -49,7 +64,7 @@ function RichPreviewBlock({ block }: { block: PostBlock }) {
         ) : (
           <small className="visual-rich-collection-empty">media assets не выбраны</small>
         )}
-        {block.caption ? <p>{richText(block.caption)}</p> : null}
+        <CaptionPreview source={block} />
       </div>
     );
   }
@@ -113,7 +128,7 @@ function RichPreviewBlock({ block }: { block: PostBlock }) {
             <small>{block.asset_id ? `asset #${String(block.asset_id)}` : 'asset не выбран'}</small>
             {badges.length > 0 ? <small>{badges.join(' · ')}</small> : null}
           </div>
-          {block.caption ? <p>{richText(block.caption)}</p> : null}
+          <CaptionPreview source={block} />
         </div>
       );
     }
@@ -132,7 +147,7 @@ function RichPreviewBlock({ block }: { block: PostBlock }) {
             <small>zoom {Number.isFinite(zoom) ? zoom : '—'}</small>
           </div>
           <p>{coordinates}</p>
-          {block.caption ? <p>{richText(block.caption)}</p> : null}
+          <CaptionPreview source={block} />
         </div>
       );
     }

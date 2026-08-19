@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 
+import { RichCaptionEditor } from './RichCaptionEditor';
 import { richMapDraft, richMapError, richMapPatch, type RichMapDraft } from './richMap';
 import type { PostBlock } from './types';
 
@@ -80,15 +81,11 @@ export function MapBlockEditor({
           onChange={(height) => update({ height })}
         />
       </div>
-      <label className="rich-field-label">
-        <span>Caption</span>
-        <textarea
-          className="rich-media-caption"
-          value={draft.caption}
-          onChange={(event) => update({ caption: event.target.value })}
-          placeholder="Подпись карты (необязательно)"
-        />
-      </label>
+      <RichCaptionEditor
+        source={block}
+        onPatch={onPatch}
+        captionPlaceholder="Подпись карты (необязательно)"
+      />
       {error && <small className="rich-media-warning">{error}</small>}
     </div>
   );

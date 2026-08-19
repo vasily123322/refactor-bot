@@ -23,6 +23,10 @@ export type TelegramEntity = {
 export type RichMark = string | { type: string; url?: string; href?: string };
 export type RichSegmentValue = { text: string; marks?: RichMark[] };
 export type RichContentValue = string | RichSegmentValue[];
+export type RichCaptionValue = RichContentValue | {
+  text?: RichContentValue;
+  credit?: RichContentValue;
+};
 export type RichListItem = string | {
   label?: string;
   content?: RichContentValue;
@@ -34,7 +38,8 @@ export type RichMediaCollectionItem = {
   media_asset_id?: number;
   kind?: string;
   media_type?: string;
-  caption?: RichContentValue;
+  caption?: RichCaptionValue;
+  credit?: RichContentValue;
   [key: string]: unknown;
 };
 
@@ -42,7 +47,7 @@ export type PostBlock = {
   id: string;
   type: string;
   text?: string;
-  caption?: string;
+  caption?: RichCaptionValue;
   entities?: TelegramEntity[];
   caption_entities?: TelegramEntity[];
   content?: RichContentValue;
@@ -212,11 +217,18 @@ export function richContentText(value: unknown): string {
   return '';
 }
 
+export function richCaptionText(value: unknown): string {
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    return richContentText((value as { text?: unknown }).text);
+  }
+  return richContentText(value);
+}
+
 export function documentText(document: PostDocument): string {
   return document.blocks
     .map((block) => {
       if (typeof block.text === 'string') return block.text;
-      if (typeof block.caption === 'string') return block.caption;
+      if (block.caption !== undefined) return richCaptionText(block.caption);
       if (block.content !== undefined) return richContentText(block.content);
       if (block.summary !== undefined) return richContentText(block.summary);
       if (typeof block.formula === 'string') return block.formula;

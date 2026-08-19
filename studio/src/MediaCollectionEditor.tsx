@@ -3,6 +3,7 @@ import './rich-media-collection-options.css';
 import { useState } from 'react';
 
 import type { MediaAssetView } from './api';
+import { RichCaptionEditor } from './RichCaptionEditor';
 import { RichMediaOptionsEditor } from './RichMediaOptionsEditor';
 import {
   mediaAssetOptionLabel,
@@ -57,6 +58,7 @@ export function MediaCollectionEditor({
       <div className="rich-media-collection-items">
         {items.map((item, index) => {
           const asset = assets.find((candidate) => candidate.id === item.asset_id) ?? null;
+          const itemBlock: PostBlock = { id: `${block.id}:item:${index}`, ...item };
           return (
             <div className="rich-media-collection-card" key={`${item.asset_id}:${index}`}>
               <div className="rich-media-collection-row">
@@ -86,8 +88,13 @@ export function MediaCollectionEditor({
               </div>
               <details className="rich-media-collection-options">
                 <summary>Параметры media item</summary>
+                <RichCaptionEditor
+                  source={itemBlock}
+                  onPatch={(value) => patchItem(index, value)}
+                  captionPlaceholder="Подпись media item (необязательно)"
+                />
                 <RichMediaOptionsEditor
-                  block={{ id: `${block.id}:item:${index}`, ...item }}
+                  block={itemBlock}
                   asset={asset}
                   onPatch={(value) => patchItem(index, value)}
                 />
@@ -107,15 +114,11 @@ export function MediaCollectionEditor({
         <button disabled={!pendingAssetId} onClick={addItem}>Добавить</button>
       </div>
 
-      <label className="rich-field-label">
-        <span>Caption</span>
-        <textarea
-          className="rich-media-caption"
-          value={String(block.caption ?? '')}
-          onChange={(event) => onPatch({ caption: event.target.value })}
-          placeholder="Подпись коллекции (необязательно)"
-        />
-      </label>
+      <RichCaptionEditor
+        source={block}
+        onPatch={onPatch}
+        captionPlaceholder="Подпись коллекции (необязательно)"
+      />
 
       {items.length === 0 && (
         <small className="rich-media-warning">Добавьте хотя бы один asset перед exact preview / publish.</small>

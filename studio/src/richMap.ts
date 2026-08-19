@@ -6,7 +6,6 @@ export type RichMapDraft = {
   zoom: number;
   width: number;
   height: number;
-  caption: string;
 };
 
 export const DEFAULT_RICH_MAP: RichMapDraft = {
@@ -15,7 +14,6 @@ export const DEFAULT_RICH_MAP: RichMapDraft = {
   zoom: 13,
   width: 640,
   height: 360,
-  caption: '',
 };
 
 function finiteNumber(value: unknown, fallback: number): number {
@@ -33,7 +31,6 @@ export function richMapDraft(block: PostBlock): RichMapDraft {
     zoom: finiteNumber(block.zoom, DEFAULT_RICH_MAP.zoom),
     width: finiteNumber(block.width, DEFAULT_RICH_MAP.width),
     height: finiteNumber(block.height, DEFAULT_RICH_MAP.height),
-    caption: typeof block.caption === 'string' ? block.caption : '',
   };
 }
 
@@ -44,7 +41,6 @@ export function richMapPatch(draft: RichMapDraft): Partial<PostBlock> {
     zoom: draft.zoom,
     width: draft.width,
     height: draft.height,
-    caption: draft.caption,
   };
 }
 
