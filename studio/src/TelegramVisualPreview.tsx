@@ -1,6 +1,7 @@
 import './rich-collections.css';
 
 import { richCollectionVisualModel } from './richCollections';
+import { richMediaVisualBadges } from './richMediaOptions';
 import type { Channel, PostBlock, PostDocument, RichSegmentValue } from './types';
 import { documentText } from './types';
 
@@ -94,17 +95,20 @@ function RichPreviewBlock({ block }: { block: PostBlock }) {
     case 'anchor':
       return <span className="visual-rich-anchor">#{String(block.name ?? '')}</span>;
     case 'image':
-    case 'media':
+    case 'media': {
+      const badges = richMediaVisualBadges(block);
       return (
         <div className="visual-rich-media">
           <div>
             <span>▣</span>
             <strong>{String(block.kind || (block.type === 'image' ? 'photo' : 'media'))}</strong>
             <small>{block.asset_id ? `asset #${String(block.asset_id)}` : 'asset не выбран'}</small>
+            {badges.length > 0 ? <small>{badges.join(' · ')}</small> : null}
           </div>
           {block.caption ? <p>{richText(block.caption)}</p> : null}
         </div>
       );
+    }
     case 'map': {
       const latitude = Number(block.latitude ?? block.lat);
       const longitude = Number(block.longitude ?? block.lon ?? block.lng);
