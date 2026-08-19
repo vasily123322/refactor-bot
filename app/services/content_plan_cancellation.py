@@ -10,6 +10,10 @@ from app.domain.models import PostTask
 from app.domain.publication_delivery import PublicationDeliveryLease
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.domain.scheduler import SchedulerTaskLease
+from app.services.publication_execution_mode import (
+    CANONICAL_EXECUTION_MODE,
+    has_canonical_execution_authority,
+)
 
 
 ContentPlanDeleteOutcome = Literal[
@@ -70,6 +74,127 @@ class ContentPlanCancellationService:
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self.session_factory = session_factory
+
+    async def delete_canonical_publication(
+        self, publication_id: int
+    ) -> ContentPlanDeleteResult:
+        """Cancel one explicitly canonical occurrence without consulting PostTask.
+
+        Persisted execution mode is the sole authority selector. Historical, malformed,
+        and intentional-legacy rows fail closed. The cancellation transaction reuses the
+        same publication/schedule compare-and-set boundary as compatibility cancellation,
+        but deliberately neither reads nor mutates compatibility transport or scheduler
+        lease state.
+        """
+
+        async with self.session_factory() as session:
+            publication = (
+                await session.execute(
+                    select(Publication)
+                    .where(Publication.id == int(publication_id))
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if publication is None:
+                await session.rollback()
+                return ContentPlanDeleteResult(outcome="already_absent")
+
+            if not has_canonical_execution_authority(publication.execution_mode):
+                await session.rollback()
+                return ContentPlanDeleteResult(
+                    outcome="cannot_cancel",
+                    reason="canonical_execution_authority_absent",
+                )
+
+            schedule_id = publication.schedule_entry_id
+            if schedule_id is None:
+                await session.rollback()
+                return ContentPlanDeleteResult(
+                    outcome="cannot_cancel", reason="missing_schedule_entry"
+                )
+
+            schedule = (
+                await session.execute(
+                    select(ScheduleEntry)
+                    .where(ScheduleEntry.id == int(schedule_id))
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if schedule is None:
+                await session.rollback()
+                return ContentPlanDeleteResult(
+                    outcome="cannot_cancel", reason="missing_schedule_entry"
+                )
+
+            reason = await self._canonical_execution_barrier_reason(
+                session,
+                publication=publication,
+            )
+            if reason is not None:
+                await session.rollback()
+                return ContentPlanDeleteResult(
+                    outcome="cannot_cancel", reason=reason
+                )
+
+            if publication.status == "cancelled":
+                if schedule.status != "cancelled":
+                    await session.rollback()
+                    return ContentPlanDeleteResult(
+                        outcome="cannot_cancel",
+                        reason="partial_terminal_cancellation",
+                    )
+                await session.rollback()
+                return ContentPlanDeleteResult(outcome="cancelled")
+
+            if publication.status != "queued":
+                await session.rollback()
+                return ContentPlanDeleteResult(
+                    outcome="cannot_cancel",
+                    reason=f"publication_{publication.status or 'unknown'}",
+                )
+            if schedule.status != "pending":
+                await session.rollback()
+                return ContentPlanDeleteResult(
+                    outcome="cannot_cancel",
+                    reason=f"schedule_{schedule.status or 'unknown'}",
+                )
+
+            publication_cas = await session.execute(
+                update(Publication)
+                .where(
+                    Publication.id == int(publication.id),
+                    Publication.execution_mode == CANONICAL_EXECUTION_MODE,
+                    Publication.status == "queued",
+                    Publication.attempt_count == 0,
+                    Publication.result_link.is_(None),
+                    Publication.last_error.is_(None),
+                )
+                .values(status="cancelled")
+                .execution_options(synchronize_session=False)
+            )
+            if int(publication_cas.rowcount or 0) != 1:
+                await session.rollback()
+                return ContentPlanDeleteResult(
+                    outcome="cannot_cancel", reason="publication_claim_race"
+                )
+
+            schedule_cas = await session.execute(
+                update(ScheduleEntry)
+                .where(
+                    ScheduleEntry.id == int(schedule.id),
+                    ScheduleEntry.status == "pending",
+                )
+                .values(status="cancelled")
+                .execution_options(synchronize_session=False)
+            )
+            if int(schedule_cas.rowcount or 0) != 1:
+                await session.rollback()
+                return ContentPlanDeleteResult(
+                    outcome="cannot_cancel", reason="schedule_claim_race"
+                )
+
+            await session.commit()
+            return ContentPlanDeleteResult(outcome="cancelled")
 
     async def delete(self, post_task_id: int) -> ContentPlanDeleteResult:
         task_id = int(post_task_id)
@@ -265,12 +390,11 @@ class ContentPlanCancellationService:
                 post_task_id=task_id,
             )
 
-    async def _execution_barrier_reason(
+    async def _canonical_execution_barrier_reason(
         self,
         session: AsyncSession,
         *,
         publication: Publication,
-        post_task_id: int,
     ) -> str | None:
         if int(publication.attempt_count or 0) != 0:
             return "publication_attempt_count"
@@ -296,6 +420,21 @@ class ContentPlanCancellationService:
         )
         if delivery_lease_id is not None:
             return "publication_delivery_lease"
+        return None
+
+    async def _execution_barrier_reason(
+        self,
+        session: AsyncSession,
+        *,
+        publication: Publication,
+        post_task_id: int,
+    ) -> str | None:
+        reason = await self._canonical_execution_barrier_reason(
+            session,
+            publication=publication,
+        )
+        if reason is not None:
+            return reason
 
         # Any scheduler lease, including an expired one, is an ambiguous execution
         # barrier by the scheduler's own recovery contract.

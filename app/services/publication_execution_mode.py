@@ -161,3 +161,9 @@ def execution_mode_from_legacy_payload(
     if options is None:
         return None
     return _mode_from_normalized_options(options)
+
+
+def has_canonical_execution_authority(execution_mode: object) -> bool:
+    """Return whether persisted execution mode explicitly grants canonical authority."""
+
+    return execution_mode == CANONICAL_EXECUTION_MODE

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.domain.publishing.models import Publication
 from app.services.content_plan_cancellation import (
     ContentPlanCancellationService,
     ContentPlanDeleteResult,
@@ -11,12 +9,11 @@ from app.services.content_plan_cancellation import (
 
 
 class ContentPlanPublicationCancellationService:
-    """Canonical UI adapter for the existing cancellation serialization boundary.
+    """Publication-native canonical cancellation entrypoint.
 
-    Content-plan callbacks can identify queued work by ``Publication.id`` while the
-    current atomic cancellation core still fences and retires its compatibility
-    ``PostTask``. The transport identity is resolved here and is not exposed back into
-    callback data.
+    The cancellation core owns persisted execution-mode authority and serializes
+    directly on ``Publication``/``ScheduleEntry``. Compatibility ``PostTask`` identity
+    is neither required nor used as an authority signal here.
     """
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -36,39 +33,6 @@ class ContentPlanPublicationCancellationService:
                 reason="invalid_publication_id",
             )
 
-        async with self.session_factory() as session:
-            row = (
-                await session.execute(
-                    select(Publication.status, Publication.legacy_post_task_id).where(
-                        Publication.id == safe_publication_id
-                    )
-                )
-            ).one_or_none()
-        if row is None:
-            return ContentPlanDeleteResult(outcome="already_absent")
-
-        status, legacy_post_task_id = row
-        if str(status) != "queued":
-            return ContentPlanDeleteResult(
-                outcome="cannot_cancel",
-                reason=f"publication_{status or 'unknown'}",
-            )
-        if legacy_post_task_id is None:
-            return ContentPlanDeleteResult(
-                outcome="cannot_cancel",
-                reason="compatibility_transport_absent",
-            )
-        try:
-            task_id = int(legacy_post_task_id)
-        except (TypeError, ValueError, OverflowError):
-            return ContentPlanDeleteResult(
-                outcome="cannot_cancel",
-                reason="invalid_compatibility_transport",
-            )
-        if task_id <= 0:
-            return ContentPlanDeleteResult(
-                outcome="cannot_cancel",
-                reason="invalid_compatibility_transport",
-            )
-
-        return await ContentPlanCancellationService(self.session_factory).delete(task_id)
+        return await ContentPlanCancellationService(
+            self.session_factory
+        ).delete_canonical_publication(safe_publication_id)
