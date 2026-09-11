@@ -4,7 +4,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ChannelDMProvenance } from './ChannelDMProvenance';
 import {
+  channelDMReplyLifecycleWarning,
   channelDMReplyStatusLabel,
+  requestChannelDMReplyLifecycle,
   requestChannelDMReplyProposal,
   submitChannelDMReply,
 } from './channelDMReplies';
@@ -32,6 +34,21 @@ function stubTelegramLaunch() {
       hash: '',
     },
   });
+}
+
+function lifecycle(candidateId: number, state: 'sent' | 'uncertain' = 'uncertain') {
+  return {
+    candidate_id: candidateId,
+    commands: [{
+      command_id: candidateId + 100,
+      reply_text: `Persisted reply ${candidateId}`,
+      state,
+      requested_at: '2026-08-18T09:00:00+00:00',
+      sent_at: state === 'sent' ? '2026-08-18T09:00:02+00:00' : null,
+      finished_at: '2026-08-18T09:00:02+00:00',
+      error_class: state === 'uncertain' ? 'provider_outcome_unknown' : null,
+    }],
+  };
 }
 
 afterEach(() => {
@@ -73,6 +90,58 @@ describe('Channel DM reply request authority', () => {
     ]) {
       expect(body).not.toHaveProperty(field);
     }
+  });
+
+  it('reads durable lifecycle through a narrow batch read with no send authority', async () => {
+    stubTelegramLaunch();
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => (
+      new Response(JSON.stringify({ lifecycles: [lifecycle(55)] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await requestChannelDMReplyLifecycle(55);
+
+    expect(result.commands[0].state).toBe('uncertain');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe('/api/studio/channel-dm-reply-lifecycle/batch');
+    expect(init?.method).toBe('POST');
+    expect(JSON.parse(String(init?.body))).toEqual({ candidate_ids: [55] });
+    expect(JSON.stringify(result)).not.toContain('idempotency_key');
+    expect(JSON.stringify(result)).not.toContain('provider_message_id');
+    expect(JSON.stringify(result)).not.toContain('direct_messages_topic_id');
+  });
+
+  it('coalesces simultaneously mounted DM cards into one lifecycle read request', async () => {
+    stubTelegramLaunch();
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const candidateIds = (JSON.parse(String(init?.body)) as { candidate_ids: number[] }).candidate_ids;
+      return new Response(JSON.stringify({
+        lifecycles: candidateIds.map((candidateId, index) => lifecycle(
+          candidateId,
+          index === 0 ? 'uncertain' : 'sent',
+        )),
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const [first, second] = await Promise.all([
+      requestChannelDMReplyLifecycle(55),
+      requestChannelDMReplyLifecycle(56),
+    ]);
+
+    expect(first.candidate_id).toBe(55);
+    expect(second.candidate_id).toBe(56);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe('/api/studio/channel-dm-reply-lifecycle/batch');
+    expect(JSON.parse(String(init?.body))).toEqual({ candidate_ids: [55, 56] });
   });
 
   it('AI proposal request carries no send authority and does not call the send endpoint', async () => {
@@ -136,7 +205,14 @@ describe('Channel DM reply visibility and status semantics', () => {
     expect(channelDMReplyStatusLabel('pending')).not.toBe('Отправлено');
   });
 
-  it('rendering the composer performs no provider HTTP mutation', () => {
+  it('warns that persisted uncertain/pending state is not a retryable failure', () => {
+    expect(channelDMReplyLifecycleWarning('uncertain')).toContain('может продублировать');
+    expect(channelDMReplyLifecycleWarning('pending')).toContain('отдельной командой');
+    expect(channelDMReplyLifecycleWarning('failed')).toBeNull();
+    expect(channelDMReplyLifecycleWarning('sent')).toBeNull();
+  });
+
+  it('server rendering the composer performs no HTTP or provider mutation', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     renderToStaticMarkup(createElement(ChannelDMProvenance, {
