@@ -69,6 +69,14 @@ def _comparison_text(value: str) -> str:
     return " ".join(str(value or "").casefold().split())
 
 
+def _candidate_current_rewrite_run_id(candidate: ContentCandidate) -> int | None:
+    value = (candidate.meta or {}).get("rewrite_run_id")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _validate_independent_rewrite(
     *,
     source_text: str,
@@ -134,13 +142,10 @@ async def current_candidate_rewrite_run(
     document: SourceDocument,
     reuse_policy: str,
 ) -> CandidateRewriteRun | None:
-    run_id = (candidate.meta or {}).get("rewrite_run_id")
+    run_id = _candidate_current_rewrite_run_id(candidate)
     if run_id is None:
         return None
-    try:
-        run = await session.get(CandidateRewriteRun, int(run_id))
-    except (TypeError, ValueError):
-        return None
+    run = await session.get(CandidateRewriteRun, run_id)
     if run is None:
         return None
     if int(run.candidate_id) != int(candidate.id) or str(run.status) != "completed":
@@ -211,10 +216,16 @@ class CandidateRewriteService:
         candidate_id: int,
         provider: CandidateRewriteProvider,
         input_variant: str | None = None,
+        expected_current_run_id: int | None = None,
     ) -> CandidateRewriteResult:
         provider_name = _bounded(str(provider.name), 64)
         model_name = _bounded(str(provider.model), 191)
         variant = _bounded(str(input_variant or ""), _MAX_REWRITE_INPUT_VARIANT_CHARS) or None
+        expected_run_id = (
+            int(expected_current_run_id)
+            if expected_current_run_id is not None
+            else None
+        )
         if not provider_name or not model_name:
             raise CandidateRewriteError("rewrite provider identity is required")
 
@@ -229,6 +240,11 @@ class CandidateRewriteService:
         policy = str(connector.reuse_policy or "reference_only")
         if policy != "rewrite_with_attribution":
             raise CandidateRewriteError("candidate policy does not allow AI rewrite")
+        if (
+            expected_run_id is not None
+            and _candidate_current_rewrite_run_id(candidate) != expected_run_id
+        ):
+            raise CandidateRewriteError("candidate rewrite authority changed")
 
         input_hash = candidate_rewrite_input_hash(document, candidate, policy, variant)
         completed = (
@@ -369,6 +385,14 @@ class CandidateRewriteService:
             persisted.output = {**output_meta, "discard_reason": "source_or_policy_changed"}
             await self.session.commit()
             raise CandidateRewriteError("source or policy changed during rewrite")
+        if (
+            expected_run_id is not None
+            and _candidate_current_rewrite_run_id(candidate) != expected_run_id
+        ):
+            persisted.status = "stale"
+            persisted.output = {**output_meta, "discard_reason": "rewrite_authority_changed"}
+            await self.session.commit()
+            raise CandidateRewriteError("candidate rewrite authority changed during rewrite")
 
         persisted.status = "completed"
         persisted.output = output_meta
