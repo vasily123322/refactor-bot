@@ -427,6 +427,7 @@ export function InboxPanel({
                   candidateStatus={candidate.status}
                 />
                 <ChannelDMProvenance
+                  candidateId={candidate.id}
                   channelDM={candidate.channel_dm}
                   candidateStatus={candidate.status}
                 />
