@@ -40,8 +40,16 @@ class ChannelDMReplyProposalError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class ChannelDMReplyProposalContext:
     candidate_id: int
+    source_document_id: int
     channel_id: int
+    source_content_hash: str
     source_text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelDMReplyProposalDraft:
+    context: ChannelDMReplyProposalContext
+    reply_text: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,7 +143,8 @@ class ChannelDMReplyProposalService:
     """Read/AI-only T5.4 authority for ordinary Channel-DM draft text.
 
     This service does not create ChannelDMReplyCommand rows and cannot call Telegram.
-    T5.3 remains the sole outgoing mutation authority.
+    T5.3 remains the sole outgoing mutation authority. T5.6 may reuse the exact
+    validated context and hash returned here to persist a separate review intent.
     """
 
     def __init__(
@@ -148,7 +157,7 @@ class ChannelDMReplyProposalService:
         self.sources = SourcesRepo(session)
         self.provider_factory = provider_factory or ChannelAIReplyProposalProviderFactory(session)
 
-    async def _load_context(
+    async def load_context(
         self,
         *,
         candidate_id: int,
@@ -252,16 +261,45 @@ class ChannelDMReplyProposalService:
                 "trusted Channel-DM connector mapping is not unique",
             )
         source_text = redact_secret_text(str(document.content or "").strip())
-        if not source_text:
+        source_content_hash = str(document.content_hash or "").strip()
+        if not source_text or len(source_content_hash) != 64:
             raise ChannelDMReplyProposalError(
                 ChannelDMReplyProposalFailure.MALFORMED_PROVENANCE,
-                "Channel-DM source text is empty",
+                "Channel-DM source text/hash is unavailable",
             )
         return ChannelDMReplyProposalContext(
             candidate_id=int(candidate.id),
+            source_document_id=int(document.id),
             channel_id=int(channel.id),
+            source_content_hash=source_content_hash,
             source_text=source_text,
         )
+
+    async def _load_context(
+        self,
+        *,
+        candidate_id: int,
+        actor_client_id: int,
+    ) -> ChannelDMReplyProposalContext:
+        """Compatibility alias for focused tests/older callers; use load_context()."""
+        return await self.load_context(
+            candidate_id=candidate_id,
+            actor_client_id=actor_client_id,
+        )
+
+    async def propose_draft(
+        self,
+        *,
+        candidate_id: int,
+        actor_client_id: int,
+    ) -> ChannelDMReplyProposalDraft:
+        context = await self.load_context(
+            candidate_id=candidate_id,
+            actor_client_id=actor_client_id,
+        )
+        provider = await self.provider_factory.build(context.channel_id)
+        reply_text = await provider.propose(source_text=context.source_text)
+        return ChannelDMReplyProposalDraft(context=context, reply_text=reply_text)
 
     async def propose(
         self,
@@ -269,13 +307,11 @@ class ChannelDMReplyProposalService:
         candidate_id: int,
         actor_client_id: int,
     ) -> ChannelDMReplyProposalResult:
-        context = await self._load_context(
+        draft = await self.propose_draft(
             candidate_id=candidate_id,
             actor_client_id=actor_client_id,
         )
-        provider = await self.provider_factory.build(context.channel_id)
-        reply_text = await provider.propose(source_text=context.source_text)
         return ChannelDMReplyProposalResult(
-            candidate_id=context.candidate_id,
-            reply_text=reply_text,
+            candidate_id=draft.context.candidate_id,
+            reply_text=draft.reply_text,
         )
