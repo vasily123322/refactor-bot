@@ -19,6 +19,11 @@ import {
   promoteCandidateMedia,
   type CandidateMediaView,
 } from './candidateMedia';
+import { SuggestedPostProvenance } from './SuggestedPostProvenance';
+import {
+  candidateInboxPrimaryText,
+  suggestedPostEnrichmentSummary,
+} from './suggestedPostPresentation';
 import { TelegramVisualPreview } from './TelegramVisualPreview';
 import type { Channel, ContentCandidateView } from './types';
 
@@ -403,6 +408,8 @@ export function InboxPanel({
             const canRewrite = candidate.reuse_policy === 'rewrite_with_attribution';
             const canPromoteMedia = Boolean(media?.promotable && !media.media_asset_id);
             const prompt = rewriteInstructions[candidate.id] || '';
+            const primaryText = candidateInboxPrimaryText(candidate);
+            const enrichmentSummary = suggestedPostEnrichmentSummary(candidate);
             return (
               <article key={candidate.id} className="candidate-card">
                 <div className="candidate-head">
@@ -411,8 +418,18 @@ export function InboxPanel({
                   {media && <span className="candidate-policy">{candidateMediaLabel(media)}</span>}
                   {score && <span className="candidate-policy">score {score}</span>}
                 </div>
+                <SuggestedPostProvenance
+                  suggestedPost={candidate.suggested_post}
+                  candidateStatus={candidate.status}
+                />
                 <h3>{candidate.topic || candidate.source_title || `Материал #${candidate.source_document_id}`}</h3>
-                <p>{candidate.summary || candidate.excerpt}</p>
+                <p>{primaryText}</p>
+                {enrichmentSummary && (
+                  <div className="suggested-post-enrichment-summary">
+                    <small>Enrichment summary</small>
+                    <p>{enrichmentSummary}</p>
+                  </div>
+                )}
                 {rewritePreview && (
                   <div className="candidate-rewrite-preview">
                     <small>
