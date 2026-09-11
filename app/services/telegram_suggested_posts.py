@@ -8,13 +8,16 @@ from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.sources.models import SourceConnector
-from app.repositories.channels import ChannelsRepo
-from app.repositories.sources_v2 import SourcesRepo
 from app.services.source_reconciliation import (
     SourceIngestionReconciliationService,
     SourceProjection,
     SourceProjectionUpdateMode,
     SourceReconciliationResult,
+)
+from app.services.telegram_channel_dm_context import (
+    ChannelDMContextErrorCode,
+    ChannelDMContextResolver,
+    ChannelDMContextRoutingError,
 )
 
 
@@ -138,12 +141,7 @@ def _lifecycle_event(message: Message) -> tuple[str, Any] | None:
 
 
 class TelegramSuggestedPostIngestionService:
-    """Normalize Telegram Suggested Posts into canonical source reconciliation.
-
-    Routing is accepted only when Telegram's DM parent channel agrees with the
-    canonical Channel row and exactly one enabled Suggested Posts SourceConnector.
-    The Telegram payload never supplies the internal channel id.
-    """
+    """Normalize Telegram Suggested Posts into canonical source reconciliation."""
 
     def __init__(
         self,
@@ -153,44 +151,41 @@ class TelegramSuggestedPostIngestionService:
     ) -> None:
         self.session = session
         self.bot = bot
-        self.channels = ChannelsRepo(session)
-        self.sources = SourcesRepo(session)
+        self.context = ChannelDMContextResolver(session, bot=bot)
         self.reconciler = SourceIngestionReconciliationService(session)
 
     async def _resolve_connector(
         self,
         direct_messages_chat_id: int,
     ) -> tuple[SourceConnector, int]:
-        chat = await self.bot.get_chat(int(direct_messages_chat_id))
-        parent_chat = getattr(chat, "parent_chat", None)
-        parent_chat_id = int(getattr(parent_chat, "id", 0) or 0)
-        if parent_chat_id == 0:
-            raise TelegramSuggestedPostRoutingError(
-                "direct-messages chat has no verifiable parent channel"
+        try:
+            context = await self.context.resolve(
+                direct_messages_chat_id=direct_messages_chat_id,
+                connector_kind=SUGGESTED_POST_CONNECTOR_KIND,
             )
-
-        channel = await self.channels.get_by_chat_id(parent_chat_id)
-        if channel is None:
-            raise TelegramSuggestedPostRoutingError(
-                "direct-messages parent channel is not a canonical Channel"
-            )
-
-        connectors = [
-            connector
-            for connector in await self.sources.list_connectors(int(channel.id))
-            if connector.enabled
-            and str(connector.kind) == SUGGESTED_POST_CONNECTOR_KIND
-            and str(connector.value) == str(parent_chat_id)
-        ]
-        if len(connectors) != 1:
-            if not connectors:
-                raise TelegramSuggestedPostRoutingError(
+        except ChannelDMContextRoutingError as exc:
+            messages = {
+                ChannelDMContextErrorCode.DIRECT_MESSAGES_CHAT_REQUIRED: (
+                    "message chat is not a direct-messages chat"
+                ),
+                ChannelDMContextErrorCode.PARENT_CHANNEL_REQUIRED: (
+                    "direct-messages chat has no verifiable parent channel"
+                ),
+                ChannelDMContextErrorCode.CHANNEL_NOT_FOUND: (
+                    "direct-messages parent channel is not a canonical Channel"
+                ),
+                ChannelDMContextErrorCode.CONNECTOR_NOT_CONFIGURED: (
                     "no trusted Suggested Posts connector matches the parent channel"
-                )
-            raise TelegramSuggestedPostRoutingError(
-                "ambiguous trusted Suggested Posts connector mapping"
-            )
-        return connectors[0], parent_chat_id
+                ),
+                ChannelDMContextErrorCode.CONNECTOR_AMBIGUOUS: (
+                    "ambiguous trusted Suggested Posts connector mapping"
+                ),
+                ChannelDMContextErrorCode.CONNECTOR_CHANNEL_MISMATCH: (
+                    "trusted Suggested Posts connector channel disagrees with canonical Channel"
+                ),
+            }
+            raise TelegramSuggestedPostRoutingError(messages[exc.code]) from exc
+        return context.connector, context.parent_chat_id
 
     async def _reconcile_content(
         self,
