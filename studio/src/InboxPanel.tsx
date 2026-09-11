@@ -2,21 +2,18 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
 import {
+  applyCurrentStructuredRewrite,
+  loadCurrentStructuredRewritePreviews,
+  type RewritePreview,
+} from './candidateRewriteAuthority';
+import {
   candidateMediaLabel,
   loadCandidateMedia,
   promoteCandidateMedia,
   type CandidateMediaView,
 } from './candidateMedia';
 import { TelegramVisualPreview } from './TelegramVisualPreview';
-import type { Channel, ContentCandidateView, PostDocument } from './types';
-
-type RewritePreview = {
-  runId: number;
-  text: string;
-  model: string | null;
-  kind: 'text' | 'structured';
-  document: PostDocument | null;
-};
+import type { Channel, ContentCandidateView } from './types';
 
 function errorMessage(error: unknown): string {
   if (error instanceof StudioApiError || error instanceof Error) return error.message;
@@ -73,6 +70,7 @@ export function InboxPanel({
     if (!channel) {
       setCandidates([]);
       setCandidateMedia({});
+      setRewritePreviews({});
       return;
     }
     const [rows, mediaRows] = await Promise.all([
@@ -81,6 +79,7 @@ export function InboxPanel({
     ]);
     setCandidates(rows);
     setCandidateMedia(mediaMap(mediaRows));
+    setRewritePreviews(await loadCurrentStructuredRewritePreviews(channel.id, rows));
   }, [channel]);
 
   useEffect(() => {
@@ -217,7 +216,10 @@ export function InboxPanel({
 
   const acceptDraft = (candidate: ContentCandidateView) =>
     run(`draft:${candidate.id}`, async () => {
-      const draft = await studioApi.candidateDraft(channel!.id, candidate.id);
+      const preview = rewritePreviews[candidate.id];
+      const draft = preview?.kind === 'structured'
+        ? await applyCurrentStructuredRewrite(channel!.id, candidate.id, preview.runId)
+        : await studioApi.candidateDraft(channel!.id, candidate.id);
       setCandidates((current) => current.filter((row) => row.id !== candidate.id));
       setCandidateMedia((current) => {
         const next = { ...current };
