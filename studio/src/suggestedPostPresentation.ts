@@ -18,13 +18,7 @@ const statusLabels: Record<SuggestedPostNativeStatus, string> = {
 };
 
 const knownStatuses = new Set<SuggestedPostNativeStatus>([
-  'pending',
-  'approved',
-  'declined',
-  'approval_failed',
-  'paid',
-  'refunded',
-  'unknown',
+  'pending', 'approved', 'declined', 'approval_failed', 'paid', 'refunded', 'unknown',
 ]);
 
 function safeStatus(value: unknown): SuggestedPostNativeStatus {
@@ -50,30 +44,33 @@ function personLabel(person: SuggestedPostPersonView | null | undefined): string
   return null;
 }
 
+function safeInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : null;
+}
+
 export function suggestedPostMoneyLabel(
   money: SuggestedPostMoneyView | null | undefined,
 ): string | null {
   if (!money) return null;
-  const currency = typeof money.currency === 'string' ? money.currency.trim().toUpperCase() : '';
-  const amount = typeof money.amount === 'number' && Number.isFinite(money.amount)
-    ? Math.trunc(money.amount)
-    : null;
-  const nanostar = typeof money.nanostar_amount === 'number' && Number.isFinite(money.nanostar_amount)
-    ? Math.trunc(money.nanostar_amount)
-    : null;
-
-  if (currency === 'XTR') {
-    if (amount === null) return 'Telegram Stars';
-    return nanostar && nanostar > 0
-      ? `${amount} Stars + ${nanostar} nanostars`
-      : `${amount} Stars`;
+  if (money.kind === 'stars') {
+    const stars = safeInteger(money.stars);
+    const nanostar = safeInteger(money.nanostar_amount);
+    if (stars === null) return 'Telegram Stars · сумма неизвестна';
+    return nanostar !== null && nanostar > 0
+      ? `${stars} Stars + ${nanostar} nanostars`
+      : `${stars} Stars`;
   }
-  if (currency === 'TON') {
-    return amount === null ? 'TON' : `${amount} nanoton`;
+  if (money.kind === 'ton_nanograms') {
+    const nanograms = safeInteger(money.ton_nanograms);
+    return nanograms === null ? 'TON · сумма неизвестна' : `${nanograms} TON nanograms`;
   }
-  if (amount !== null && currency) return `${amount} ${currency}`;
-  if (amount !== null) return String(amount);
-  return currency || null;
+  const currency = typeof money.currency === 'string' && money.currency.trim()
+    ? money.currency.trim().toUpperCase()
+    : 'неизвестная валюта';
+  const rawAmount = safeInteger(money.raw_amount);
+  return rawAmount === null
+    ? `${currency} · значение не интерпретировано`
+    : `${currency} · raw ${rawAmount}`;
 }
 
 export function suggestedPostDateLabel(value: string | null | undefined): string | null {
@@ -99,6 +96,8 @@ export type SuggestedPostPresentation = {
   proposedSendDateLabel: string | null;
   priceLabel: string | null;
   paymentLabel: string | null;
+  paidEventLabel: string | null;
+  refundedEventLabel: string | null;
 };
 
 export function suggestedPostPresentation(
@@ -126,6 +125,8 @@ export function suggestedPostPresentation(
     proposedSendDateLabel: suggestedPostDateLabel(suggestedPost.proposed_send_date),
     priceLabel,
     paymentLabel,
+    paidEventLabel: suggestedPostDateLabel(suggestedPost.paid_event_at),
+    refundedEventLabel: suggestedPostDateLabel(suggestedPost.refunded_event_at),
   };
 }
 

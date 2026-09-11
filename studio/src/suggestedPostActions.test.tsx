@@ -22,8 +22,13 @@ const pending: SuggestedPostView = {
   proposed_send_date: null,
   price: null,
   payment: null,
+  paid_event_at: null,
+  paid_service_message_id: null,
+  refunded_event_at: null,
+  refunded_service_message_id: null,
   decline_comment: null,
   refund_reason: null,
+  refund_reason_code: null,
 };
 
 function candidate(suggestedPost: SuggestedPostView | null = pending): ContentCandidateView {
