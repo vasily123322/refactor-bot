@@ -14,6 +14,10 @@ import {
   getTelegramDeviceStorageItem,
   setTelegramDeviceStorageItem,
 } from './telegram';
+import {
+  SOURCE_CREATE_CANCEL_LABEL,
+  useTelegramSourceCreateSecondaryButton,
+} from './telegramSourceCreateSecondaryButton';
 import type { Channel, SourceConnectorView } from './types';
 
 function errorMessage(error: unknown): string {
@@ -52,6 +56,12 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
   const [reusePolicy, setReusePolicy] = useState<CreateSourceInput['reuse_policy']>('reference_only');
   const [citationEnabled, setCitationEnabled] = useState(true);
   const kindTouchedRef = useRef(false);
+
+  const closeCreateSourceForm = useCallback(() => {
+    setShowForm(false);
+  }, []);
+
+  useTelegramSourceCreateSecondaryButton(showForm, closeCreateSourceForm);
 
   const load = useCallback(async () => {
     if (!channel) {
@@ -233,7 +243,7 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
             <span>Сохранять attribution / citation metadata</span>
           </label>
           <div className="source-form-actions">
-            <button type="button" className="button secondary" onClick={() => setShowForm(false)}>Отмена</button>
+            <button type="button" className="button secondary" onClick={closeCreateSourceForm}>{SOURCE_CREATE_CANCEL_LABEL}</button>
             <button type="submit" className="button primary" disabled={busyId !== null || !value.trim()}>Добавить</button>
           </div>
         </form>
