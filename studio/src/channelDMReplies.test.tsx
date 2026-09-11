@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChannelDMProvenance } from './ChannelDMProvenance';
 import {
   channelDMReplyStatusLabel,
+  requestChannelDMReplyProposal,
   submitChannelDMReply,
 } from './channelDMReplies';
 import type { ChannelDMView } from './types';
@@ -74,6 +75,30 @@ describe('Channel DM reply request authority', () => {
     }
   });
 
+  it('AI proposal request carries no send authority and does not call the send endpoint', async () => {
+    stubTelegramLaunch();
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => (
+      new Response(JSON.stringify({
+        candidate_id: 55,
+        reply_text: 'Proposed draft only',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await requestChannelDMReplyProposal(55);
+
+    expect(result).toEqual({ candidate_id: 55, reply_text: 'Proposed draft only' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe('/api/studio/candidates/55/channel-dm-reply-proposal');
+    expect(path).not.toBe('/api/studio/candidates/55/channel-dm-reply');
+    expect(init?.method).toBe('POST');
+    expect(JSON.parse(String(init?.body))).toEqual({});
+  });
+
   it('rejects empty and oversized text before fetch', async () => {
     stubTelegramLaunch();
     const fetchMock = vi.fn();
@@ -85,13 +110,14 @@ describe('Channel DM reply request authority', () => {
 });
 
 describe('Channel DM reply visibility and status semantics', () => {
-  it('renders an explicit composer only when an ordinary DM read model exists', () => {
+  it('renders explicit AI draft and Send controls only when an ordinary DM read model exists', () => {
     const ordinary = renderToStaticMarkup(createElement(ChannelDMProvenance, {
       candidateId: 55,
       channelDM: ordinaryDM,
       candidateStatus: 'new',
     }));
     expect(ordinary).toContain('Ответить в Telegram');
+    expect(ordinary).toContain('Предложить с AI');
     expect(ordinary).toContain('Отправить');
     expect(ordinary).not.toContain('Delivery status unknown');
 

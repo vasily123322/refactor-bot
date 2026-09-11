@@ -4,6 +4,7 @@ import {
   ChannelDMReplyApiError,
   channelDMReplyStatusLabel,
   newChannelDMReplyKey,
+  requestChannelDMReplyProposal,
   submitChannelDMReply,
   type ChannelDMReplyResult,
 } from './channelDMReplies';
@@ -17,6 +18,26 @@ export function ChannelDMReplyComposer({ candidateId }: { candidateId: number })
   const [delivery, setDelivery] = useState<ChannelDMReplyResult | null>(null);
   const [localState, setLocalState] = useState<LocalDeliveryState>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [proposalPending, setProposalPending] = useState(false);
+  const [proposalError, setProposalError] = useState<string | null>(null);
+
+  const propose = async () => {
+    if (proposalPending || localState === 'submitting' || commandKey != null || delivery != null) return;
+    setProposalPending(true);
+    setProposalError(null);
+    try {
+      const result = await requestChannelDMReplyProposal(candidateId);
+      setText(result.reply_text);
+    } catch (reason) {
+      setProposalError(
+        reason instanceof ChannelDMReplyApiError
+          ? reason.message
+          : 'Не удалось предложить ответ с AI.',
+      );
+    } finally {
+      setProposalPending(false);
+    }
+  };
 
   const submit = async () => {
     const normalized = text.trim();
@@ -46,6 +67,7 @@ export function ChannelDMReplyComposer({ candidateId }: { candidateId: number })
     setCommandKey(null);
     setDelivery(null);
     setError(null);
+    setProposalError(null);
     setLocalState('idle');
     if (clearText) setText('');
   };
@@ -55,6 +77,10 @@ export function ChannelDMReplyComposer({ candidateId }: { candidateId: number })
     && text.trim().length <= 4096
     && localState !== 'submitting'
     && !intentLocked;
+  const canPropose = localState === 'idle'
+    && !intentLocked
+    && commandKey == null
+    && !proposalPending;
   const canReconcileSameKey = localState === 'request_unknown' || delivery?.state === 'pending';
 
   return (
@@ -70,6 +96,13 @@ export function ChannelDMReplyComposer({ candidateId }: { candidateId: number })
         onChange={(event) => setText(event.target.value)}
       />
       <div className="channel-dm-composer-actions">
+        <button
+          className="button secondary compact"
+          disabled={!canPropose}
+          onClick={() => void propose()}
+        >
+          {proposalPending ? 'AI предлагает…' : 'Предложить с AI'}
+        </button>
         <button
           className="button primary compact"
           disabled={!canSubmit}
@@ -97,6 +130,7 @@ export function ChannelDMReplyComposer({ candidateId }: { candidateId: number })
           </button>
         )}
       </div>
+      {proposalError && <p className="channel-dm-reply-error" role="alert">{proposalError}</p>}
       {localState === 'request_unknown' && (
         <p className="channel-dm-delivery-state channel-dm-delivery-unknown" role="status">
           Delivery status unknown. Автоповтора в Telegram нет.
@@ -109,7 +143,7 @@ export function ChannelDMReplyComposer({ candidateId }: { candidateId: number })
         </p>
       )}
       {error && <p className="channel-dm-reply-error" role="alert">{error}</p>}
-      <small>{text.trim().length}/4096 · новый explicit Send = новый command key</small>
+      <small>AI только заполняет черновик · отправка остаётся отдельной явной командой</small>
     </div>
   );
 }
