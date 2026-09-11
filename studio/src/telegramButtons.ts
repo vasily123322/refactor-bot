@@ -1,4 +1,8 @@
 export type TelegramSecondaryButtonPosition = 'left' | 'right' | 'top' | 'bottom';
+export type TelegramMainButtonPresentation = Readonly<{
+  enabled?: boolean;
+  loading?: boolean;
+}>;
 
 type AvailableSync<Args extends unknown[], Value> = ((...args: Args) => Value) & {
   isAvailable(): boolean;
@@ -19,6 +23,10 @@ type BackButtonProvider = ButtonBase & Readonly<{
 
 type MainButtonProvider = ButtonBase & Readonly<{
   setText: AvailableSync<[text: string], void>;
+  enable: AvailableSync<[], void>;
+  disable: AvailableSync<[], void>;
+  showLoader: AvailableSync<[], void>;
+  hideLoader: AvailableSync<[], void>;
 }>;
 
 type SecondaryButtonProvider = ButtonBase & Readonly<{
@@ -94,15 +102,23 @@ export function createTelegramButtonBridge(deps: TelegramButtonBridgeDependencie
     });
   }
 
-  function bindMain(text: string, listener: VoidFunction): VoidFunction | null {
+  function bindMain(
+    text: string,
+    listener: VoidFunction,
+    presentation: TelegramMainButtonPresentation = {},
+  ): VoidFunction | null {
     const normalizedText = text.trim();
     if (!normalizedText) return null;
 
     return replaceBinding(mainSlot, () => {
       const button = deps.mainButton;
+      const enabledAction = presentation.enabled === false ? button.disable : button.enable;
+      const loadingAction = presentation.loading ? button.showLoader : button.hideLoader;
       if (
         !mountButton(button) ||
         !button.setText.isAvailable() ||
+        !enabledAction.isAvailable() ||
+        !loadingAction.isAvailable() ||
         !button.onClick.isAvailable() ||
         !button.show.isAvailable()
       ) {
@@ -110,6 +126,8 @@ export function createTelegramButtonBridge(deps: TelegramButtonBridgeDependencie
         return null;
       }
       button.setText(normalizedText);
+      enabledAction();
+      loadingAction();
       const off = button.onClick(listener);
       button.show();
       return () => cleanupButton(button, off);

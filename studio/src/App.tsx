@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AIStudioPanel } from './AIStudioPanel';
 import { StudioApiError, studioApi } from './api';
 import { ChannelOnboardingControl } from './ChannelOnboardingControl';
+import { runComposerPreviewOnce } from './composerPreviewAction';
 import { DRAFT_AUTOSAVE_DELAY_MS, isCurrentDraftSave } from './draftAutosave';
 import {
   isEditorDocumentDirty,
@@ -16,6 +17,7 @@ import { SourcesPanel } from './SourcesPanel';
 import { emitStudioHaptic } from './studioHaptics';
 import type { StudioView } from './studioNavigation';
 import { TelegramComposer } from './TelegramComposer';
+import { useTelegramComposerMainButton } from './telegramComposerMainButton';
 import { TelegramDeliverySettings } from './TelegramDeliverySettings';
 import { useTelegramDirtyClosingProtection } from './telegramDirtyClosingProtection';
 import { useTelegramStudioBackButton } from './telegramStudioBackButton';
@@ -156,6 +158,7 @@ export default function App() {
   const dirtyRef = useRef(dirty);
   const editVersionRef = useRef(0);
   const inFlightSaveRef = useRef<Promise<boolean> | null>(null);
+  const inFlightPreviewRef = useRef<Promise<void> | null>(null);
 
   useTelegramDirtyClosingProtection(dirty);
   useTelegramStudioBackButton(view, setView);
@@ -390,23 +393,26 @@ export default function App() {
     void persistDraft(true);
   };
 
-  const exactPreview = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await studioApi.telegramPreview(
-        documentRef.current,
-        previewMessageIds,
-        channelIdRef.current,
-      );
-      setPreviewMessageIds(result.message_ids);
-      setNotice('Настоящий preview отправлен в Telegram');
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const exactPreview = useCallback((): Promise<void> => runComposerPreviewOnce(
+    inFlightPreviewRef,
+    async () => {
+      setBusy(true);
+      setError(null);
+      try {
+        const result = await studioApi.telegramPreview(
+          documentRef.current,
+          previewMessageIds,
+          channelIdRef.current,
+        );
+        setPreviewMessageIds(result.message_ids);
+        setNotice('Настоящий preview отправлен в Telegram');
+      } catch (reason) {
+        setError(errorMessage(reason));
+      } finally {
+        setBusy(false);
+      }
+    },
+  ), [previewMessageIds]);
 
   const publishNow = async () => {
     if (dirtyRef.current) {
@@ -461,6 +467,15 @@ export default function App() {
       : dirty
         ? '● Изменения сохранятся автоматически'
         : '✓ Автосохранено';
+  const telegramPreviewActionLabel = '👁 В Telegram';
+
+  useTelegramComposerMainButton({
+    active: view === 'content',
+    label: telegramPreviewActionLabel,
+    disabled: busy,
+    loading: busy,
+    onSubmit: exactPreview,
+  });
 
   return (
     <AppRoot>
@@ -506,7 +521,7 @@ export default function App() {
                   + Rich
                 </button>
                 <button className="button secondary" onClick={exactPreview} disabled={busy}>
-                  👁 В Telegram
+                  {telegramPreviewActionLabel}
                 </button>
                 <button className="button primary" onClick={() => void publishNow()} disabled={busy || !selected}>
                   Опубликовать
