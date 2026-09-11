@@ -1,0 +1,67 @@
+.channel-dm-provenance {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--tg-theme-section-separator-color, rgba(127, 127, 127, 0.2));
+  border-radius: 12px;
+  background: var(--tg-theme-secondary-bg-color, rgba(127, 127, 127, 0.08));
+}
+
+.channel-dm-badges,
+.channel-dm-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+}
+
+.channel-dm-origin,
+.channel-dm-edited {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--tg-theme-bg-color, rgba(255, 255, 255, 0.8));
+}
+
+.channel-dm-edited {
+  font-weight: 600;
+}
+
+.channel-dm-facts,
+.channel-dm-authority-note,
+.channel-dm-details {
+  font-size: 12px;
+  color: var(--tg-theme-hint-color, #707579);
+}
+
+.channel-dm-authority-note {
+  margin: 0;
+}
+
+.channel-dm-details summary {
+  cursor: pointer;
+}
+
+.channel-dm-details dl {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+}
+
+.channel-dm-details dl > div {
+  display: grid;
+  grid-template-columns: minmax(88px, auto) 1fr;
+  gap: 8px;
+}
+
+.channel-dm-details dt {
+  font-weight: 700;
+}
+
+.channel-dm-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

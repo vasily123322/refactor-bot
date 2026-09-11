@@ -1,3 +1,4 @@
+import { channelDMPresentation } from './channelDMPresentation';
 import type {
   ContentCandidateView,
   SuggestedPostCommercialKind,
@@ -132,6 +133,7 @@ export function suggestedPostPresentation(
 
 export function candidateInboxPrimaryText(candidate: ContentCandidateView): string {
   return suggestedPostPresentation(candidate.suggested_post)
+    || channelDMPresentation(candidate.channel_dm)
     ? candidate.excerpt
     : candidate.summary || candidate.excerpt;
 }

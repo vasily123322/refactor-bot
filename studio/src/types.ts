@@ -218,6 +218,31 @@ export type SuggestedPostView = {
   refund_reason_code: SuggestedPostRefundReasonCode | null;
 };
 
+export type ChannelDMPersonView = {
+  id: number | null;
+  username: string | null;
+  display_name: string | null;
+};
+
+export type ChannelDMReplyView = {
+  chat_id: number | null;
+  message_id: number | null;
+};
+
+export type ChannelDMView = {
+  transport: 'telegram_channel_dms';
+  sender: ChannelDMPersonView | null;
+  topic_user: ChannelDMPersonView | null;
+  topic_id: number | null;
+  received_at: string | null;
+  edited_at: string | null;
+  is_reply: boolean;
+  reply_to: ChannelDMReplyView | null;
+  media_group_id: string | null;
+  direct_messages_chat_id: number | null;
+  message_id: number | null;
+};
+
 export type ContentCandidateView = {
   id: number;
   source_document_id: number;
@@ -235,6 +260,7 @@ export type ContentCandidateView = {
   created_at: string | null;
   reuse_policy: string;
   suggested_post?: SuggestedPostView | null;
+  channel_dm?: ChannelDMView | null;
 };
 
 export const emptyTextDocument = (): PostDocument => ({

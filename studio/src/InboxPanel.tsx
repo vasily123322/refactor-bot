@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
+import { ChannelDMProvenance } from './ChannelDMProvenance';
+import { channelDMEnrichmentSummary } from './channelDMPresentation';
 import { promptCandidateStructuredRewrite } from './candidatePromptRewrite';
 import {
   applyCurrentStructuredRewrite,
@@ -409,7 +411,8 @@ export function InboxPanel({
             const canPromoteMedia = Boolean(media?.promotable && !media.media_asset_id);
             const prompt = rewriteInstructions[candidate.id] || '';
             const primaryText = candidateInboxPrimaryText(candidate);
-            const enrichmentSummary = suggestedPostEnrichmentSummary(candidate);
+            const enrichmentSummary = channelDMEnrichmentSummary(candidate)
+              ?? suggestedPostEnrichmentSummary(candidate);
             return (
               <article key={candidate.id} className="candidate-card">
                 <div className="candidate-head">
@@ -423,10 +426,14 @@ export function InboxPanel({
                   suggestedPost={candidate.suggested_post}
                   candidateStatus={candidate.status}
                 />
+                <ChannelDMProvenance
+                  channelDM={candidate.channel_dm}
+                  candidateStatus={candidate.status}
+                />
                 <h3>{candidate.topic || candidate.source_title || `Материал #${candidate.source_document_id}`}</h3>
                 <p>{primaryText}</p>
                 {enrichmentSummary && (
-                  <div className="suggested-post-enrichment-summary">
+                  <div className="suggested-post-enrichment-summary candidate-enrichment-summary">
                     <small>Enrichment summary</small>
                     <p>{enrichmentSummary}</p>
                   </div>

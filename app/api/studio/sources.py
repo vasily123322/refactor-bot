@@ -9,6 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.studio.auth import StudioPrincipal, require_studio_principal
+from app.api.studio.channel_dm_read_model import (
+    ChannelDMInboxView,
+    project_channel_dm_inbox,
+)
 from app.api.studio.suggested_post_read_model import (
     SuggestedPostInboxView,
     project_suggested_post_inbox,
@@ -134,6 +138,7 @@ class CandidateResponse(BaseModel):
     created_at: datetime | None
     reuse_policy: str
     suggested_post: SuggestedPostInboxView | None = None
+    channel_dm: ChannelDMInboxView | None = None
 
 
 async def _session_dependency() -> AsyncIterator[AsyncSession]:
@@ -240,6 +245,10 @@ def _candidate_response(
             or "reference_only"
         ),
         suggested_post=project_suggested_post_inbox(document_meta),
+        channel_dm=project_channel_dm_inbox(
+            document_meta,
+            received_at=document.published_at,
+        ),
     )
 
 
