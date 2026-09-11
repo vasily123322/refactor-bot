@@ -79,3 +79,19 @@ describe('Telegram inline keyboard authoring', () => {
     expect(rows[0].map((button) => button.text)).toEqual(['A', 'B']);
   });
 });
+
+describe('renderer-mirrored stored action precedence', () => {
+  it('fails closed when stored url is whitespace-only even if callback_data exists', () => {
+    const document = emptyRichDocument();
+    document.telegram = { buttons: [[{ text: 'X', url: ' ', callback_data: 'x' }]] };
+    const state = telegramInlineKeyboard(document);
+    expect(state.kind).toBe('invalid');
+    expect(state.kind === 'invalid' && state.reason).toMatch(/URL/);
+  });
+
+  it('treats any other truthy stored url value as url and fails closed', () => {
+    const document = emptyRichDocument();
+    document.telegram = { buttons: [[{ text: 'X', url: 42 as unknown as string }]] };
+    expect(telegramInlineKeyboard(document).kind).toBe('invalid');
+  });
+});

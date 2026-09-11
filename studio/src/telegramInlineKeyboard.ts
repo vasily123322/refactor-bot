@@ -75,9 +75,15 @@ export function telegramInlineKeyboard(document: PostDocument): TelegramInlineKe
       }
       const candidate = rawButton as Record<string, unknown>;
       const text = typeof candidate.text === 'string' ? candidate.text : '';
-      const url = typeof candidate.url === 'string' ? candidate.url : '';
+      // Mirror the production renderer action precedence (telegram_renderer.py):
+      // `if url:` accepts any truthy raw url before callback_data, including
+      // whitespace-only and non-string values. Select the same winner here and
+      // let URL validation fail closed instead of falling back to callback_data.
+      const rawUrl = candidate.url;
+      const hasRawUrl = Boolean(rawUrl);
+      const url = typeof rawUrl === 'string' ? rawUrl : String(rawUrl ?? '');
       const callbackData = typeof candidate.callback_data === 'string' ? candidate.callback_data : '';
-      const draft: InlineButtonDraft = url.trim()
+      const draft: InlineButtonDraft = hasRawUrl
         ? { text, mode: 'url', value: url }
         : { text, mode: 'callback', value: callbackData };
       const button = inlineButtonFromDraft(draft);
