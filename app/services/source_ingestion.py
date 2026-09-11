@@ -17,6 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.sources.models import SourceConnector
 from app.repositories.sources_v2 import SourcesRepo
 from app.services.http.fetcher import fetch_html
+from app.services.source_reconciliation import (
+    SourceIngestionReconciliationService,
+    SourceProjection,
+)
 
 
 MAX_SOURCE_DOCUMENT_CHARS = 100_000
@@ -205,22 +209,12 @@ def _rss_entries(xml_text: str, *, limit: int = MAX_FEED_ENTRIES) -> list[dict[s
     return entries
 
 
-def _candidate_action(connector: SourceConnector) -> str:
-    mode = str(connector.mode or "research")
-    if mode == "summary":
-        return "summarize"
-    if mode == "rewrite":
-        return "rewrite"
-    if mode == "mirror":
-        return "mirror" if connector.reuse_policy == "mirror_authorized" else "review"
-    return "research"
-
-
 class SourceIngestionService:
     def __init__(self, session: AsyncSession, *, fetcher: FetchHtml = fetch_html):
         self.session = session
         self.fetcher = fetcher
         self.repo = SourcesRepo(session)
+        self.reconciler = SourceIngestionReconciliationService(session)
 
     async def _mark_failure(self, connector: SourceConnector, reason: str) -> None:
         await self.repo.update_health(
@@ -272,30 +266,24 @@ class SourceIngestionService:
         created_count = 0
         candidate_count = 0
         for entry in entries:
-            document, created = await self.repo.upsert_document(
-                connector=connector,
-                external_id=str(entry["external_id"]),
-                content=str(entry["content"]),
-                source_url=entry.get("source_url"),
-                title=entry.get("title"),
-                published_at=entry.get("published_at"),
-                metadata={
-                    "connector_kind": kind,
-                    "citation_enabled": bool(connector.citation_enabled),
-                    "reuse_policy": str(connector.reuse_policy),
-                },
-            )
-            if created:
-                created_count += 1
-                await self.repo.ensure_candidate(
-                    source_document_id=document.id,
-                    channel_id=connector.channel_id,
-                    suggested_action=_candidate_action(connector),
+            result = await self.reconciler.reconcile(
+                connector,
+                SourceProjection(
+                    external_id=str(entry["external_id"]),
+                    content=str(entry["content"]),
+                    source_url=entry.get("source_url"),
+                    title=entry.get("title"),
+                    published_at=entry.get("published_at"),
                     metadata={
-                        "source_connector_id": int(connector.id),
+                        "connector_kind": kind,
+                        "citation_enabled": bool(connector.citation_enabled),
                         "reuse_policy": str(connector.reuse_policy),
                     },
-                )
+                ),
+            )
+            if result.document_created:
+                created_count += 1
+            if result.candidate_created:
                 candidate_count += 1
 
         if not entries:
