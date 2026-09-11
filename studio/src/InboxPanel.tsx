@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
+import { promptCandidateStructuredRewrite } from './candidatePromptRewrite';
 import {
   applyCurrentStructuredRewrite,
   loadCurrentStructuredRewritePreviews,
@@ -62,6 +63,7 @@ export function InboxPanel({
   const [candidates, setCandidates] = useState<ContentCandidateView[]>([]);
   const [candidateMedia, setCandidateMedia] = useState<Record<number, CandidateMediaView>>({});
   const [rewritePreviews, setRewritePreviews] = useState<Record<number, RewritePreview>>({});
+  const [rewriteInstructions, setRewriteInstructions] = useState<Record<number, string>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -71,6 +73,7 @@ export function InboxPanel({
       setCandidates([]);
       setCandidateMedia({});
       setRewritePreviews({});
+      setRewriteInstructions({});
       return;
     }
     const [rows, mediaRows] = await Promise.all([
@@ -86,6 +89,7 @@ export function InboxPanel({
     setError(null);
     setNotice(null);
     setRewritePreviews({});
+    setRewriteInstructions({});
     void load().catch((reason) => setError(errorMessage(reason)));
   }, [load]);
 
@@ -184,6 +188,33 @@ export function InboxPanel({
       );
     });
 
+  const rewritePromptStructuredAI = (candidate: ContentCandidateView) => {
+    const instruction = (rewriteInstructions[candidate.id] || '').trim();
+    if (!instruction) return;
+    void run(`rewrite-ai-prompt:${candidate.id}`, async () => {
+      const result = await promptCandidateStructuredRewrite(
+        channel!.id,
+        candidate.id,
+        instruction,
+      );
+      setRewritePreviews((current) => ({
+        ...current,
+        [candidate.id]: {
+          runId: result.run_id,
+          text: result.text,
+          model: result.model,
+          kind: 'structured',
+          document: result.document,
+        },
+      }));
+      setNotice(
+        result.reused_existing
+          ? `AI по промпту #${result.run_id}: использован тот же current proposal`
+          : `AI по промпту #${result.run_id}: validated PostDocument · ${result.model || result.provider}`,
+      );
+    });
+  };
+
   const promoteMedia = (candidate: ContentCandidateView) =>
     run(`promote-media:${candidate.id}`, async () => {
       const asset = await promoteCandidateMedia(channel!.id, candidate.id);
@@ -212,6 +243,11 @@ export function InboxPanel({
         delete next[candidate.id];
         return next;
       });
+      setRewriteInstructions((current) => {
+        const next = { ...current };
+        delete next[candidate.id];
+        return next;
+      });
     });
 
   const acceptDraft = (candidate: ContentCandidateView) =>
@@ -227,6 +263,11 @@ export function InboxPanel({
         return next;
       });
       setRewritePreviews((current) => {
+        const next = { ...current };
+        delete next[candidate.id];
+        return next;
+      });
+      setRewriteInstructions((current) => {
         const next = { ...current };
         delete next[candidate.id];
         return next;
@@ -276,6 +317,7 @@ export function InboxPanel({
             const media = candidateMedia[candidate.id];
             const canRewrite = candidate.reuse_policy === 'rewrite_with_attribution';
             const canPromoteMedia = Boolean(media?.promotable && !media.media_asset_id);
+            const prompt = rewriteInstructions[candidate.id] || '';
             return (
               <article key={candidate.id} className="candidate-card">
                 <div className="candidate-head">
@@ -300,6 +342,29 @@ export function InboxPanel({
                     ) : (
                       <p>{rewritePreview.text}</p>
                     )}
+                  </div>
+                )}
+                {canRewrite && (
+                  <div className="candidate-rewrite-preview">
+                    <small>Новый Rich proposal по вашему промпту — без автоматического применения</small>
+                    <textarea
+                      rows={2}
+                      maxLength={1000}
+                      value={prompt}
+                      placeholder="Например: сократи вдвое, добавь 2 подзаголовка и сделай тон спокойнее"
+                      onChange={(event) => setRewriteInstructions((current) => ({
+                        ...current,
+                        [candidate.id]: event.target.value,
+                      }))}
+                      style={{ width: '100%', boxSizing: 'border-box', marginTop: 8 }}
+                    />
+                    <button
+                      className="button secondary compact"
+                      disabled={busyId !== null || !prompt.trim()}
+                      onClick={() => rewritePromptStructuredAI(candidate)}
+                    >
+                      {busyId === `rewrite-ai-prompt:${candidate.id}` ? 'По промпту…' : '✨ Rich по промпту'}
+                    </button>
                   </div>
                 )}
                 <div className="candidate-footer">
