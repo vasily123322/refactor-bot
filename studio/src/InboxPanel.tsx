@@ -7,13 +7,15 @@ import {
   promoteCandidateMedia,
   type CandidateMediaView,
 } from './candidateMedia';
-import type { Channel, ContentCandidateView } from './types';
+import { TelegramVisualPreview } from './TelegramVisualPreview';
+import type { Channel, ContentCandidateView, PostDocument } from './types';
 
 type RewritePreview = {
   runId: number;
   text: string;
   model: string | null;
   kind: 'text' | 'structured';
+  document: PostDocument | null;
 };
 
 function errorMessage(error: unknown): string {
@@ -153,6 +155,7 @@ export function InboxPanel({
           text: result.text,
           model: result.model,
           kind: 'text',
+          document: null,
         },
       }));
       setNotice(
@@ -172,6 +175,7 @@ export function InboxPanel({
           text: result.text,
           model: result.model,
           kind: 'structured',
+          document: result.document,
         },
       }));
       setNotice(
@@ -286,7 +290,14 @@ export function InboxPanel({
                       {rewritePreview.kind === 'structured' ? 'AI Rich preview' : 'AI rewrite preview'} · run #{rewritePreview.runId}
                       {rewritePreview.model ? ` · ${rewritePreview.model}` : ''}
                     </small>
-                    <p>{rewritePreview.text}</p>
+                    {rewritePreview.document ? (
+                      <details>
+                        <summary>Visual PostDocument preview</summary>
+                        <TelegramVisualPreview document={rewritePreview.document} channel={channel} />
+                      </details>
+                    ) : (
+                      <p>{rewritePreview.text}</p>
+                    )}
                   </div>
                 )}
                 <div className="candidate-footer">
