@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,10 +11,18 @@ from app.domain.content import PostDocument, validate_native_document_capabiliti
 from app.domain.content.models import ContentItem, ContentRevision, MediaAsset
 from app.domain.sources.models import ContentCandidate, SourceDocument
 from app.repositories.sources_v2 import SourcesRepo
-from app.services.candidate_rewrite import current_candidate_rewrite_run
+from app.services.candidate_rewrite import CandidateRewriteError, current_candidate_rewrite_run
+from app.services.candidate_structured_rewrite_ai import (
+    STRUCTURED_REWRITE_GENERATION_KIND,
+    structured_document_from_run_output,
+)
 
 
 class CandidateDraftError(RuntimeError):
+    pass
+
+
+class CandidateDraftValidationError(CandidateDraftError):
     pass
 
 
@@ -100,6 +110,45 @@ def _media_asset_id(document: SourceDocument) -> int | None:
     return value if value > 0 else None
 
 
+def _attribution_block_id(blocks: list[dict[str, Any]]) -> str:
+    existing = {str(block.get("id") or "") for block in blocks}
+    candidate = "source_attribution"
+    suffix = 1
+    while candidate in existing:
+        suffix += 1
+        candidate = f"source_attribution_{suffix}"
+    return candidate
+
+
+def structured_candidate_draft_document(
+    generated: PostDocument,
+    *,
+    source_document: SourceDocument,
+    metadata: dict[str, Any],
+) -> PostDocument:
+    """Apply a generated document without giving AI attribution/transport authority."""
+    blocks = deepcopy(generated.blocks)
+    blocks.append(
+        {
+            "id": _attribution_block_id(blocks),
+            "type": "paragraph",
+            "content": _source_label(source_document),
+        }
+    )
+    document = PostDocument(
+        mode="rich",
+        blocks=blocks,
+        telegram={},
+        metadata={
+            **dict(metadata),
+            "ai_generation_kind": STRUCTURED_REWRITE_GENERATION_KIND,
+        },
+    )
+    document.validate()
+    validate_native_document_capabilities(document)
+    return document
+
+
 class CandidateDraftService:
     """Accept an Inbox candidate into Content while enforcing source reuse policy."""
 
@@ -183,12 +232,24 @@ class CandidateDraftService:
                 document=source_document,
                 reuse_policy=policy,
             )
-        text, truncated = _draft_text(
-            policy=policy,
-            document=source_document,
-            summary=candidate.summary,
-            generated_rewrite=(rewrite_run.text if rewrite_run is not None else None),
-        )
+        try:
+            structured_rewrite = (
+                structured_document_from_run_output(rewrite_run.output)
+                if rewrite_run is not None
+                else None
+            )
+        except CandidateRewriteError as exc:
+            raise CandidateDraftValidationError("candidate structured rewrite is invalid") from exc
+        if structured_rewrite is not None:
+            text = str(rewrite_run.text or "")
+            truncated = False
+        else:
+            text, truncated = _draft_text(
+                policy=policy,
+                document=source_document,
+                summary=candidate.summary,
+                generated_rewrite=(rewrite_run.text if rewrite_run is not None else None),
+            )
         source_media_asset = await self._source_media_asset(
             source_document=source_document,
             channel_id=channel_id,
@@ -217,7 +278,13 @@ class CandidateDraftService:
             ),
             "rewrite_model": rewrite_run.model if rewrite_run is not None else None,
         }
-        if source_media_attached:
+        if structured_rewrite is not None:
+            document = structured_candidate_draft_document(
+                structured_rewrite,
+                source_document=source_document,
+                metadata=document_metadata,
+            )
+        elif source_media_attached:
             assert source_media_asset is not None
             document = PostDocument(
                 mode="rich",
@@ -275,6 +342,11 @@ class CandidateDraftService:
                     "source_media_attached": source_media_attached,
                     "rewrite_run_id": (
                         int(rewrite_run.id) if rewrite_run is not None else None
+                    ),
+                    "ai_generation_kind": (
+                        STRUCTURED_REWRITE_GENERATION_KIND
+                        if structured_rewrite is not None
+                        else None
                     ),
                 },
             )

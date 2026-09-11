@@ -13,6 +13,7 @@ type RewritePreview = {
   runId: number;
   text: string;
   model: string | null;
+  kind: 'text' | 'structured';
 };
 
 function errorMessage(error: unknown): string {
@@ -151,12 +152,32 @@ export function InboxPanel({
           runId: result.run_id,
           text: result.text,
           model: result.model,
+          kind: 'text',
         },
       }));
       setNotice(
         result.reused_existing
           ? `AI rewrite #${result.run_id}: использован сохранённый результат`
           : `AI rewrite #${result.run_id}: ${result.model || result.provider}`,
+      );
+    });
+
+  const rewriteStructuredAI = (candidate: ContentCandidateView) =>
+    run(`rewrite-ai-structured:${candidate.id}`, async () => {
+      const result = await studioApi.rewriteCandidateAIStructured(channel!.id, candidate.id);
+      setRewritePreviews((current) => ({
+        ...current,
+        [candidate.id]: {
+          runId: result.run_id,
+          text: result.text,
+          model: result.model,
+          kind: 'structured',
+        },
+      }));
+      setNotice(
+        result.reused_existing
+          ? `AI Rich #${result.run_id}: использован сохранённый PostDocument`
+          : `AI Rich #${result.run_id}: validated PostDocument · ${result.model || result.provider}`,
       );
     });
 
@@ -262,7 +283,7 @@ export function InboxPanel({
                 {rewritePreview && (
                   <div className="candidate-rewrite-preview">
                     <small>
-                      AI rewrite preview · run #{rewritePreview.runId}
+                      {rewritePreview.kind === 'structured' ? 'AI Rich preview' : 'AI rewrite preview'} · run #{rewritePreview.runId}
                       {rewritePreview.model ? ` · ${rewritePreview.model}` : ''}
                     </small>
                     <p>{rewritePreview.text}</p>
@@ -309,12 +330,26 @@ export function InboxPanel({
                         {busyId === `rewrite-ai:${candidate.id}` ? 'Rewrite…' : '✨ Rewrite'}
                       </button>
                     )}
+                    {canRewrite && (
+                      <button
+                        className="button secondary compact"
+                        disabled={busyId !== null}
+                        title="Сгенерировать validated Rich PostDocument без автоматического применения"
+                        onClick={() => void rewriteStructuredAI(candidate)}
+                      >
+                        {busyId === `rewrite-ai-structured:${candidate.id}` ? 'Rich…' : '✨ Rich'}
+                      </button>
+                    )}
                     <button
                       className="button primary compact"
                       disabled={busyId !== null}
                       onClick={() => void acceptDraft(candidate)}
                     >
-                      {busyId === `draft:${candidate.id}` ? 'Создаю…' : 'В черновик'}
+                      {busyId === `draft:${candidate.id}`
+                        ? 'Создаю…'
+                        : rewritePreview?.kind === 'structured'
+                          ? 'В Rich черновик'
+                          : 'В черновик'}
                     </button>
                     <button
                       className="button secondary compact"
