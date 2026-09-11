@@ -4,7 +4,9 @@ import { StudioApiError, studioApi } from './api';
 import { promptCandidateStructuredRewrite } from './candidatePromptRewrite';
 import {
   applyCurrentStructuredRewrite,
+  isRewriteAuthorityStaleError,
   loadCurrentStructuredRewritePreviews,
+  rewriteProvenanceLabel,
   type RewritePreview,
 } from './candidateRewriteAuthority';
 import {
@@ -116,6 +118,17 @@ export function InboxPanel({
     }
   };
 
+  const markStructuredPreviewStale = (candidateId: number, runId: number) => {
+    setRewritePreviews((current) => {
+      const preview = current[candidateId];
+      if (!preview || preview.kind !== 'structured' || preview.runId !== runId) return current;
+      return {
+        ...current,
+        [candidateId]: { ...preview, provenanceStatus: 'stale' },
+      };
+    });
+  };
+
   const enrichBatch = () =>
     run('batch-local', async () => {
       const result = await studioApi.enrichCandidatesLocalBatch(channel!.id, 50);
@@ -167,9 +180,11 @@ export function InboxPanel({
         [candidate.id]: {
           runId: result.run_id,
           text: result.text,
+          provider: result.provider,
           model: result.model,
           kind: 'text',
           document: null,
+          provenanceStatus: 'unavailable',
         },
       }));
       setNotice(
@@ -187,9 +202,11 @@ export function InboxPanel({
         [candidate.id]: {
           runId: result.run_id,
           text: result.text,
+          provider: result.provider,
           model: result.model,
           kind: 'structured',
           document: result.document,
+          provenanceStatus: 'current_at_last_server_check',
         },
       }));
       setNotice(
@@ -213,9 +230,11 @@ export function InboxPanel({
         [candidate.id]: {
           runId: result.run_id,
           text: result.text,
+          provider: result.provider,
           model: result.model,
           kind: 'structured',
           document: result.document,
+          provenanceStatus: 'current_at_last_server_check',
         },
       }));
       setNotice(
@@ -233,27 +252,36 @@ export function InboxPanel({
     const preview = rewritePreviews[candidate.id];
     if (!preview || preview.kind !== 'structured') return;
     void run(`rewrite-ai-edit:${candidate.id}:${operation}`, async () => {
-      const result = await editCurrentStructuredRewrite(
-        channel!.id,
-        candidate.id,
-        preview.runId,
-        operation,
-      );
-      setRewritePreviews((current) => ({
-        ...current,
-        [candidate.id]: {
-          runId: result.run_id,
-          text: result.text,
-          model: result.model,
-          kind: 'structured',
-          document: result.document,
-        },
-      }));
-      setNotice(
-        result.reused_existing
-          ? `AI edit #${result.run_id}: использован тот же operation proposal`
-          : `AI edit #${result.run_id}: ${operation} · validated PostDocument`,
-      );
+      try {
+        const result = await editCurrentStructuredRewrite(
+          channel!.id,
+          candidate.id,
+          preview.runId,
+          operation,
+        );
+        setRewritePreviews((current) => ({
+          ...current,
+          [candidate.id]: {
+            runId: result.run_id,
+            text: result.text,
+            provider: result.provider,
+            model: result.model,
+            kind: 'structured',
+            document: result.document,
+            provenanceStatus: 'current_at_last_server_check',
+          },
+        }));
+        setNotice(
+          result.reused_existing
+            ? `AI edit #${result.run_id}: использован тот же operation proposal`
+            : `AI edit #${result.run_id}: ${operation} · validated PostDocument`,
+        );
+      } catch (reason) {
+        if (isRewriteAuthorityStaleError(reason)) {
+          markStructuredPreviewStale(candidate.id, preview.runId);
+        }
+        throw reason;
+      }
     });
   };
 
@@ -295,9 +323,19 @@ export function InboxPanel({
   const acceptDraft = (candidate: ContentCandidateView) =>
     run(`draft:${candidate.id}`, async () => {
       const preview = rewritePreviews[candidate.id];
-      const draft = preview?.kind === 'structured'
-        ? await applyCurrentStructuredRewrite(channel!.id, candidate.id, preview.runId)
-        : await studioApi.candidateDraft(channel!.id, candidate.id);
+      let draft;
+      if (preview?.kind === 'structured') {
+        try {
+          draft = await applyCurrentStructuredRewrite(channel!.id, candidate.id, preview.runId);
+        } catch (reason) {
+          if (isRewriteAuthorityStaleError(reason)) {
+            markStructuredPreviewStale(candidate.id, preview.runId);
+          }
+          throw reason;
+        }
+      } else {
+        draft = await studioApi.candidateDraft(channel!.id, candidate.id);
+      }
       setCandidates((current) => current.filter((row) => row.id !== candidate.id));
       setCandidateMedia((current) => {
         const next = { ...current };
@@ -356,6 +394,11 @@ export function InboxPanel({
           {candidates.map((candidate) => {
             const score = scoreLabel(candidate.score);
             const rewritePreview = rewritePreviews[candidate.id];
+            const provenance = rewriteProvenanceLabel(
+              rewritePreview,
+              candidate.id,
+              candidate.source_document_id,
+            );
             const media = candidateMedia[candidate.id];
             const canRewrite = candidate.reuse_policy === 'rewrite_with_attribution';
             const canPromoteMedia = Boolean(media?.promotable && !media.media_asset_id);
@@ -373,8 +416,9 @@ export function InboxPanel({
                 {rewritePreview && (
                   <div className="candidate-rewrite-preview">
                     <small>
-                      {rewritePreview.kind === 'structured' ? 'AI Rich preview' : 'AI rewrite preview'} · run #{rewritePreview.runId}
-                      {rewritePreview.model ? ` · ${rewritePreview.model}` : ''}
+                      {provenance || (
+                        `AI rewrite preview · run #${rewritePreview.runId}${rewritePreview.model ? ` · ${rewritePreview.model}` : ''}`
+                      )}
                     </small>
                     {rewritePreview.document ? (
                       <>

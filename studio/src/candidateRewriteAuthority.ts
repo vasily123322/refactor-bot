@@ -1,12 +1,21 @@
 import { getRawInitData } from './telegram';
 import type { ContentCandidateView, ContentDetail, PostDocument } from './types';
 
+export type RewriteProvenanceStatus =
+  | 'current_at_last_server_check'
+  | 'stale'
+  | 'historical'
+  | 'failed'
+  | 'unavailable';
+
 export type RewritePreview = {
   runId: number;
   text: string;
+  provider?: string | null;
   model: string | null;
   kind: 'text' | 'structured';
   document: PostDocument | null;
+  provenanceStatus?: RewriteProvenanceStatus;
 };
 
 export type CurrentStructuredRewrite = {
@@ -17,6 +26,33 @@ export type CurrentStructuredRewrite = {
   text: string;
   document: PostDocument;
 };
+
+const provenanceStatusLabel: Record<RewriteProvenanceStatus, string> = {
+  current_at_last_server_check: 'current at last server check',
+  stale: 'stale',
+  historical: 'historical',
+  failed: 'failed',
+  unavailable: 'cannot verify',
+};
+
+export function rewriteProvenanceLabel(
+  preview: RewritePreview | null | undefined,
+  candidateId: number,
+  sourceDocumentId?: number | null,
+): string | null {
+  if (!preview || preview.kind !== 'structured') return null;
+  const status = preview.provenanceStatus || 'unavailable';
+  const source = sourceDocumentId == null ? '' : ` · source #${sourceDocumentId}`;
+  const provider = preview.provider ? ` · provider ${preview.provider}` : '';
+  const model = preview.model ? ` · model ${preview.model}` : '';
+  return `AI Rich proposal · ${provenanceStatusLabel[status]} · candidate #${candidateId}${source} · run #${preview.runId}${provider}${model}`;
+}
+
+export function isRewriteAuthorityStaleError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes('no longer current') || message.includes('rewrite authority changed');
+}
 
 async function authorityRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const initData = getRawInitData();
@@ -48,9 +84,11 @@ export function previewFromCurrentStructuredRewrite(
   return {
     runId: result.run_id,
     text: result.text,
+    provider: result.provider,
     model: result.model,
     kind: 'structured',
     document: result.document,
+    provenanceStatus: 'current_at_last_server_check',
   };
 }
 
