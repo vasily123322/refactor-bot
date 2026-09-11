@@ -71,7 +71,7 @@ async function multipartRequest<T>(path: string, form: FormData): Promise<T> {
 }
 
 export type CreateSourceInput = {
-  kind: 'telegram' | 'rss' | 'url';
+  kind: 'telegram' | 'rss' | 'url' | 'telegram_channel_dms';
   value: string;
   mode: 'summary' | 'rewrite';
   citation_enabled: boolean;

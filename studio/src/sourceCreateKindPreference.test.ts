@@ -10,6 +10,9 @@ describe('source create kind preference', () => {
     expect(parseSourceCreateKindPreference('{"sourceCreateKind":"rss"}')).toBe('rss');
     expect(parseSourceCreateKindPreference('{"sourceCreateKind":"url"}')).toBe('url');
     expect(parseSourceCreateKindPreference('{"sourceCreateKind":"telegram"}')).toBe('telegram');
+    expect(parseSourceCreateKindPreference('{"sourceCreateKind":"telegram_channel_dms"}')).toBe(
+      'telegram_channel_dms',
+    );
   });
 
   it('fails closed for stale, malformed or missing values', () => {
