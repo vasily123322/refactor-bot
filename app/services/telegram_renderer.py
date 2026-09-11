@@ -40,7 +40,14 @@ from aiogram.types import (
     RichTextUrl,
 )
 
-from app.domain.content import PostDocument
+from app.domain.content import (
+    NATIVE_MEDIA_KINDS,
+    NATIVE_RICH_MEDIA_TYPES,
+    NATIVE_RICH_STRUCTURAL_TYPES,
+    PostDocument,
+    UnsupportedPostDocumentCapabilityError,
+    validate_native_document_capabilities,
+)
 from app.services.content import LegacyPayloadError, legacy_payload_from_document
 
 
@@ -58,40 +65,9 @@ class TelegramRenderPlan:
     protect_content: bool = False
 
 
-_RICH_STRUCTURAL_TYPES = frozenset(
-    {
-        "paragraph",
-        "heading",
-        "divider",
-        "quote",
-        "pull_quote",
-        "list",
-        "details",
-        "math",
-        "anchor",
-    }
-)
-
-_RICH_MEDIA_TYPES = frozenset(
-    {
-        "image",
-        "media",
-        "gallery",
-        "collage",
-        "slideshow",
-        "map",
-    }
-)
-
-_MEDIA_KINDS = frozenset(
-    {
-        "photo",
-        "video",
-        "animation",
-        "audio",
-        "voice_note",
-    }
-)
+_RICH_STRUCTURAL_TYPES = NATIVE_RICH_STRUCTURAL_TYPES
+_RICH_MEDIA_TYPES = NATIVE_RICH_MEDIA_TYPES
+_MEDIA_KINDS = NATIVE_MEDIA_KINDS
 
 
 def _button_markup(value: object) -> InlineKeyboardMarkup | None:
@@ -510,6 +486,10 @@ class TelegramRenderer:
             else PostDocument.from_dict(document)
         )
         doc.validate()
+        try:
+            validate_native_document_capabilities(doc)
+        except UnsupportedPostDocumentCapabilityError as exc:
+            raise TelegramRenderError(str(exc)) from exc
         reply_markup = _button_markup(doc.telegram.get("buttons"))
         disable_notification = _telegram_bool(doc, "silent", "disable_notification")
         protect_content = _telegram_bool(doc, "protect_content")

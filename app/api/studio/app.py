@@ -32,7 +32,16 @@ from app.api.studio.source_media_assets import router as source_media_assets_rou
 from app.api.studio.sources import router as sources_router
 from app.bot.bot_instance import bot as tg_bot
 from app.core.db import AsyncSessionLocal
-from app.domain.content import PostDocument, PostDocumentError
+from app.domain.content import (
+    NATIVE_MEDIA_KINDS,
+    NATIVE_MEDIA_OPTION_KEYS_BY_KIND,
+    NATIVE_NESTED_BLOCK_TYPES,
+    NATIVE_RICH_BLOCK_TYPES,
+    NATIVE_RICH_MARK_TYPES,
+    NATIVE_TELEGRAM_OPTION_KEYS,
+    PostDocument,
+    PostDocumentError,
+)
 from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
 from app.repositories.content import ContentNotFoundError, ContentRepo
@@ -114,32 +123,17 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
             "document_modes": ["classic", "rich"],
             "legacy_publisher": True,
             "rich_publisher": True,
-            "rich_blocks": [
-                "paragraph",
-                "heading",
-                "divider",
-                "quote",
-                "pull_quote",
-                "list",
-                "details",
-                "math",
-                "anchor",
-                "image",
-                "media",
-                "gallery",
-                "collage",
-                "slideshow",
-                "map",
-            ],
+            "rich_blocks": sorted(NATIVE_RICH_BLOCK_TYPES),
+            "rich_nested_blocks": sorted(NATIVE_NESTED_BLOCK_TYPES),
+            "rich_marks": sorted(NATIVE_RICH_MARK_TYPES),
             "rich_media_assets": True,
-            "rich_media_asset_kinds": [
-                "photo",
-                "video",
-                "animation",
-                "audio",
-                "voice_note",
-            ],
+            "rich_media_asset_kinds": sorted(NATIVE_MEDIA_KINDS),
+            "rich_media_options": {
+                kind: sorted(options)
+                for kind, options in sorted(NATIVE_MEDIA_OPTION_KEYS_BY_KIND.items())
+            },
             "rich_media_attachments": True,
+            "telegram_document_options": sorted(NATIVE_TELEGRAM_OPTION_KEYS),
             "exact_telegram_preview": True,
             "revisions": True,
             "planner": True,
@@ -206,16 +200,16 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
         await _owned_channel(session, principal, channel_id)
         try:
             document = PostDocument.from_dict(request.document)
+            item = await ContentRepo(session).create(
+                channel_id=channel_id,
+                document=document,
+                kind=request.kind,
+                title=request.title,
+                created_by_tg_user_id=principal.tg_user_id,
+                source="studio",
+            )
         except PostDocumentError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        item = await ContentRepo(session).create(
-            channel_id=channel_id,
-            document=document,
-            kind=request.kind,
-            title=request.title,
-            created_by_tg_user_id=principal.tg_user_id,
-            source="studio",
-        )
         return ContentDetailResponse(
             **_content_summary(item).model_dump(),
             document=document.to_dict(),

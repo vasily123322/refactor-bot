@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.content import PostDocument
+from app.domain.content import PostDocument, validate_native_document_capabilities
 from app.domain.content.models import ContentItem, ContentRevision, MediaAsset
 from app.domain.sources.models import ContentCandidate, SourceDocument
 from app.repositories.sources_v2 import SourcesRepo
@@ -239,6 +239,7 @@ class CandidateDraftService:
                 metadata=document_metadata,
             )
         document.validate()
+        validate_native_document_capabilities(document)
 
         item = ContentItem(
             channel_id=int(channel_id),
