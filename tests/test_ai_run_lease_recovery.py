@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
 from app.domain.sources.enrichment import CandidateEnrichmentRun
-from app.domain.sources.models import ContentCandidate
+from app.domain.sources.models import ContentCandidate, SourceDocument
 from app.domain.sources.rewrite import CandidateRewriteRun
 from app.repositories.sources_v2 import SourcesRepo
 from app.services.ai_run_leases import AI_RUN_LEASE_SECONDS, ai_run_lease_expired
@@ -69,19 +69,25 @@ async def _seed(session, *, channel_id: int, policy: str):
         value=f"https://example.com/{channel_id}.xml",
         reuse_policy=policy,
     )
-    document, _ = await repo.upsert_document(
-        connector=connector,
-        external_id=f"lease-{channel_id}",
-        title="Lease source",
-        content="Original factual source material for lease recovery testing.",
-        source_url="https://example.com/article",
-        metadata={"reuse_policy": policy},
+    document = await repo.add_document(
+        SourceDocument(
+            connector_id=int(connector.id),
+            channel_id=channel_id,
+            external_id=f"lease-{channel_id}",
+            title="Lease source",
+            content="Original factual source material for lease recovery testing.",
+            content_hash="e" * 64,
+            source_url="https://example.com/article",
+            meta={"reuse_policy": policy},
+        )
     )
-    candidate = await repo.ensure_candidate(
-        source_document_id=document.id,
-        channel_id=channel_id,
-        suggested_action="rewrite" if policy == "rewrite_with_attribution" else "summarize",
-        metadata={"reuse_policy": policy},
+    candidate = await repo.add_candidate(
+        ContentCandidate(
+            source_document_id=int(document.id),
+            channel_id=channel_id,
+            suggested_action="rewrite" if policy == "rewrite_with_attribution" else "summarize",
+            meta={"reuse_policy": policy},
+        )
     )
     return connector, document, candidate
 
