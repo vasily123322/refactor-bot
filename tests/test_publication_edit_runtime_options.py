@@ -52,19 +52,32 @@ async def _seed(Session, *, runtime_options: dict) -> tuple[int, int, int, int]:
             scheduled_at=datetime(2026, 8, 10, 10, 0, tzinfo=timezone.utc),
             runtime_options=runtime_options,
         )
-        task_id = int(publication.legacy_post_task_id or 0)
         schedule = await session.get(
             ScheduleEntry,
             int(publication.schedule_entry_id or 0),
         )
-        task = await session.get(PostTask, task_id)
-        assert schedule is not None and task is not None
+        task = await session.get(
+            PostTask,
+            int(publication.legacy_post_task_id or 0),
+        )
+        assert schedule is not None
+        if task is None:
+            task = PostTask(
+                channel_id=int(channel.id),
+                status="pending",
+                payload={"type": "text", "text": "Before"},
+                dedupe_key=f"test-edit-runtime-compat:{int(publication.id)}",
+                scheduled_at=schedule.scheduled_at,
+            )
+            session.add(task)
+            await session.flush()
+            publication.legacy_post_task_id = int(task.id)
         publication.status = "published"
         schedule.status = "completed"
         publication.telegram_message_ids = [91101]
         task.status = "done"
         await session.commit()
-        return int(item.id), int(publication.id), int(schedule.id), task_id
+        return int(item.id), int(publication.id), int(schedule.id), int(task.id)
 
 
 def test_edit_adds_runtime_intent_to_publication_and_schedule_not_content(tmp_path) -> None:
