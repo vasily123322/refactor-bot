@@ -315,7 +315,8 @@ def test_fresh_canonical_repeat_report_continues_without_posttask() -> None:
                     "autodelete_seconds": 600,
                     "autodelete_report": True,
                 }
-                assert await _counts(session)[:3] if False else True
+                schedules, publications, tasks, _revisions = await _counts(session)
+                assert (schedules, publications, tasks) == (1, 1, 0)
 
                 root.status = "published"
                 root.attempt_count = 1
