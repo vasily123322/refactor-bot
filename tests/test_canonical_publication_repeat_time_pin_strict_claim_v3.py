@@ -70,12 +70,13 @@ async def _seed_retired(
         )
         task = await session.get(PostTask, int(publication.legacy_post_task_id or 0))
         schedule = await session.get(ScheduleEntry, int(publication.schedule_entry_id))
-        assert task is not None and schedule is not None
+        assert schedule is not None
         schedule_meta = dict(schedule.meta or {})
         schedule_meta.pop("legacy_post_task_id", None)
         schedule.meta = schedule_meta
         publication.legacy_post_task_id = None
-        await session.delete(task)
+        if task is not None:
+            await session.delete(task)
         await session.commit()
         return int(publication.id)
 
