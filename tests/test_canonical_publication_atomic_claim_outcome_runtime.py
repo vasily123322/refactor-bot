@@ -89,7 +89,9 @@ def test_exact_atomic_rollback_maps_to_ineligible_claim_rejected(monkeypatch) ->
 
         wrapper = CanonicalPublicationDeliveryHandoffExecutor(
             executor=delegate,
-            session_factory=_session_factory(SimpleNamespace(legacy_post_task_id=9101)),
+            session_factory=_session_factory(
+                SimpleNamespace(legacy_post_task_id=9101, meta={})
+            ),
         )
         result = await wrapper.execute(51)
 
@@ -134,7 +136,9 @@ def test_partial_or_committed_atomic_state_maps_to_lease_lost(monkeypatch) -> No
 
         wrapper = CanonicalPublicationDeliveryHandoffExecutor(
             executor=delegate,
-            session_factory=_session_factory(SimpleNamespace(legacy_post_task_id=9102)),
+            session_factory=_session_factory(
+                SimpleNamespace(legacy_post_task_id=9102, meta={})
+            ),
         )
         result = await wrapper.execute(52)
 
