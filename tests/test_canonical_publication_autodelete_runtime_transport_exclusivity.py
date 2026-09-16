@@ -52,7 +52,10 @@ async def _seed_legacy_published(Session, *, seed: int) -> tuple[int, int]:
         publication = await LegacyPublicationBridge(session).queue(
             content_item_id=int(item.id),
             scheduled_at=delivered_at - timedelta(minutes=1),
-            runtime_options={"autodelete_seconds": 120},
+            runtime_options={
+                "autodelete_seconds": 120,
+                "autodelete_report": True,
+            },
         )
         task_id = int(publication.legacy_post_task_id or 0)
         assert task_id > 0
