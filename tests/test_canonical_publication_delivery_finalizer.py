@@ -129,6 +129,7 @@ def test_success_finalization_is_canonical_only_and_releases_exact_lease(tmp_pat
                     message_ids=[501, 502],
                     result_link="https://t.me/c/12345/502",
                     finished_at=finished_at,
+                    now=finished_at,
                 )
                 assert result.outcome == "published"
                 assert result.attempt == 1
@@ -170,6 +171,7 @@ def test_success_finalization_is_canonical_only_and_releases_exact_lease(tmp_pat
                     claim.lease,
                     error="late worker",
                     finished_at=finished_at + timedelta(seconds=1),
+                    now=finished_at + timedelta(seconds=1),
                 )
                 assert stale.outcome == "conflict"
                 publication = await session.get(Publication, publication_id)
@@ -203,6 +205,7 @@ def test_failure_finalization_redacts_untrusted_error_text(tmp_path) -> None:
                 now=scheduled_at + timedelta(minutes=1),
             )
             provider_error = "https://api.telegram.org/botSUPERSECRET/sendMessage failed"
+            finished_at = scheduled_at + timedelta(minutes=2)
 
             async with Session() as session:
                 result = await CanonicalPublicationDeliveryFinalizer(
@@ -210,7 +213,8 @@ def test_failure_finalization_redacts_untrusted_error_text(tmp_path) -> None:
                 ).complete_failure(
                     claim.lease,
                     error=provider_error,
-                    finished_at=scheduled_at + timedelta(minutes=2),
+                    finished_at=finished_at,
+                    now=finished_at,
                 )
                 assert result.outcome == "failed"
 
@@ -276,6 +280,7 @@ def test_stale_lease_token_cannot_finalize_or_release_live_claim(tmp_path) -> No
                 holder="stale-worker",
                 expires_at=claim.lease.expires_at,
             )
+            finished_at = scheduled_at + timedelta(minutes=2)
 
             async with Session() as session:
                 finalizer = CanonicalPublicationDeliveryFinalizer(session)
@@ -283,7 +288,8 @@ def test_stale_lease_token_cannot_finalize_or_release_live_claim(tmp_path) -> No
                     stale,
                     plan=claim.plan,
                     message_ids=[601],
-                    finished_at=scheduled_at + timedelta(minutes=2),
+                    finished_at=finished_at,
+                    now=finished_at,
                 )
                 assert result.outcome == "conflict"
                 publication = await session.get(Publication, publication_id)
@@ -300,7 +306,8 @@ def test_stale_lease_token_cannot_finalize_or_release_live_claim(tmp_path) -> No
                     claim.lease,
                     plan=claim.plan,
                     message_ids=[601],
-                    finished_at=scheduled_at + timedelta(minutes=2),
+                    finished_at=finished_at,
+                    now=finished_at,
                 )
                 assert exact.outcome == "published"
         finally:
