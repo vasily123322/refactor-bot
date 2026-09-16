@@ -17,8 +17,8 @@ class OrdinaryChannelDMFilter(BaseFilter):
 
 
 router = Router(name="telegram-channel-dms")
-router.message.filter(F.chat.is_direct_messages == True)
-router.edited_message.filter(F.chat.is_direct_messages == True)
+router.message.filter(F.chat.is_direct_messages)
+router.edited_message.filter(F.chat.is_direct_messages)
 
 
 @router.message(OrdinaryChannelDMFilter())
