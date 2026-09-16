@@ -224,6 +224,14 @@ class SourceIngestionReconciliationService:
         if connector.id is None or connector.channel_id is None:
             raise SourceReconciliationError("trusted source connector must be persisted")
 
+        # SQLite may otherwise treat the first SAVEPOINT opened by begin_nested() as
+        # the effective outer transaction. Releasing that savepoint can make the
+        # document durable before candidate creation has succeeded, defeating the
+        # all-or-nothing reconciliation contract. Establish the outer transaction
+        # explicitly before either uniqueness savepoint is created.
+        if not self.session.in_transaction():
+            await self.session.begin()
+
         now = datetime.now(timezone.utc)
         try:
             document, document_created = await self._load_or_create_document(
