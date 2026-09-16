@@ -1,12 +1,51 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
+from app.domain.sources.models import ContentCandidate, SourceDocument
 from app.repositories.sources_v2 import SourcesRepo
 from app.services.candidate_enrichment_batch import LocalBatchEnrichmentService
+
+
+def _content_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+async def _add_candidate(
+    repo: SourcesRepo,
+    *,
+    connector_id: int,
+    channel_id: int,
+    external_id: str,
+    content: str,
+    suggested_action: str,
+    title: str | None = None,
+    source_url: str | None = None,
+    metadata: dict | None = None,
+) -> tuple[SourceDocument, ContentCandidate]:
+    document = SourceDocument(
+        connector_id=int(connector_id),
+        channel_id=int(channel_id),
+        external_id=external_id,
+        title=title,
+        content=content,
+        content_hash=_content_hash(content),
+        source_url=source_url,
+        meta=dict(metadata or {}),
+    )
+    await repo.add_document(document)
+    candidate = ContentCandidate(
+        source_document_id=int(document.id),
+        channel_id=int(channel_id),
+        suggested_action=suggested_action,
+        meta=dict(metadata or {}),
+    )
+    await repo.add_candidate(candidate)
+    return document, candidate
 
 
 def test_local_batch_enriches_only_active_untouched_candidates() -> None:
@@ -26,22 +65,18 @@ def test_local_batch_enriches_only_active_untouched_candidates() -> None:
                 )
                 candidates = []
                 for index in range(3):
-                    document, _ = await repo.upsert_document(
-                        connector=connector,
+                    _, candidate = await _add_candidate(
+                        repo,
+                        connector_id=int(connector.id),
+                        channel_id=301,
                         external_id=f"entry-{index}",
                         title=f"Item {index}",
                         content=f"Sentence {index}. More useful context for item {index}.",
                         source_url=f"https://example.com/{index}",
+                        suggested_action="summarize",
                         metadata={"reuse_policy": "summarize"},
                     )
-                    candidates.append(
-                        await repo.ensure_candidate(
-                            source_document_id=document.id,
-                            channel_id=301,
-                            suggested_action="summarize",
-                            metadata={"reuse_policy": "summarize"},
-                        )
-                    )
+                    candidates.append(candidate)
                 candidates[2].status = "dismissed"
                 await session.commit()
 
@@ -89,15 +124,13 @@ def test_local_batch_never_overwrites_existing_summary_when_optional_score_is_nu
                     kind="rss",
                     value="https://example.com/303.xml",
                 )
-                document, _ = await repo.upsert_document(
-                    connector=connector,
+                _, candidate = await _add_candidate(
+                    repo,
+                    connector_id=int(connector.id),
+                    channel_id=303,
                     external_id="pre-enriched",
                     title="Existing AI topic",
                     content="Original body that local enrichment must not replace.",
-                )
-                candidate = await repo.ensure_candidate(
-                    source_document_id=document.id,
-                    channel_id=303,
                     suggested_action="summarize",
                 )
                 candidate.summary = "Existing AI summary"
@@ -135,16 +168,15 @@ def test_local_batch_respects_limit_and_channel_scope() -> None:
                     value="https://example.com/302.xml",
                 )
                 for index in range(4):
-                    document, _ = await repo.upsert_document(
-                        connector=connector,
+                    await _add_candidate(
+                        repo,
+                        connector_id=int(connector.id),
+                        channel_id=302,
                         external_id=f"limited-{index}",
                         content=f"Body {index}. Second sentence.",
-                    )
-                    await repo.ensure_candidate(
-                        source_document_id=document.id,
-                        channel_id=302,
                         suggested_action="research",
                     )
+                await session.commit()
 
                 result = await LocalBatchEnrichmentService(session).run(
                     channel_id=302,
