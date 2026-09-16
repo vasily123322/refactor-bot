@@ -64,12 +64,16 @@ async def _seed_published(
             repeat_rule=repeat_rule,
             runtime_options=deepcopy(runtime_options),
         )
-        task = await session.get(PostTask, int(publication.legacy_post_task_id or 0))
+        task = (
+            await session.get(PostTask, int(publication.legacy_post_task_id))
+            if publication.legacy_post_task_id is not None
+            else None
+        )
         schedule = await session.get(
             ScheduleEntry,
             int(publication.schedule_entry_id or 0),
         )
-        assert task is not None and schedule is not None
+        assert schedule is not None
 
         publication.legacy_post_task_id = None
         publication.status = "published"
@@ -89,7 +93,8 @@ async def _seed_published(
                 finished_at=delivered_at,
             )
         )
-        await session.delete(task)
+        if task is not None:
+            await session.delete(task)
         await session.commit()
         return int(publication.id)
 
