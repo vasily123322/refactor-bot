@@ -77,9 +77,10 @@ async def _claim_after_transport_retirement(
     async with Session() as session:
         publication = await session.get(Publication, publication_id)
         task = await session.get(PostTask, task_id)
-        assert publication is not None and task is not None
+        assert publication is not None
         publication.legacy_post_task_id = None
-        await session.delete(task)
+        if task is not None:
+            await session.delete(task)
         await session.commit()
         claim = await CanonicalPublicationDeliveryClaimService(session).claim(
             publication_id=publication_id,
