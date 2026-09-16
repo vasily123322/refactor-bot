@@ -120,26 +120,43 @@ async def _seed(
             int(publication.schedule_entry_id or 0),
         )
         task = await session.get(PostTask, int(publication.legacy_post_task_id or 0))
-        assert schedule is not None and task is not None
+        assert schedule is not None
+
+        # Plain views intent is canonical and therefore PostTask-free. These worker
+        # tests deliberately exercise linked compatibility authority by default, so
+        # model that transport explicitly instead of depending on the bridge to create it.
+        if task is None and not unlink:
+            task = PostTask(
+                channel_id=int(channel.id),
+                status="pending",
+                payload=dict(runtime_options),
+                dedupe_key=f"test-views-worker-compat:{int(publication.id)}",
+                scheduled_at=schedule.scheduled_at,
+            )
+            session.add(task)
+            await session.flush()
+            publication.legacy_post_task_id = int(task.id)
+
         if published:
             publication.status = "published"
             schedule.status = "completed"
-            task.status = "done"
             publication.telegram_message_ids = list(message_ids)
-            payload = dict(task.payload or {})
-            payload["result_ids"] = list(message_ids)
-            payload["autodelete_views"] = threshold
-            if report:
-                payload["autodelete_report"] = True
-            task.payload = payload
+            if task is not None:
+                task.status = "done"
+                payload = dict(task.payload or {})
+                payload["result_ids"] = list(message_ids)
+                payload["autodelete_views"] = threshold
+                if report:
+                    payload["autodelete_report"] = True
+                task.payload = payload
         await PublicationAutodeleteViewStateService(session).sync_intent(
             publication_id=int(publication.id),
             threshold=threshold,
             now=now,
         )
         publication_id = int(publication.id)
-        task_id = int(task.id)
-        if unlink:
+        task_id = int(task.id) if task is not None else 0
+        if unlink and task is not None:
             publication.legacy_post_task_id = None
             await session.delete(task)
         await session.commit()
