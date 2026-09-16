@@ -46,7 +46,15 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q app tests scripts
       - name: Run full test suite
-        run: pytest -q --tb=short -ra
+        run: |
+          set +e
+          pytest -q --tb=no > /tmp/pytest.log 2>&1
+          status=$?
+          echo "=== pytest failure manifest ==="
+          grep -E '^(FAILED|ERROR) ' /tmp/pytest.log || true
+          echo "=== pytest summary ==="
+          tail -n 8 /tmp/pytest.log
+          exit "$status"
 
   studio:
     name: Telegram Studio frontend

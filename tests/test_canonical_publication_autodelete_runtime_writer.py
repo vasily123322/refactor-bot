@@ -185,7 +185,7 @@ def test_conflicting_existing_runtime_is_never_repaired_or_overwritten(tmp_path)
                 assert publication is not None
                 conflicting = {
                     "deleted": False,
-                    "effective_seconds": 60,
+                    "effective_seconds": 61,
                     "scheduled_at": (
                         delivered_at + timedelta(seconds=999)
                     ).isoformat(),
