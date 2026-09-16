@@ -111,7 +111,7 @@ def _message(
     if sender is not None:
         payload["from"] = sender
     if edit_date is not None:
-        payload["edit_date"] = edit_date
+        payload["edit_date"] = int(edit_date.timestamp())
     return Message.model_validate(payload)
 
 
