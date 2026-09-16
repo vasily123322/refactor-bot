@@ -20,9 +20,7 @@ EDIT_HANDLER_SOURCE = inspect.getsource(content_plan_publication.cb_cp_edit_publ
 CANONICAL_ROUTING_SOURCE = inspect.getsource(canonical_publication_edit)
 POSTING_PUBLISH_SOURCE = Path("app/bot/routers/posting_publish.py").read_text(encoding="utf-8")
 LEGACY_PLAN_SOURCE = Path("app/bot/routers/content_plan.py").read_text(encoding="utf-8")
-ACCESS_GUARD_SOURCE = Path(
-    "app/bot/middlewares/settings_channel_access.py"
-).read_text(encoding="utf-8")
+ACCESS_GUARD_SOURCE = Path("app/core/settings_channel_access.py").read_text(encoding="utf-8")
 
 
 def _identity(mode: str = "queued"):
