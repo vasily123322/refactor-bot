@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 
-HEAD = "20260812_0007"
+HEAD = "20260818_0013"
 OTHER_PARENT = "20260811_0006"
 TABLE = "publication_autodelete_actions"
 
