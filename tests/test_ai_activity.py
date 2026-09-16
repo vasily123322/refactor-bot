@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
 from app.domain.sources.enrichment import CandidateEnrichmentRun
+from app.domain.sources.models import ContentCandidate, SourceDocument
 from app.domain.sources.rewrite import CandidateRewriteRun
 from app.repositories.ai_settings import ChannelAISettingsRepo
 from app.repositories.sources_v2 import SourcesRepo
@@ -38,19 +39,25 @@ def test_ai_activity_reports_usage_counts_and_safe_run_metadata() -> None:
                     value="https://example.com/activity.xml",
                     reuse_policy="rewrite_with_attribution",
                 )
-                document, _ = await repo.upsert_document(
-                    connector=connector,
-                    external_id="activity-entry",
-                    title="Private source",
-                    content="SECRET SOURCE BODY MUST NEVER ENTER AI ACTIVITY READ MODEL",
-                    source_url="https://example.com/private",
-                    metadata={"reuse_policy": "rewrite_with_attribution"},
+                document = await repo.add_document(
+                    SourceDocument(
+                        connector_id=int(connector.id),
+                        channel_id=601,
+                        external_id="activity-entry",
+                        title="Private source",
+                        content="SECRET SOURCE BODY MUST NEVER ENTER AI ACTIVITY READ MODEL",
+                        content_hash="d" * 64,
+                        source_url="https://example.com/private",
+                        meta={"reuse_policy": "rewrite_with_attribution"},
+                    )
                 )
-                candidate = await repo.ensure_candidate(
-                    source_document_id=document.id,
-                    channel_id=601,
-                    suggested_action="rewrite",
-                    metadata={"reuse_policy": "rewrite_with_attribution"},
+                candidate = await repo.add_candidate(
+                    ContentCandidate(
+                        source_document_id=int(document.id),
+                        channel_id=601,
+                        suggested_action="rewrite",
+                        meta={"reuse_policy": "rewrite_with_attribution"},
+                    )
                 )
                 session.add_all(
                     [
