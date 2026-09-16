@@ -319,6 +319,7 @@ class StudioChannelOnboardingRequestService:
                     status="processing",
                     selected_chat_id=int(selected_chat_id),
                 )
+                .execution_options(synchronize_session=False)
             )
             await session.commit()
             if claim.rowcount != 1:
