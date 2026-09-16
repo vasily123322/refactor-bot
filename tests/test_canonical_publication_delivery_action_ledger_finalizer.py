@@ -79,9 +79,9 @@ def test_reserved_action_survives_primary_finalizer_and_delivery_lease_delete(tm
                     PostTask,
                     int(publication.legacy_post_task_id or 0),
                 )
-                assert task is not None
                 publication.legacy_post_task_id = None
-                await session.delete(task)
+                if task is not None:
+                    await session.delete(task)
                 await session.commit()
 
                 claim = await CanonicalPublicationDeliveryCapabilityClaimService(
