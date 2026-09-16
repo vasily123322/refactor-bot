@@ -115,6 +115,7 @@ def test_reserved_action_survives_primary_finalizer_and_delivery_lease_delete(tm
                     message_ids=[2301],
                     result_link="https://t.me/c/187001/2301",
                     finished_at=now + timedelta(seconds=2),
+                    now=now + timedelta(seconds=2),
                 )
                 assert finalized.outcome == "published"
 
