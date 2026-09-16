@@ -1,0 +1,76 @@
+name: Self-hosted runner diagnostic
+
+on:
+  push:
+    branches:
+      - agent/self-hosted-ci-bootstrap
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-hosted-diagnostic-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnostic:
+    name: Self-hosted execution diagnostic
+    runs-on: [self-hosted, linux, x64, refactor-bot-ci]
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact workflow ref
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          clean: true
+          fetch-depth: 1
+
+      - name: Prove runner allocation
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner_name=${RUNNER_NAME}"
+          echo "runner_os=${RUNNER_OS}"
+          echo "runner_arch=${RUNNER_ARCH}"
+          echo "workspace=${GITHUB_WORKSPACE}"
+          uname -a
+          git --version
+
+      - name: Configure diagnostic Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+          cache: false
+
+      - name: Configure diagnostic Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Prove toolchain visibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          python --version
+          node --version
+          npm --version
+
+      - name: Prove repository checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f requirements.txt
+          test -f studio/package.json
+          git rev-parse HEAD
+          git status --short
+          echo "self-hosted diagnostic OK"
+
+      - name: Clean checked-out repository
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard HEAD || true
+          git clean -ffdx || true

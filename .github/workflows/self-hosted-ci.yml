@@ -1,0 +1,165 @@
+name: Self-hosted CI
+run-name: Self-hosted CI control ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - agent/self-hosted-ci-workflow
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Exact 40-hex commit SHA to validate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-hosted-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Exact-SHA backend + Studio validation
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+       github.actor == 'vasily123322' &&
+       startsWith(github.event.head_commit.message, 'validate-sha: '))
+    runs-on: [self-hosted, linux, x64, refactor-bot-ci]
+    timeout-minutes: 45
+    env:
+      BOT_TOKEN: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+      API_ID: "123456"
+      API_HASH: "0123456789abcdef0123456789abcdef"
+      DB_URL: "sqlite+aiosqlite:///:memory:"
+      DB_SECRET_KEY: "ci-only-database-secret-key-0123456789abcdef"
+      PYTHONPATH: "."
+
+    steps:
+      - name: Resolve exact requested commit
+        id: target
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_SHA: ${{ inputs.commit_sha }}
+          PUSH_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            target="${DISPATCH_SHA}"
+          else
+            first_line="${PUSH_MESSAGE%%$'\n'*}"
+            target="${first_line#validate-sha: }"
+          fi
+          if [[ ! "${target}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "target must be an exact lowercase 40-hex Git commit SHA" >&2
+            exit 2
+          fi
+          echo "sha=${target}" >> "${GITHUB_OUTPUT}"
+          echo "requested_sha=${target}"
+
+      - name: Checkout exact commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ steps.target.outputs.sha }}
+          persist-credentials: false
+          clean: true
+          fetch-depth: 1
+
+      - name: Prove exact checkout and runner allocation
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          test "${actual_sha}" = "${TARGET_SHA}"
+          echo "validated_sha=${actual_sha}"
+          echo "runner_name=${RUNNER_NAME}"
+          echo "runner_os=${RUNNER_OS}"
+          echo "runner_arch=${RUNNER_ARCH}"
+          uname -a
+
+      - name: Configure Python 3.10
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.10"
+          cache: false
+
+      - name: Install backend dependencies on Python 3.10
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Python 3.10 secret scan
+        run: python scripts/secret_scan.py
+
+      - name: Python 3.10 Ruff correctness gate
+        run: ruff check app tests scripts
+
+      - name: Python 3.10 compile sources
+        run: python -m compileall -q app tests scripts
+
+      - name: Python 3.10 Alembic upgrade gate
+        run: python -m alembic -c alembic.ini upgrade head
+
+      - name: Python 3.10 full test suite
+        run: pytest -q
+
+      - name: Configure Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+          cache: false
+
+      - name: Install backend dependencies on Python 3.12
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Python 3.12 secret scan
+        run: python scripts/secret_scan.py
+
+      - name: Python 3.12 Ruff correctness gate
+        run: ruff check app tests scripts
+
+      - name: Python 3.12 compile sources
+        run: python -m compileall -q app tests scripts
+
+      - name: Python 3.12 Alembic upgrade gate
+        run: python -m alembic -c alembic.ini upgrade head
+
+      - name: Python 3.12 full test suite
+        run: pytest -q
+
+      - name: Configure Node 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install Studio dependencies
+        working-directory: studio
+        run: npm install --no-audit --no-fund
+
+      - name: Test Studio adapters
+        working-directory: studio
+        run: npm run test
+
+      - name: Build Studio
+        working-directory: studio
+        run: npm run build
+
+      - name: Clean checked-out repository
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard HEAD || true
+          git clean -ffdx || true
