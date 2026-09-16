@@ -12,7 +12,7 @@ from app.services.canonical_scheduler_admission import (
     CanonicalSchedulerAdmissionKind,
     CanonicalSchedulerAdmissionService,
 )
-from app.services.publication_execution_mode import execution_mode_from_runtime_options
+from app.services.publication_execution_mode import execution_mode_from_legacy_payload
 from app.workers.canonical_recovery_scheduler import Scheduler as RecoveryScheduler
 
 
@@ -73,7 +73,7 @@ def _linked(*, options=None, repeat_rule=None, schedule_entry_id=20):
         channel_id=2,
         content_item_id=3,
         content_revision=4,
-        execution_mode=execution_mode_from_runtime_options(options),
+        execution_mode=execution_mode_from_legacy_payload(options),
         meta={"runtime_options": options},
     )
     task = SimpleNamespace(id=1, status="pending")
