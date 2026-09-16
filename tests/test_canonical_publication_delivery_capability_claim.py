@@ -66,11 +66,23 @@ async def _seed(
             repeat_rule=repeat_rule,
         )
         publication_id = int(publication.id)
+        task = await session.get(PostTask, int(publication.legacy_post_task_id or 0))
         if retire_transport:
-            task = await session.get(PostTask, int(publication.legacy_post_task_id or 0))
-            assert task is not None
             publication.legacy_post_task_id = None
-            await session.delete(task)
+            if task is not None:
+                await session.delete(task)
+            await session.commit()
+        elif task is None:
+            task = PostTask(
+                channel_id=int(channel.id),
+                status="pending",
+                payload={"content_item_id": int(item.id)},
+                dedupe_key=f"capability-linked-{seed}",
+                scheduled_at=scheduled_at,
+            )
+            session.add(task)
+            await session.flush()
+            publication.legacy_post_task_id = int(task.id)
             await session.commit()
         return publication_id
 
