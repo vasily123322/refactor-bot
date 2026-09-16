@@ -4,7 +4,6 @@ from types import MethodType, SimpleNamespace
 
 import pytest
 
-import app.services.canonical_scheduler_admission as admission_module
 import app.workers.canonical_repeat_continuation_scheduler as scheduler_module
 from app.domain.models import PostTask
 from app.domain.publishing.models import ScheduleEntry
@@ -13,6 +12,7 @@ from app.services.canonical_scheduler_admission import (
     CanonicalSchedulerAdmissionKind,
     CanonicalSchedulerAdmissionService,
 )
+from app.services.publication_execution_mode import execution_mode_from_runtime_options
 from app.workers.canonical_recovery_scheduler import Scheduler as RecoveryScheduler
 
 
@@ -73,6 +73,7 @@ def _linked(*, options=None, repeat_rule=None, schedule_entry_id=20):
         channel_id=2,
         content_item_id=3,
         content_revision=4,
+        execution_mode=execution_mode_from_runtime_options(options),
         meta={"runtime_options": options},
     )
     task = SimpleNamespace(id=1, status="pending")
@@ -88,10 +89,15 @@ def _linked(*, options=None, repeat_rule=None, schedule_entry_id=20):
     return publication, task, schedule
 
 
-async def _classify(monkeypatch, *, options=None, repeat_rule=None, started=False, scalar_values=()):
+async def _classify(
+    _monkeypatch,
+    *,
+    options=None,
+    repeat_rule=None,
+    started=False,
+    scalar_values=(),
+):
     publication, task, schedule = _linked(options=options, repeat_rule=repeat_rule)
-    monkeypatch.setattr(admission_module, "_nonrepeat_profile_started", lambda _name: started)
-    monkeypatch.setattr(admission_module, "canonical_publication_delivery_repeat_started", lambda: started)
     session = _Session(
         publications=[publication],
         task=task,
@@ -131,10 +137,11 @@ async def test_report_is_exact_legacy_fallback(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_supported_profile_not_started_is_explicit_rollout_fallback(monkeypatch):
+async def test_supported_profile_not_started_still_requires_canonical_proof(monkeypatch):
     result = await _classify(monkeypatch, options={}, started=False)
-    assert result.kind is CanonicalSchedulerAdmissionKind.LEGACY_ROLLOUT_NOT_STARTED
+    assert result.kind is CanonicalSchedulerAdmissionKind.CANONICAL_PROOF_REQUIRED
     assert result.profile == "plain"
+    assert result.legacy_allowed is False
 
 
 @pytest.mark.asyncio
@@ -182,7 +189,6 @@ async def test_supported_started_parity_drift_does_not_fall_back_to_legacy(monke
 @pytest.mark.asyncio
 async def test_malformed_linked_identity_fails_closed(monkeypatch):
     publication, task, _schedule = _linked(schedule_entry_id=None)
-    monkeypatch.setattr(admission_module, "_nonrepeat_profile_started", lambda _name: True)
     result = await CanonicalSchedulerAdmissionService(
         _Session(publications=[publication], task=task)
     ).classify(task_id=1)
@@ -235,20 +241,17 @@ async def test_proof_exception_fails_closed_instead_of_legacy(monkeypatch):
     assert session.rollbacks == 1
 
 
-def test_repeat_started_predicate_uses_live_started_fact(monkeypatch):
-    calls = []
-
-    def _live_started():
-        calls.append("live")
-        return False
-
-    monkeypatch.setattr(
-        admission_module,
-        "canonical_publication_delivery_repeat_time_pin_started",
-        _live_started,
+@pytest.mark.asyncio
+async def test_repeat_profile_ownership_is_independent_of_started_readiness(monkeypatch):
+    result = await _classify(
+        monkeypatch,
+        options={"pin_on": True},
+        repeat_rule={"enabled": True, "seconds": 3600},
+        started=False,
     )
-    assert admission_module._repeat_profile_started("time_pin") is False
-    assert calls == ["live"]
+    assert result.kind is CanonicalSchedulerAdmissionKind.CANONICAL_PROOF_REQUIRED
+    assert result.profile == "pin"
+    assert result.repeat is True
 
 
 @pytest.mark.asyncio
@@ -287,7 +290,7 @@ async def test_historical_unlinked_claim_reaches_legacy_parent(monkeypatch):
     monkeypatch.setattr(scheduler_module, "CanonicalSchedulerAdmissionService", _AdmissionService)
     monkeypatch.setattr(RecoveryScheduler, "_mark_processing", _parent_mark)
     scheduler = object.__new__(scheduler_module.Scheduler)
-    post = SimpleNamespace(id=1)
+    post = SimpleNamespace(id=1, status="pending")
     session = _Session(task=post)
     items = [post]
     await scheduler._mark_processing(session, items)
