@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 
 import pytest
 from sqlalchemy import select
@@ -22,22 +23,29 @@ async def _seed(session, *, channel_id: int, policy: str, content: str, summary:
         value="https://example.com/feed.xml",
         reuse_policy=policy,
     )
-    document, _ = await repo.upsert_document(
-        connector=connector,
-        external_id=f"entry-{policy}",
-        title="Source title",
-        content=content,
-        source_url="https://example.com/article",
-        metadata={"reuse_policy": policy},
+    document = await repo.add_document(
+        SourceDocument(
+            connector_id=int(connector.id),
+            channel_id=channel_id,
+            external_id=f"entry-{policy}",
+            title="Source title",
+            content=content,
+            content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            source_url="https://example.com/article",
+            meta={"reuse_policy": policy},
+        )
     )
-    candidate = await repo.ensure_candidate(
-        source_document_id=document.id,
-        channel_id=channel_id,
-        suggested_action="review",
-        metadata={"reuse_policy": policy},
+    candidate = await repo.add_candidate(
+        ContentCandidate(
+            source_document_id=int(document.id),
+            channel_id=channel_id,
+            suggested_action="review",
+            summary=summary,
+            meta={"reuse_policy": policy},
+        )
     )
-    candidate.summary = summary
     await session.commit()
+    await session.refresh(candidate)
     return candidate
 
 
