@@ -22,6 +22,13 @@ from app.services.canonical_schedule_materializer import (
     materialize_new_canonical_occurrence,
 )
 from app.services.legacy_content_mirror import mirror_legacy_post_task
+from app.services.posting_dedupe import acquire_posting_dedupe_lock
+from app.services.publication_execution_mode import (
+    CANONICAL_SCHEDULING_OUTCOME,
+    LEGACY_ALLOWLISTED_SCHEDULING_OUTCOME,
+    UnsupportedSchedulingProfileError,
+    scheduling_boundary_from_legacy_payload,
+)
 import os
 import asyncio
 import re as _re
@@ -162,33 +169,53 @@ class PostingService:
         async def _schedule_in_session(
             session: AsyncSession,
         ) -> PostTask | Publication:
-            repo = PostsRepo(session)
-            if dedupe_key:
-                legacy_dup = await repo.get_by_dedupe(dedupe_key)
-                if legacy_dup is not None:
-                    return legacy_dup
-                canonical_dup = await find_direct_canonical_by_dedupe(
-                    session, dedupe_key
+            boundary = scheduling_boundary_from_legacy_payload(payload)
+            if boundary.outcome not in {
+                CANONICAL_SCHEDULING_OUTCOME,
+                LEGACY_ALLOWLISTED_SCHEDULING_OUTCOME,
+            }:
+                raise UnsupportedSchedulingProfileError(
+                    f"unsupported scheduling profile: {boundary.reason}"
                 )
-                if canonical_dup is not None:
-                    return canonical_dup
 
+            repo = PostsRepo(session)
             try:
-                canonical = await materialize_new_canonical_occurrence(
-                    session,
-                    channel_id=int(channel_id),
-                    payload=payload,
-                    scheduled_at=when,
-                    dedupe_key=dedupe_key,
-                    commit=False,
-                )
-                if canonical is not None:
+                if boundary.outcome == CANONICAL_SCHEDULING_OUTCOME:
+                    canonical = await materialize_new_canonical_occurrence(
+                        session,
+                        channel_id=int(channel_id),
+                        payload=payload,
+                        scheduled_at=when,
+                        dedupe_key=dedupe_key,
+                        boundary=boundary,
+                        commit=False,
+                    )
                     await session.commit()
                     await session.refresh(canonical)
                     return canonical
 
-                # Intentional legacy, historical provenance and unsupported content
-                # retain the exact executable PostTask + mirror transaction.
+                # The only fresh PostTask permission is the explicit #509-retained
+                # mixed positive time+views scheduling outcome. Re-check dedupe only
+                # after taking the same durable mutex used by canonical materialization.
+                if boundary.outcome != LEGACY_ALLOWLISTED_SCHEDULING_OUTCOME:
+                    raise UnsupportedSchedulingProfileError(
+                        f"fresh legacy transport is not allowlisted: {boundary.reason}"
+                    )
+                if dedupe_key:
+                    await acquire_posting_dedupe_lock(session, str(dedupe_key))
+                    legacy_dup = await repo.get_by_dedupe(dedupe_key)
+                    if legacy_dup is not None:
+                        await session.commit()
+                        await session.refresh(legacy_dup)
+                        return legacy_dup
+                    canonical_dup = await find_direct_canonical_by_dedupe(
+                        session, dedupe_key
+                    )
+                    if canonical_dup is not None:
+                        await session.commit()
+                        await session.refresh(canonical_dup)
+                        return canonical_dup
+
                 post = PostTask(
                     channel_id=channel_id,
                     payload=payload,
