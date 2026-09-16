@@ -53,6 +53,10 @@ def test_inconsistent_linked_transport_is_rejected_before_provider_call(tmp_path
                 publication = await LegacyPublicationBridge(session).queue(
                     content_item_id=int(item.id),
                     scheduled_at=datetime(2026, 8, 10, 8, 0, tzinfo=timezone.utc),
+                    runtime_options={
+                        "autodelete_seconds": 3600,
+                        "autodelete_views": 100,
+                    },
                 )
                 schedule = await session.get(
                     ScheduleEntry, int(publication.schedule_entry_id or 0)
