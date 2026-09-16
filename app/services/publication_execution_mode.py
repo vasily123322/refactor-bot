@@ -244,10 +244,15 @@ def scheduling_boundary_from_legacy_payload(
 
 def execution_mode_from_runtime_options(
     runtime_options: Mapping[str, Any] | None,
-) -> str | None:
-    """Classify fresh immutable queue-time runtime intent without live readiness facts."""
+) -> str:
+    """Return fresh queue ownership, rejecting runtime intent with no owner."""
 
-    return scheduling_boundary_from_runtime_options(runtime_options).execution_mode
+    boundary = scheduling_boundary_from_runtime_options(runtime_options)
+    if boundary.execution_mode is None:
+        raise UnsupportedSchedulingProfileError(
+            f"unsupported scheduling profile: {boundary.reason}"
+        )
+    return boundary.execution_mode
 
 
 def execution_mode_from_legacy_payload(
