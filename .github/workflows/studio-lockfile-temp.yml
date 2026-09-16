@@ -1,0 +1,30 @@
+name: Studio lockfile refresh
+
+on:
+  pull_request:
+    paths:
+      - studio/package.json
+      - studio/package-lock.json
+      - .github/workflows/studio-lockfile-temp.yml
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Refresh lockfile
+        working-directory: studio
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Upload lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-package-lock
+          path: studio/package-lock.json
