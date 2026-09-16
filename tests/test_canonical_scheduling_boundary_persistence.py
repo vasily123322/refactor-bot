@@ -135,12 +135,21 @@ def test_posting_supported_report_profiles_persist_only_canonical_owner(
             "autodelete_views": "100",
         },
         {
+            "type": "unsupported_boundary_fixture",
+            "text": "Unsupported fresh content",
+        },
+        {
             "type": "text",
             "text": "Fresh request with legacy provenance",
             "_publication_id": 123,
         },
     ],
-    ids=["report-only", "malformed-runtime", "legacy-provenance"],
+    ids=[
+        "report-only",
+        "malformed-runtime",
+        "unsupported-content",
+        "legacy-provenance",
+    ],
 )
 def test_posting_reject_rolls_back_without_canonical_or_legacy_owner(payload) -> None:
     async def run() -> None:
