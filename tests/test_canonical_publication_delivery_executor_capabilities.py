@@ -114,7 +114,7 @@ def test_executor_rejects_runtime_options_before_claim_or_provider_call(tmp_path
             publication_id = await _seed(
                 Session,
                 seed=1,
-                runtime_options={"silent": True},
+                runtime_options={"autodelete_seconds": 60},
             )
             sender = _TrackingSender()
 
