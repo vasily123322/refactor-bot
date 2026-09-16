@@ -62,17 +62,32 @@ async def _seed(
             int(publication.schedule_entry_id or 0),
         )
         task = await session.get(PostTask, int(publication.legacy_post_task_id or 0))
-        assert schedule is not None and task is not None
+        assert schedule is not None
+
+        if task is None and not unlink:
+            task = PostTask(
+                channel_id=int(channel.id),
+                status="pending",
+                payload={"autodelete_views": 100},
+                dedupe_key=f"test-views-state-compat:{int(publication.id)}",
+                scheduled_at=schedule.scheduled_at,
+            )
+            session.add(task)
+            await session.flush()
+            publication.legacy_post_task_id = int(task.id)
+
         if published:
             publication.status = "published"
             schedule.status = "completed"
-            task.status = "done"
+            if task is not None:
+                task.status = "done"
             publication.telegram_message_ids = [99000 + seed_id]
-        if unlink:
+        if unlink and task is not None:
             publication.legacy_post_task_id = None
             await session.delete(task)
+        task_id = int(task.id) if task is not None else 0
         await session.commit()
-        return int(publication.id), int(schedule.id), int(task.id)
+        return int(publication.id), int(schedule.id), task_id
 
 
 def test_sync_intent_creates_due_state_and_clear_removes_it(tmp_path) -> None:

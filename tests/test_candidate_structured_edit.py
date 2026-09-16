@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 
 import pytest
 from sqlalchemy import select
@@ -8,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
 from app.domain.content import PostDocument
-from app.domain.sources.models import ContentCandidate
+from app.domain.sources.models import ContentCandidate, SourceDocument
 from app.domain.sources.rewrite import CandidateRewriteRun
 from app.repositories.sources_v2 import SourcesRepo
 from app.services.candidate_rewrite import CandidateRewriteError, CandidateRewriteService, RewriteInput, RewriteOutput, candidate_rewrite_input_hash
@@ -19,8 +20,26 @@ from app.services.candidate_structured_rewrite_ai import STRUCTURED_REWRITE_GENE
 async def _seed(session, channel_id: int):
     repo = SourcesRepo(session)
     connector = await repo.create_connector(channel_id=channel_id, kind="rss", value=f"https://example.com/{channel_id}.xml", reuse_policy="rewrite_with_attribution")
-    document, _ = await repo.upsert_document(connector=connector, external_id=f"edit-{channel_id}", title="Source", content="Source factual body about a confirmed launch.", source_url="https://example.com/source", metadata={"reuse_policy": "rewrite_with_attribution"})
-    candidate = await repo.ensure_candidate(source_document_id=document.id, channel_id=channel_id, suggested_action="rewrite", metadata={"reuse_policy": "rewrite_with_attribution"})
+    content = "Source factual body about a confirmed launch."
+    document = SourceDocument(
+        connector_id=int(connector.id),
+        channel_id=int(channel_id),
+        external_id=f"edit-{channel_id}",
+        title="Source",
+        content=content,
+        content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        source_url="https://example.com/source",
+        meta={"reuse_policy": "rewrite_with_attribution"},
+    )
+    await repo.add_document(document)
+    candidate = ContentCandidate(
+        source_document_id=int(document.id),
+        channel_id=int(channel_id),
+        suggested_action="rewrite",
+        meta={"reuse_policy": "rewrite_with_attribution"},
+    )
+    await repo.add_candidate(candidate)
+    await session.commit()
     return document, candidate
 
 

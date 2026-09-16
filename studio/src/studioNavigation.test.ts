@@ -25,15 +25,13 @@ describe('Studio Telegram BackButton navigation', () => {
 
   it('uses the existing navigate callback instead of maintaining a parallel history stack', () => {
     const navigate = vi.fn();
-    let listener: VoidFunction | null = null;
     const dispose = vi.fn();
-    const bind = vi.fn((next: VoidFunction) => {
-      listener = next;
-      return dispose;
-    });
+    const bind = vi.fn((_next: VoidFunction) => dispose);
 
     expect(bindStudioTelegramBackNavigation('sources', navigate, bind)).toBe(dispose);
     expect(bind).toHaveBeenCalledTimes(1);
+    const listener = bind.mock.calls[0]?.[0];
+    expect(listener).toBeTypeOf('function');
     listener?.();
     expect(navigate).toHaveBeenCalledTimes(1);
     expect(navigate).toHaveBeenCalledWith('content');

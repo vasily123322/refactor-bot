@@ -73,30 +73,47 @@ async def _seed(
             ),
             created_by_tg_user_id=user_id,
         )
+        options = dict(runtime_options or {"autodelete_seconds": 3600})
         publication = await LegacyPublicationBridge(session).queue(
             content_item_id=int(item.id),
             repeat_rule={"enabled": True, "seconds": 3600} if repeat else None,
-            runtime_options=runtime_options or {"autodelete_seconds": 3600},
+            runtime_options=options,
         )
-        task_id = int(publication.legacy_post_task_id or 0)
         schedule_id = int(publication.schedule_entry_id or 0)
-        task = await session.get(PostTask, task_id)
         schedule = await session.get(ScheduleEntry, schedule_id)
-        assert task is not None and schedule is not None
-        task.status = "done"
+        task = await session.get(PostTask, int(publication.legacy_post_task_id or 0))
+        assert schedule is not None
+
+        # Canonical profiles are PostTask-free. Only the guard case that explicitly
+        # asks for a linked compatibility transport should synthesize one.
+        if task is None and not unlink:
+            task = PostTask(
+                channel_id=int(channel.id),
+                status="pending",
+                payload=dict(options),
+                dedupe_key=f"test-autodelete-compat:{int(publication.id)}",
+                scheduled_at=schedule.scheduled_at,
+            )
+            session.add(task)
+            await session.flush()
+            publication.legacy_post_task_id = int(task.id)
+
+        if task is not None:
+            task.status = "done"
         publication.status = "published"
         schedule.status = "completed"
         publication.telegram_message_ids = list(message_ids or [98001, 98002])
         publication.meta = {
             **dict(publication.meta or {}),
-            "runtime_options": dict(runtime_options or {"autodelete_seconds": 3600}),
+            "runtime_options": options,
             AUTODELETE_RUNTIME_META_KEY: {
                 "scheduled_at": due_at.astimezone(timezone.utc).isoformat(),
                 "effective_seconds": 3600,
                 "deleted": False,
             },
         }
-        if unlink:
+        task_id = int(task.id) if task is not None else 0
+        if unlink and task is not None:
             publication.legacy_post_task_id = None
             await session.delete(task)
         await session.commit()

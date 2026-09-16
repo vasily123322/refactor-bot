@@ -66,9 +66,9 @@ async def _claimed(Session, *, seed: int, now: datetime, ttl_seconds: int = 180)
             runtime_options={},
         )
         task = await session.get(PostTask, int(publication.legacy_post_task_id or 0))
-        assert task is not None
         publication.legacy_post_task_id = None
-        await session.delete(task)
+        if task is not None:
+            await session.delete(task)
         await session.commit()
 
         claim = await CanonicalPublicationDeliveryCapabilityClaimService(

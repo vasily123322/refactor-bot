@@ -85,7 +85,7 @@ def _message(
     if media_group_id is not None:
         payload["media_group_id"] = media_group_id
     if edit_date is not None:
-        payload["edit_date"] = edit_date
+        payload["edit_date"] = int(edit_date.timestamp())
     if reply_to_message_id is not None:
         payload["reply_to_message"] = {
             "message_id": reply_to_message_id,

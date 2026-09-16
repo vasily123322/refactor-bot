@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import hashlib
 
 import pytest
 from sqlalchemy import select
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
 from app.domain.sources.enrichment import CandidateEnrichmentRun
+from app.domain.sources.models import ContentCandidate, SourceDocument
 from app.repositories.sources_v2 import SourcesRepo
 from app.services.candidate_enrichment import (
     CandidateEnrichmentError,
@@ -27,20 +29,29 @@ async def _seed(session, *, channel_id: int = 101, content: str = "First sentenc
         value="https://example.com/feed.xml",
         reuse_policy="summarize",
     )
-    document, _ = await repo.upsert_document(
-        connector=connector,
-        external_id="entry-1",
-        title="Enrichment topic",
-        content=content,
-        source_url="https://example.com/article",
-        metadata={"reuse_policy": "summarize"},
+    document = await repo.add_document(
+        SourceDocument(
+            connector_id=int(connector.id),
+            channel_id=channel_id,
+            external_id="entry-1",
+            title="Enrichment topic",
+            content=content,
+            content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            source_url="https://example.com/article",
+            meta={"reuse_policy": "summarize"},
+        )
     )
-    candidate = await repo.ensure_candidate(
-        source_document_id=document.id,
-        channel_id=channel_id,
-        suggested_action="summarize",
-        metadata={"reuse_policy": "summarize"},
+    candidate = await repo.add_candidate(
+        ContentCandidate(
+            source_document_id=int(document.id),
+            channel_id=channel_id,
+            suggested_action="summarize",
+            meta={"reuse_policy": "summarize"},
+        )
     )
+    await session.commit()
+    await session.refresh(document)
+    await session.refresh(candidate)
     return connector, document, candidate
 
 
@@ -95,21 +106,21 @@ def test_source_snapshot_change_creates_a_new_enrichment_run() -> None:
                 await conn.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             async with Session() as session:
-                connector, document, candidate = await _seed(session, channel_id=102)
+                _, document, candidate = await _seed(session, channel_id=102)
                 service = CandidateEnrichmentService(session)
                 first = await service.enrich(
                     channel_id=102,
                     candidate_id=candidate.id,
                     provider=LocalCandidateEnricher(),
                 )
-                await SourcesRepo(session).upsert_document(
-                    connector=connector,
-                    external_id=document.external_id,
-                    title=document.title,
-                    content="Updated source snapshot. Different second sentence.",
-                    source_url=document.source_url,
-                    metadata={"reuse_policy": "summarize"},
-                )
+                updated_content = "Updated source snapshot. Different second sentence."
+                document.content = updated_content
+                document.content_hash = hashlib.sha256(
+                    updated_content.encode("utf-8")
+                ).hexdigest()
+                document.meta = {"reuse_policy": "summarize"}
+                await session.commit()
+                await session.refresh(document)
                 second = await service.enrich(
                     channel_id=102,
                     candidate_id=candidate.id,

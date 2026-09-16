@@ -46,7 +46,10 @@ async def _seed_linked(Session, *, seed: int) -> tuple[int, int]:
         publication = await LegacyPublicationBridge(session).queue(
             content_item_id=int(item.id),
             scheduled_at=datetime.now(timezone.utc) - timedelta(minutes=1),
-            runtime_options={},
+            runtime_options={
+                "autodelete_seconds": 3600,
+                "autodelete_views": 100,
+            },
         )
         assert publication.legacy_post_task_id is not None
         return int(publication.id), int(publication.legacy_post_task_id)

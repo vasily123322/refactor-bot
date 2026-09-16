@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -18,6 +19,9 @@ from app.services.canonical_publication_delivery_claim import (
 )
 from app.services.canonical_publication_delivery_finalizer import (
     CanonicalPublicationDeliveryFinalizer,
+)
+from app.services.canonical_publication_delivery_planner import (
+    CanonicalPublicationDeliveryPlan,
 )
 from app.services.scheduler_errors import UNKNOWN_DELIVERY_ERROR
 
@@ -53,17 +57,18 @@ def test_expired_delivery_lease_requires_recovery_ownership_before_terminal_stat
                 )
                 session.add(channel)
                 await session.commit()
+                document = PostDocument(
+                    blocks=[
+                        {
+                            "id": "b1",
+                            "type": "text",
+                            "text": "Expired canonical delivery",
+                        }
+                    ]
+                )
                 item = await ContentRepo(session).create(
                     channel_id=int(channel.id),
-                    document=PostDocument(
-                        blocks=[
-                            {
-                                "id": "b1",
-                                "type": "text",
-                                "text": "Expired canonical delivery",
-                            }
-                        ]
-                    ),
+                    document=document,
                     created_by_tg_user_id=int(owner.tg_user_id),
                 )
                 schedule = ScheduleEntry(
@@ -94,6 +99,24 @@ def test_expired_delivery_lease_requires_recovery_ownership_before_terminal_stat
                 session.add(publication)
                 await session.flush()
                 publication_id = int(publication.id)
+                plan = CanonicalPublicationDeliveryPlan(
+                    publication_id=publication_id,
+                    schedule_entry_id=int(schedule.id),
+                    channel_id=int(channel.id),
+                    telegram_chat_id=int(channel.tg_chat_id),
+                    content_item_id=int(item.id),
+                    content_revision=int(item.current_revision),
+                    scheduled_at=scheduled_at,
+                    timezone="UTC",
+                    document_snapshot=json.dumps(
+                        document.to_dict(),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    runtime_options_snapshot="{}",
+                    repeat_rule_snapshot="{}",
+                )
                 session.add_all(
                     [
                         PublicationAttempt(
@@ -127,6 +150,7 @@ def test_expired_delivery_lease_requires_recovery_ownership_before_terminal_stat
                 finalizer = CanonicalPublicationDeliveryFinalizer(session)
                 stale_result = await finalizer.complete_success(
                     stale,
+                    plan=plan,
                     message_ids=[901],
                     now=recovery_now,
                     finished_at=recovery_now,

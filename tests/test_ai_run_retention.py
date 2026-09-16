@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
 from app.domain.sources.enrichment import CandidateEnrichmentRun
+from app.domain.sources.models import ContentCandidate, SourceDocument
 from app.domain.sources.rewrite import CandidateRewriteRun
 from app.repositories.sources_v2 import SourcesRepo
 from app.services.ai_run_retention import AIRunRetentionService
@@ -20,15 +21,21 @@ async def _candidate(session, *, channel_id: int, status: str):
         kind="rss",
         value=f"https://example.com/{channel_id}.xml",
     )
-    document, _ = await repo.upsert_document(
-        connector=connector,
-        external_id=f"retention-{channel_id}",
-        content="Retention source body",
+    document = await repo.add_document(
+        SourceDocument(
+            connector_id=int(connector.id),
+            channel_id=channel_id,
+            external_id=f"retention-{channel_id}",
+            content="Retention source body",
+            content_hash=f"{channel_id:064x}",
+        )
     )
-    candidate = await repo.ensure_candidate(
-        source_document_id=document.id,
-        channel_id=channel_id,
-        suggested_action="research",
+    candidate = await repo.add_candidate(
+        ContentCandidate(
+            source_document_id=int(document.id),
+            channel_id=channel_id,
+            suggested_action="research",
+        )
     )
     candidate.status = status
     await session.commit()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from aiogram.types import Message
@@ -61,6 +62,15 @@ def _dump(value: Any) -> Any:
     if callable(model_dump):
         return model_dump(mode="json", exclude_none=True)
     return value
+
+
+def _telegram_datetime_iso(value: datetime | int | float) -> str:
+    if isinstance(value, datetime):
+        normalized = value
+        if normalized.tzinfo is None:
+            normalized = normalized.replace(tzinfo=timezone.utc)
+        return normalized.astimezone(timezone.utc).isoformat()
+    return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
 
 
 def _content(message: Message) -> str:
@@ -171,7 +181,7 @@ class TelegramChannelDMIngestionService:
         if message.media_group_id is not None:
             metadata["telegram_media_group_id"] = str(message.media_group_id)
         if message.edit_date is not None:
-            metadata["telegram_edit_date"] = message.edit_date.isoformat()
+            metadata["telegram_edit_date"] = _telegram_datetime_iso(message.edit_date)
 
         result = await self.reconciler.reconcile(
             context.connector,

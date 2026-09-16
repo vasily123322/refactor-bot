@@ -39,26 +39,31 @@ def upgrade() -> None:
             "prepared_button_id",
             name="uq_studio_channel_onboarding_prepared_button_id",
         ),
+        if_not_exists=True,
     )
     op.create_index(
         "ix_studio_channel_onboarding_requests_request_id",
         "studio_channel_onboarding_requests",
         ["request_id"],
+        if_not_exists=True,
     )
     op.create_index(
         "ix_studio_channel_onboarding_requests_client_id",
         "studio_channel_onboarding_requests",
         ["client_id"],
+        if_not_exists=True,
     )
     op.create_index(
         "ix_studio_channel_onboarding_requests_expected_tg_user_id",
         "studio_channel_onboarding_requests",
         ["expected_tg_user_id"],
+        if_not_exists=True,
     )
     op.create_index(
         "ix_studio_channel_onboarding_requests_status",
         "studio_channel_onboarding_requests",
         ["status"],
+        if_not_exists=True,
     )
 
 
@@ -66,17 +71,21 @@ def downgrade() -> None:
     op.drop_index(
         "ix_studio_channel_onboarding_requests_status",
         table_name="studio_channel_onboarding_requests",
+        if_exists=True,
     )
     op.drop_index(
         "ix_studio_channel_onboarding_requests_expected_tg_user_id",
         table_name="studio_channel_onboarding_requests",
+        if_exists=True,
     )
     op.drop_index(
         "ix_studio_channel_onboarding_requests_client_id",
         table_name="studio_channel_onboarding_requests",
+        if_exists=True,
     )
     op.drop_index(
         "ix_studio_channel_onboarding_requests_request_id",
         table_name="studio_channel_onboarding_requests",
+        if_exists=True,
     )
-    op.drop_table("studio_channel_onboarding_requests")
+    op.drop_table("studio_channel_onboarding_requests", if_exists=True)

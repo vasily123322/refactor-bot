@@ -117,6 +117,7 @@ def _approved_service(original: Message) -> Message:
             "date": datetime(2026, 8, 18, 1, tzinfo=timezone.utc),
             "chat": {"id": DM_CHAT_ID, "type": "private"},
             "suggested_post_approved": {
+                "send_date": int(datetime(2026, 8, 18, 1, tzinfo=timezone.utc).timestamp()),
                 "suggested_post_message": original.model_dump(
                     mode="json", by_alias=True, exclude_none=True
                 ),

@@ -213,12 +213,12 @@ class CanonicalSchedulerAdmissionService:
             )
 
         scheduler_lease = await self.session.scalar(
-            select(SchedulerTaskLease.id)
+            select(SchedulerTaskLease.task_id)
             .where(SchedulerTaskLease.task_id == safe_task_id)
             .limit(1)
         )
         canonical_lease = await self.session.scalar(
-            select(PublicationDeliveryLease.id)
+            select(PublicationDeliveryLease.publication_id)
             .where(PublicationDeliveryLease.publication_id == publication_id)
             .limit(1)
         )

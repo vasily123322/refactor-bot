@@ -69,13 +69,21 @@ async def _seed(Session, *, tg_user_id: int, tg_chat_id: int):
             ),
         )
         publication = await LegacyPublicationBridge(session).queue(
-            content_item_id=int(item.id)
+            content_item_id=int(item.id),
+            runtime_options={"autodelete_seconds": 1, "autodelete_report": True},
         )
+        task = await session.get(PostTask, int(publication.legacy_post_task_id or 0))
+        assert task is not None
+        payload = dict(task.payload or {})
+        payload.pop("autodelete_seconds", None)
+        payload.pop("autodelete_report", None)
+        task.payload = payload
+        await session.commit()
         return (
             int(channel.id),
             int(channel.tg_chat_id),
             int(publication.id),
-            int(publication.legacy_post_task_id or 0),
+            int(task.id),
         )
 
 

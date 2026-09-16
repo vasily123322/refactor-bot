@@ -78,9 +78,9 @@ async def _seed(
             repeat_rule=repeat_rule,
         )
         task = await session.get(PostTask, int(publication.legacy_post_task_id or 0))
-        assert task is not None
         publication.legacy_post_task_id = None
-        await session.delete(task)
+        if task is not None:
+            await session.delete(task)
         await session.commit()
         return int(publication.id)
 
@@ -114,7 +114,7 @@ def test_executor_rejects_runtime_options_before_claim_or_provider_call(tmp_path
             publication_id = await _seed(
                 Session,
                 seed=1,
-                runtime_options={"silent": True},
+                runtime_options={"autodelete_seconds": 60},
             )
             sender = _TrackingSender()
 

@@ -97,36 +97,43 @@ def upgrade() -> None:
             "(handoff_started_at IS NOT NULL AND handoff_idempotency_key IS NOT NULL)",
             name="ck_channel_dm_reply_intent_handoff_pair",
         ),
+        if_not_exists=True,
     )
     op.create_index(
         "ix_channel_dm_reply_intents_candidate_id",
         "channel_dm_reply_intents",
         ["candidate_id"],
+        if_not_exists=True,
     )
     op.create_index(
         "ix_channel_dm_reply_intents_source_document_id",
         "channel_dm_reply_intents",
         ["source_document_id"],
+        if_not_exists=True,
     )
     op.create_index(
         "ix_channel_dm_reply_intents_owner_client_id",
         "channel_dm_reply_intents",
         ["owner_client_id"],
+        if_not_exists=True,
     )
     op.create_index(
         "ix_channel_dm_reply_intents_state",
         "channel_dm_reply_intents",
         ["state"],
+        if_not_exists=True,
     )
     op.create_index(
         "ix_channel_dm_reply_intent_candidate_state",
         "channel_dm_reply_intents",
         ["candidate_id", "state", "id"],
+        if_not_exists=True,
     )
     op.create_index(
         "ix_channel_dm_reply_intent_owner_state",
         "channel_dm_reply_intents",
         ["owner_client_id", "state", "id"],
+        if_not_exists=True,
     )
 
 
@@ -134,22 +141,31 @@ def downgrade() -> None:
     op.drop_index(
         "ix_channel_dm_reply_intent_owner_state",
         table_name="channel_dm_reply_intents",
+        if_exists=True,
     )
     op.drop_index(
         "ix_channel_dm_reply_intent_candidate_state",
         table_name="channel_dm_reply_intents",
+        if_exists=True,
     )
-    op.drop_index("ix_channel_dm_reply_intents_state", table_name="channel_dm_reply_intents")
+    op.drop_index(
+        "ix_channel_dm_reply_intents_state",
+        table_name="channel_dm_reply_intents",
+        if_exists=True,
+    )
     op.drop_index(
         "ix_channel_dm_reply_intents_owner_client_id",
         table_name="channel_dm_reply_intents",
+        if_exists=True,
     )
     op.drop_index(
         "ix_channel_dm_reply_intents_source_document_id",
         table_name="channel_dm_reply_intents",
+        if_exists=True,
     )
     op.drop_index(
         "ix_channel_dm_reply_intents_candidate_id",
         table_name="channel_dm_reply_intents",
+        if_exists=True,
     )
-    op.drop_table("channel_dm_reply_intents")
+    op.drop_table("channel_dm_reply_intents", if_exists=True)

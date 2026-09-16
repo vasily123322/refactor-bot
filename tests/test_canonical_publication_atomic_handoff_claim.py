@@ -52,7 +52,10 @@ async def _seed_linked(Session, *, seed: int, now: datetime) -> tuple[int, int]:
         publication = await LegacyPublicationBridge(session).queue(
             content_item_id=int(item.id),
             scheduled_at=now - timedelta(minutes=1),
-            runtime_options={},
+            runtime_options={
+                "autodelete_seconds": 3600,
+                "autodelete_report": True,
+            },
         )
         assert publication.legacy_post_task_id is not None
         return int(publication.id), int(publication.legacy_post_task_id)
@@ -78,6 +81,7 @@ def test_atomic_handoff_success_has_no_committed_transport_free_queued_window(tm
                     holder="atomic-handoff-test",
                     ttl_seconds=120,
                     at=now,
+                    allow_time_autodelete=True,
                 )
                 assert result.outcome == "claimed"
                 assert result.claim is not None
@@ -169,6 +173,7 @@ def test_preclaim_rejection_rolls_back_cutover_and_restores_pending_posttask(
                     holder="rejecting-claim",
                     ttl_seconds=120,
                     at=now,
+                    allow_time_autodelete=True,
                 )
                 assert result.outcome == "claim_unavailable"
                 assert result.claim is None
@@ -227,6 +232,7 @@ def test_scheduler_claim_still_wins_before_atomic_transfer(tmp_path) -> None:
                     holder="canonical-late",
                     ttl_seconds=120,
                     at=now + timedelta(seconds=1),
+                    allow_time_autodelete=True,
                 )
                 assert result.outcome == "contention"
 

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.domain.models import PostTask
 from app.domain.scheduler import SchedulerTaskLease
@@ -233,10 +234,16 @@ class SchedulerTaskLeaseService:
         return bool(int(result.rowcount or 0))
 
     async def current(self, task_id: int) -> SchedulerTaskLease | None:
-        return (
+        lease = (
             await self.session.execute(
                 select(SchedulerTaskLease).where(
                     SchedulerTaskLease.task_id == int(task_id)
                 )
             )
         ).scalar_one_or_none()
+        if lease is not None:
+            # SQLite drops timezone metadata for DateTime(timezone=True). Normalize
+            # the loaded value without marking the ORM row dirty so all callers see
+            # the same UTC-aware service contract as PostgreSQL callers.
+            set_committed_value(lease, "expires_at", _utc(lease.expires_at))
+        return lease

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 
 import pytest
 from sqlalchemy import select
@@ -37,20 +38,30 @@ async def _seed(session, *, channel_id: int):
         value=f"https://example.com/{channel_id}.xml",
         reuse_policy="rewrite_with_attribution",
     )
-    document, _ = await repo.upsert_document(
-        connector=connector,
-        external_id=f"entry-{channel_id}",
-        title="Source title",
-        content="Source body for structured rewrite authority.",
-        source_url="https://example.com/source",
-        metadata={"reuse_policy": "rewrite_with_attribution"},
+    content = "Source body for structured rewrite authority."
+    document = await repo.add_document(
+        SourceDocument(
+            connector_id=int(connector.id),
+            channel_id=channel_id,
+            external_id=f"entry-{channel_id}",
+            title="Source title",
+            content=content,
+            content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            source_url="https://example.com/source",
+            meta={"reuse_policy": "rewrite_with_attribution"},
+        )
     )
-    candidate = await repo.ensure_candidate(
-        source_document_id=document.id,
-        channel_id=channel_id,
-        suggested_action="rewrite",
-        metadata={"reuse_policy": "rewrite_with_attribution"},
+    candidate = await repo.add_candidate(
+        ContentCandidate(
+            source_document_id=int(document.id),
+            channel_id=channel_id,
+            suggested_action="rewrite",
+            meta={"reuse_policy": "rewrite_with_attribution"},
+        )
     )
+    await session.commit()
+    await session.refresh(document)
+    await session.refresh(candidate)
     return connector, document, candidate
 
 

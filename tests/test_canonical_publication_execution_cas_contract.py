@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import app.domain  # noqa: F401 register complete ORM metadata
 from app.core.db import Base
 from app.domain.content import PostDocument
-from app.domain.models import Channel, Client, PostTask
+from app.domain.models import Channel, Client
 from app.domain.publication_delivery import PublicationDeliveryLease
 from app.domain.publishing.models import Publication, PublicationAttempt
 from app.repositories.content import ContentRepo
@@ -70,10 +70,7 @@ async def _seed_transport_retired_publication(
             scheduled_at=scheduled_at,
             runtime_options={},
         )
-        task = await session.get(PostTask, int(publication.legacy_post_task_id or 0))
-        assert task is not None
-        publication.legacy_post_task_id = None
-        await session.delete(task)
+        assert publication.legacy_post_task_id is None
         await session.commit()
         return int(publication.id)
 
