@@ -8,7 +8,6 @@ from app.services.publication_execution_mode import (
     INTENTIONAL_LEGACY_EXECUTION_MODE,
     LEGACY_ALLOWLISTED_SCHEDULING_OUTCOME,
     UNSUPPORTED_REJECT_SCHEDULING_OUTCOME,
-    UnsupportedSchedulingProfileError,
     execution_mode_from_legacy_payload,
     execution_mode_from_runtime_options,
     scheduling_boundary_from_legacy_payload,
@@ -72,13 +71,14 @@ def test_mixed_time_and_views_is_retained_fresh_legacy():
         {"unknown": True},
     ],
 )
-def test_unsupported_fresh_profiles_fail_closed(options):
+def test_unsupported_fresh_profiles_have_explicit_reject_outcome(options):
     decision = scheduling_boundary_from_runtime_options(options)
 
     assert decision.outcome == UNSUPPORTED_REJECT_SCHEDULING_OUTCOME
     assert decision.execution_mode is None
-    with pytest.raises(UnsupportedSchedulingProfileError):
-        execution_mode_from_runtime_options(options)
+    # Classification remains side-effect free for internal proof/planner callers.
+    # Fresh queue entrypoints consume the explicit boundary and reject before writes.
+    assert execution_mode_from_runtime_options(options) is None
 
 
 def test_historical_report_profile_keeps_legacy_ownership():
