@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import app.domain  # noqa: F401 register complete ORM metadata
 from app.core.db import Base
 from app.domain.content import PostDocument
-from app.domain.models import Channel, Client, PostTask
+from app.domain.models import Channel, Client
 from app.domain.publishing.models import Publication, PublicationAttempt
 from app.repositories.content import ContentRepo
 from app.services.canonical_publication_delivery_capability_claim import (
@@ -108,13 +108,7 @@ def test_executor_persists_forward_destination_snapshot_before_provider_call(tmp
                     scheduled_at=now - timedelta(minutes=1),
                     runtime_options={"forward_to": [int(target.id)]},
                 )
-                task = await session.get(
-                    PostTask,
-                    int(publication.legacy_post_task_id or 0),
-                )
-                assert task is not None
-                publication.legacy_post_task_id = None
-                await session.delete(task)
+                assert publication.legacy_post_task_id is None
                 await session.commit()
                 publication_id = int(publication.id)
                 target_id = int(target.id)
