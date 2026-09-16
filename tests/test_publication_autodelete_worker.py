@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
 from app.domain.content import PostDocument
-from app.domain.models import Channel, Client, PostTask
+from app.domain.models import Channel, Client
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.repositories.content import ContentRepo
 from app.services.publication_autodelete_lease import PublicationAutodeleteLeaseService
@@ -68,13 +68,11 @@ async def _seed(
             content_item_id=int(item.id),
             runtime_options={"autodelete_seconds": 3600},
         )
-        task_id = int(publication.legacy_post_task_id or 0)
         schedule = await session.get(
             ScheduleEntry, int(publication.schedule_entry_id or 0)
         )
-        task = await session.get(PostTask, task_id)
-        assert schedule is not None and task is not None
-        task.status = "done"
+        assert schedule is not None
+        assert publication.legacy_post_task_id is None
         publication.status = "published"
         schedule.status = "completed"
         publication.telegram_message_ids = list(message_ids or [99000 + seed_id])
@@ -87,8 +85,6 @@ async def _seed(
                 "deleted": False,
             },
         }
-        publication.legacy_post_task_id = None
-        await session.delete(task)
         await session.commit()
         return int(publication.id), chat_id
 
