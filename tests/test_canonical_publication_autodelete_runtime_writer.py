@@ -66,7 +66,7 @@ async def _seed_published(
             int(publication.schedule_entry_id or 0),
         )
         task = await session.get(PostTask, int(publication.legacy_post_task_id or 0))
-        assert schedule is not None and task is not None
+        assert schedule is not None
 
         publication.legacy_post_task_id = None
         publication.status = "published"
@@ -84,7 +84,8 @@ async def _seed_published(
                 finished_at=delivered_at,
             )
         )
-        await session.delete(task)
+        if task is not None:
+            await session.delete(task)
         await session.commit()
         return int(publication.id)
 
