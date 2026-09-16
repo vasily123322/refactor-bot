@@ -57,9 +57,9 @@ async def _seed_publication(Session, *, seed: int) -> tuple[int, int]:
             runtime_options={},
         )
         task = await session.get(PostTask, int(publication.legacy_post_task_id or 0))
-        assert task is not None
         publication.legacy_post_task_id = None
-        await session.delete(task)
+        if task is not None:
+            await session.delete(task)
         await session.commit()
         return int(publication.id), int(channel.id)
 
