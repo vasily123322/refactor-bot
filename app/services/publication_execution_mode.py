@@ -48,7 +48,6 @@ class UnsupportedSchedulingProfileError(ValueError):
     """Raised when fresh scheduling intent has no supported execution owner."""
 
 
-
 def _positive_int(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return None
@@ -244,15 +243,16 @@ def scheduling_boundary_from_legacy_payload(
 
 def execution_mode_from_runtime_options(
     runtime_options: Mapping[str, Any] | None,
-) -> str:
-    """Return fresh queue ownership, rejecting runtime intent with no owner."""
+) -> str | None:
+    """Classify normalized fresh runtime intent without performing admission.
 
-    boundary = scheduling_boundary_from_runtime_options(runtime_options)
-    if boundary.execution_mode is None:
-        raise UnsupportedSchedulingProfileError(
-            f"unsupported scheduling profile: {boundary.reason}"
-        )
-    return boundary.execution_mode
+    Fresh scheduling entrypoints must use `scheduling_boundary_from_runtime_options`
+    and reject the explicit unsupported outcome before persistence. Keeping this helper
+    non-raising avoids turning internal capability/proof classification into a queue
+    admission side effect.
+    """
+
+    return scheduling_boundary_from_runtime_options(runtime_options).execution_mode
 
 
 def execution_mode_from_legacy_payload(
