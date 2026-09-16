@@ -42,32 +42,42 @@ def upgrade() -> None:
             "state IN ('pending', 'sent', 'failed', 'uncertain')",
             name="ck_channel_dm_reply_state",
         ),
+        if_not_exists=True,
     )
     op.create_index(
         "ix_channel_dm_reply_commands_candidate_id",
         "channel_dm_reply_commands",
         ["candidate_id"],
+        if_not_exists=True,
     )
     op.create_index(
         "ix_channel_dm_reply_commands_source_document_id",
         "channel_dm_reply_commands",
         ["source_document_id"],
+        if_not_exists=True,
     )
     op.create_index(
         "ix_channel_dm_reply_commands_state",
         "channel_dm_reply_commands",
         ["state"],
+        if_not_exists=True,
     )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_channel_dm_reply_commands_state", table_name="channel_dm_reply_commands")
+    op.drop_index(
+        "ix_channel_dm_reply_commands_state",
+        table_name="channel_dm_reply_commands",
+        if_exists=True,
+    )
     op.drop_index(
         "ix_channel_dm_reply_commands_source_document_id",
         table_name="channel_dm_reply_commands",
+        if_exists=True,
     )
     op.drop_index(
         "ix_channel_dm_reply_commands_candidate_id",
         table_name="channel_dm_reply_commands",
+        if_exists=True,
     )
-    op.drop_table("channel_dm_reply_commands")
+    op.drop_table("channel_dm_reply_commands", if_exists=True)
