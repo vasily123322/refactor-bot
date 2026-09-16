@@ -17,9 +17,7 @@ from app.repositories.content import ContentRepo
 from app.services.canonical_repeat_plan_reservation import (
     CanonicalRepeatPlanReservationService,
 )
-from app.services.canonical_repeat_transport_adapter import (
-    CanonicalRepeatTransportAdapter,
-)
+from app.services.canonical_repeat_transport_adapter import CanonicalRepeatTransportAdapter
 from app.services.canonical_scheduler_admission import (
     CanonicalSchedulerAdmissionKind,
     CanonicalSchedulerAdmissionService,
@@ -97,7 +95,6 @@ def test_posting_supported_report_profiles_persist_only_canonical_owner(
         engine, Session = await _new_db()
         try:
             _owner, channel = await _seed_channel(Session, 1)
-            when = datetime.now(timezone.utc) + timedelta(minutes=30)
             result = await PostingService(_Bot(), Session).schedule(
                 int(channel.id),
                 {
@@ -105,7 +102,7 @@ def test_posting_supported_report_profiles_persist_only_canonical_owner(
                     "text": "Supported report boundary",
                     **runtime_options,
                 },
-                when,
+                datetime.now(timezone.utc) + timedelta(minutes=30),
                 dedupe_key=f"boundary-report-{sorted(runtime_options)}",
             )
             assert isinstance(result, Publication)
@@ -117,9 +114,7 @@ def test_posting_supported_report_profiles_persist_only_canonical_owner(
                 assert persisted.legacy_post_task_id is None
                 assert dict(persisted.meta or {}).get("runtime_options") == runtime_options
                 schedules, publications, tasks, _revisions = await _counts(session)
-                assert schedules == 1
-                assert publications == 1
-                assert tasks == 0
+                assert (schedules, publications, tasks) == (1, 1, 0)
         finally:
             await engine.dispose()
 
@@ -140,11 +135,12 @@ def test_posting_supported_report_profiles_persist_only_canonical_owner(
             "autodelete_views": "100",
         },
         {
-            "type": "unsupported_boundary_fixture",
-            "text": "Unsupported content",
+            "type": "text",
+            "text": "Fresh request with legacy provenance",
+            "_publication_id": 123,
         },
     ],
-    ids=["report-only", "malformed-runtime", "unsupported-content"],
+    ids=["report-only", "malformed-runtime", "legacy-provenance"],
 )
 def test_posting_reject_rolls_back_without_canonical_or_legacy_owner(payload) -> None:
     async def run() -> None:
@@ -198,9 +194,7 @@ def test_posting_mixed_positive_time_views_is_only_fresh_posttask_allowlist() ->
                 ).scalar_one()
                 assert linked.execution_mode == INTENTIONAL_LEGACY_EXECUTION_MODE
                 schedules, publications, tasks, _revisions = await _counts(session)
-                assert schedules == 1
-                assert publications == 1
-                assert tasks == 1
+                assert (schedules, publications, tasks) == (1, 1, 1)
         finally:
             await engine.dispose()
 
@@ -237,9 +231,7 @@ def test_publication_bridge_supported_report_is_canonical_and_posttask_free() ->
                 assert publication.execution_mode == CANONICAL_EXECUTION_MODE
                 assert publication.legacy_post_task_id is None
                 schedules, publications, tasks, _revisions = await _counts(session)
-                assert schedules == 1
-                assert publications == 1
-                assert tasks == 0
+                assert (schedules, publications, tasks) == (1, 1, 0)
         finally:
             await engine.dispose()
 
@@ -272,10 +264,7 @@ def test_publication_bridge_reject_leaves_no_partial_schedule_or_transport() -> 
                         runtime_options={"autodelete_report": True},
                     )
                 schedules, publications, tasks, revisions = await _counts(session)
-                assert schedules == 0
-                assert publications == 0
-                assert tasks == 0
-                assert revisions == 1
+                assert (schedules, publications, tasks, revisions) == (0, 0, 0, 1)
         finally:
             await engine.dispose()
 
@@ -365,16 +354,14 @@ def test_fresh_canonical_repeat_report_continues_without_posttask() -> None:
                     "autodelete_report": True,
                 }
                 schedules, publications, tasks, _revisions = await _counts(session)
-                assert schedules == 2
-                assert publications == 2
-                assert tasks == 0
+                assert (schedules, publications, tasks) == (2, 2, 0)
         finally:
             await engine.dispose()
 
     asyncio.run(run())
 
 
-def test_historical_linked_repeat_report_remains_legacy_admitted() -> None:
+def test_historical_linked_repeat_report_remains_linked_legacy() -> None:
     async def run() -> None:
         engine, Session = await _new_db()
         try:
@@ -405,7 +392,7 @@ def test_historical_linked_repeat_report_remains_legacy_admitted() -> None:
                 admission = await CanonicalSchedulerAdmissionService(session).classify(
                     task_id=int(task.id)
                 )
-                assert admission.kind is CanonicalSchedulerAdmissionKind.LEGACY_REPORT
+                assert admission.kind is CanonicalSchedulerAdmissionKind.LEGACY_INTENTIONAL
                 assert admission.legacy_allowed is True
                 assert admission.repeat is True
 
