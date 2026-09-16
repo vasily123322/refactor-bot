@@ -13,6 +13,8 @@ from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.services.publication_execution_mode import (
     CANONICAL_EXECUTION_MODE,
+    CANONICAL_SCHEDULING_OUTCOME,
+    LEGACY_ALLOWLISTED_SCHEDULING_OUTCOME,
     scheduling_boundary_from_runtime_options,
 )
 from app.services.rich_media_assets import RichMediaAssetError, RichMediaAssetResolver
@@ -189,7 +191,10 @@ class LegacyPublicationBridge:
         runtime_intent = _runtime_intent(runtime_options, payload=payload)
         boundary = scheduling_boundary_from_runtime_options(runtime_intent)
         execution_mode = boundary.execution_mode
-        if execution_mode is None:
+        if boundary.outcome not in {
+            CANONICAL_SCHEDULING_OUTCOME,
+            LEGACY_ALLOWLISTED_SCHEDULING_OUTCOME,
+        } or execution_mode is None:
             raise PublicationBridgeError(
                 f"unsupported scheduling profile: {boundary.reason}"
             )
@@ -221,7 +226,11 @@ class LegacyPublicationBridge:
             await self.session.flush()
             publication.schedule_entry_id = int(schedule.id)
 
-            if execution_mode == CANONICAL_EXECUTION_MODE:
+            if boundary.outcome == CANONICAL_SCHEDULING_OUTCOME:
+                if execution_mode != CANONICAL_EXECUTION_MODE:
+                    raise PublicationBridgeError(
+                        "canonical scheduling outcome has non-canonical execution mode"
+                    )
                 if rule.get("enabled"):
                     # Canonical roots are deliberately PostTask-free. Use the durable
                     # Publication identity as the repeat-group anchor, matching the
@@ -239,6 +248,10 @@ class LegacyPublicationBridge:
                 await self.session.refresh(publication)
                 return publication
 
+            if boundary.outcome != LEGACY_ALLOWLISTED_SCHEDULING_OUTCOME:
+                raise PublicationBridgeError(
+                    f"fresh legacy transport is not allowlisted: {boundary.reason}"
+                )
             task = PostTask(
                 channel_id=int(item.channel_id),
                 status="pending",
