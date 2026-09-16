@@ -105,8 +105,25 @@ def test_historical_mixed_profile_keeps_legacy_ownership():
     )
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"type": "unsupported_boundary_fixture"},
+    ],
+    ids=["missing-content-type", "unknown-content-type"],
+)
+def test_fresh_legacy_payload_requires_supported_dispatch_content_type(payload):
+    decision = scheduling_boundary_from_legacy_payload(payload)
+
+    assert decision.outcome == UNSUPPORTED_REJECT_SCHEDULING_OUTCOME
+    assert decision.execution_mode is None
+    assert decision.reason == "unsupported_content_type"
+
+
 def test_repeat_metadata_preserves_supported_fresh_ownership():
     payload = {
+        "type": "text",
         "autodelete_seconds": 60,
         "autodelete_report": True,
         "repeat_on": True,
@@ -122,9 +139,9 @@ def test_repeat_metadata_preserves_supported_fresh_ownership():
 @pytest.mark.parametrize(
     "payload",
     [
-        {"repeat_on": "yes"},
-        {"repeat_on": True, "repeat_seconds": 0},
-        {"repeat_on": True, "repeat_seconds": "300"},
+        {"type": "text", "repeat_on": "yes"},
+        {"type": "text", "repeat_on": True, "repeat_seconds": 0},
+        {"type": "text", "repeat_on": True, "repeat_seconds": "300"},
     ],
 )
 def test_invalid_repeat_metadata_is_rejected(payload):
