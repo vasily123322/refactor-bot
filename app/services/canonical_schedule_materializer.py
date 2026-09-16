@@ -22,8 +22,9 @@ from app.services.posting_dedupe import acquire_posting_dedupe_lock
 from app.services.publication_bridge import _delivery_meta
 from app.services.publication_execution_mode import (
     CANONICAL_EXECUTION_MODE,
-    execution_mode_from_legacy_payload,
+    CANONICAL_SCHEDULING_OUTCOME,
     runtime_options_from_legacy_payload,
+    scheduling_boundary_from_legacy_payload,
 )
 from app.services.publication_runtime import (
     AUTODELETE_RUNTIME_META_KEY,
@@ -85,7 +86,10 @@ def _is_new_canonical_payload(payload: Mapping[str, Any]) -> bool:
         # Existing repeat transport/provenance remains on its established migration
         # path. Stage 5 already owns canonical PostTask-free successors.
         return False
-    return execution_mode_from_legacy_payload(payload) == CANONICAL_EXECUTION_MODE
+    return (
+        scheduling_boundary_from_legacy_payload(payload).outcome
+        == CANONICAL_SCHEDULING_OUTCOME
+    )
 
 
 async def _locked_existing_owner(
@@ -115,18 +119,16 @@ async def materialize_new_canonical_occurrence(
     dedupe_key: str | None = None,
     commit: bool = True,
 ) -> PostTask | Publication | None:
-    """Persist one new supported queue occurrence without compatibility PostTask.
+    """Persist one new supported canonical queue occurrence without PostTask.
 
-    Eligibility and runtime normalization reuse the same intrinsic legacy-payload
-    classifier used by the migration mirror. Content parsing also reuses the mirror's
-    normalized content boundary, while `_delivery_meta` remains the canonical writer
-    for immutable queue-time runtime intent.
+    Eligibility is the explicit fresh scheduling boundary. Content parsing reuses the
+    mirror's normalized content boundary, while `_delivery_meta` remains the canonical
+    writer for immutable queue-time runtime intent.
 
-    ``PostingService.schedule()`` calls this helper with ``commit=False`` before its
-    legacy fallback. For that caller, every fallback path first acquires the same durable
-    dedupe mutex used by canonical creation and leaves it held until the caller commits
-    either the canonical owner or the compatibility PostTask. This preserves the old
-    DB-global dedupe boundary across the new two-store execution split.
+    ``PostingService.schedule()`` calls this helper with ``commit=False`` after it has
+    already selected canonical ownership. A ``None`` result therefore means canonical
+    materialization could not prove the request and must be rejected by that ingress;
+    it is no longer permission to create a compatibility PostTask.
     """
 
     data = deepcopy(dict(payload or {}))
