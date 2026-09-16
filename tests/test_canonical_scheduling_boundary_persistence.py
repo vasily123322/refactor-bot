@@ -172,6 +172,54 @@ def test_posting_reject_rolls_back_without_canonical_or_legacy_owner(payload) ->
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    ("marker", "value"),
+    [
+        ("_publication_id", 123),
+        ("_content_item_id", 456),
+        ("_content_revision", 2),
+        ("_content_channel_id", 789),
+        ("repeat_group_id", 987),
+    ],
+    ids=[
+        "publication-id",
+        "content-item-id",
+        "content-revision",
+        "content-channel-id",
+        "repeat-group-id",
+    ],
+)
+def test_posting_mixed_time_views_rejects_historical_provenance_before_legacy_allowlist(
+    marker,
+    value,
+) -> None:
+    async def run() -> None:
+        engine, Session = await _new_db()
+        try:
+            _owner, channel = await _seed_channel(Session, 8)
+            payload = {
+                "type": "text",
+                "text": "Mixed fresh request with historical provenance",
+                "autodelete_seconds": 600,
+                "autodelete_views": 100,
+                marker: value,
+            }
+            with pytest.raises(UnsupportedSchedulingProfileError):
+                await PostingService(_Bot(), Session).schedule(
+                    int(channel.id),
+                    payload,
+                    datetime.now(timezone.utc) + timedelta(minutes=10),
+                    dedupe_key=f"boundary-mixed-provenance-{marker}",
+                )
+
+            async with Session() as session:
+                assert await _counts(session) == (0, 0, 0, 0)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_posting_mixed_positive_time_views_is_only_fresh_posttask_allowlist() -> None:
     async def run() -> None:
         engine, Session = await _new_db()
