@@ -25,6 +25,7 @@ from app.services.publication_execution_mode import (
     CANONICAL_SCHEDULING_OUTCOME,
     SchedulingBoundaryDecision,
     UnsupportedSchedulingProfileError,
+    has_historical_scheduling_provenance,
     scheduling_boundary_from_legacy_payload,
 )
 from app.services.publication_runtime import (
@@ -34,14 +35,6 @@ from app.services.publication_runtime import (
 from app.services.scheduling import as_utc
 
 
-_DIRECT_PROVENANCE_MARKERS = frozenset(
-    {
-        "_publication_id",
-        "_content_item_id",
-        "_content_revision",
-        "_content_channel_id",
-    }
-)
 _POSTING_DEDUPE_META_KEY = "posting_dedupe_key"
 
 
@@ -78,12 +71,6 @@ async def _find_existing_posting_owner(
     if legacy is not None:
         return legacy
     return await find_direct_canonical_by_dedupe(session, key)
-
-
-def _has_direct_legacy_provenance(payload: Mapping[str, Any]) -> bool:
-    if any(key in payload for key in _DIRECT_PROVENANCE_MARKERS):
-        return True
-    return payload.get("repeat_group_id") is not None
 
 
 async def _locked_existing_owner(
@@ -135,7 +122,7 @@ async def materialize_new_canonical_occurrence(
             "canonical scheduling outcome has non-canonical execution mode"
         )
 
-    if _has_direct_legacy_provenance(data):
+    if has_historical_scheduling_provenance(data):
         raise UnsupportedSchedulingProfileError(
             "fresh canonical scheduling does not accept legacy provenance"
         )
