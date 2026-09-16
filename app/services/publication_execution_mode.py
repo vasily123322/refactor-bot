@@ -22,6 +22,23 @@ SCHEDULING_BOUNDARY_OUTCOMES = frozenset(
     }
 )
 
+# Fresh PostingService delivery support must match the top-level payload types
+# actually handled by PostingService._dispatch(). Historical/migration parsing is
+# deliberately broader and remains owned by document_from_legacy_payload().
+FRESH_SCHEDULING_CONTENT_TYPES = frozenset(
+    {
+        "text",
+        "photo",
+        "video",
+        "video_note",
+        "animation",
+        "media_group",
+        "album",
+        "audio",
+        "voice",
+    }
+)
+
 _RUNTIME_OPTION_KEYS = frozenset(
     {
         "silent",
@@ -226,6 +243,15 @@ def scheduling_boundary_from_legacy_payload(
         source = {str(key): item for key, item in payload.items()}
     else:
         return _boundary_from_normalized_options(None)
+
+    content_type = source.get("type")
+    if not isinstance(content_type, str) or content_type not in FRESH_SCHEDULING_CONTENT_TYPES:
+        return SchedulingBoundaryDecision(
+            outcome=UNSUPPORTED_REJECT_SCHEDULING_OUTCOME,
+            execution_mode=None,
+            runtime_options=None,
+            reason="unsupported_content_type",
+        )
 
     if "repeat_on" in source:
         repeat_on = source.get("repeat_on")
