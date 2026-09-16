@@ -2,6 +2,8 @@
 
 Channel AI / Telegram posting bot (Hermes-like channel features). Read this before searching.
 
+> **Текущий план работ:** [`docs/AUDIT_2026-09.md`](docs/AUDIT_2026-09.md) — аудит, найденные дефекты (CI/тесты/сборка Studio) и приоритезированный чеклист. Выполнять по порядку, отмечать чекбоксы.
+
 ## Identity
 
 | | |
