@@ -39,6 +39,20 @@ FRESH_SCHEDULING_CONTENT_TYPES = frozenset(
     }
 )
 
+# These keys identify payloads that already belong to a historical/mirrored canonical
+# graph. Fresh scheduling must reject them before choosing either canonical or retained
+# legacy ownership. Normal fresh repeat configuration uses repeat_on/repeat_seconds and
+# is intentionally not provenance.
+FRESH_SCHEDULING_PROVENANCE_MARKERS = frozenset(
+    {
+        "_publication_id",
+        "_content_item_id",
+        "_content_revision",
+        "_content_channel_id",
+        "repeat_group_id",
+    }
+)
+
 _RUNTIME_OPTION_KEYS = frozenset(
     {
         "silent",
@@ -63,6 +77,12 @@ class SchedulingBoundaryDecision:
 
 class UnsupportedSchedulingProfileError(ValueError):
     """Raised when fresh scheduling intent has no supported execution owner."""
+
+
+def has_historical_scheduling_provenance(payload: Mapping[str, Any]) -> bool:
+    """Return whether a legacy-shaped payload already carries historical identity."""
+
+    return any(key in payload for key in FRESH_SCHEDULING_PROVENANCE_MARKERS)
 
 
 def _positive_int(value: Any) -> int | None:
@@ -243,6 +263,14 @@ def scheduling_boundary_from_legacy_payload(
         source = {str(key): item for key, item in payload.items()}
     else:
         return _boundary_from_normalized_options(None)
+
+    if has_historical_scheduling_provenance(source):
+        return SchedulingBoundaryDecision(
+            outcome=UNSUPPORTED_REJECT_SCHEDULING_OUTCOME,
+            execution_mode=None,
+            runtime_options=None,
+            reason="historical_provenance",
+        )
 
     content_type = source.get("type")
     if not isinstance(content_type, str) or content_type not in FRESH_SCHEDULING_CONTENT_TYPES:
