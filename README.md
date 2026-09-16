@@ -1,16 +1,16 @@
 [![Type Check](https://img.shields.io/badge/Type%20check-mypy-blueviolet)](#)
 [![Coverage](https://img.shields.io/badge/Coverage-pytest--cov-green)](#)
 
-# Project Title
+# refactor-bot
 
-This is a brief description of the project.
+Telegram bot for channel operations: posting and scheduling, source ingestion, AI-assisted generation and editing, and the Studio frontend.
 
 ## How to Run
 
 Activate the virtual environment first:
 
 ```bash
-source venv/bin/activate
+source .venv/bin/activate
 ```
 
 From the project root (e.g., `/home/refactor_bot`), run the dispatcher entry point:
@@ -81,7 +81,7 @@ alembic history
 Make sure the virtual environment is activated:
 
 ```bash
-source venv/bin/activate
+source .venv/bin/activate
 ```
 
 Then run all tests with coverage:

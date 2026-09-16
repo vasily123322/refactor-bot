@@ -68,7 +68,7 @@ python -m app.bot.dispatcher
 ### Edits
 
 - Follow `.cursor/AI_RULES.md`: minimal diffs, async-safe, settings via `app.core.config`.  
-- Root `AI_*.md` files are **not** authoritative — update code/tests, or archive docs later.  
+- Archived `docs/archive/AI_*.md` files are historical and **not** authoritative — code/tests win.  
 - Don't invent second storage for memory/profile outside `filters`.
 
 ### External bots / tokens / sessions

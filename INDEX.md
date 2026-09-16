@@ -10,7 +10,7 @@ Channel AI / Telegram posting bot (Hermes-like channel features). Read this befo
 | Product | Telegram bot for channels: posting, grab sources, AI generation, editor |
 | Entry | `python -m app.bot.dispatcher` |
 | Service | `refactor-bot.service` |
-| Branch | `master` |
+| Branch | `main` |
 
 ## Production (this host)
 
@@ -72,7 +72,7 @@ Channel AI / Telegram posting bot (Hermes-like channel features). Read this befo
 
 | Path | Why |
 |---|---|
-| `AI_FINAL_SUMMARY.md`, `AI_GENERATION_*.md`, `AI_SETUP.md` | Overlapping docs; **code + tests** win |
+| `docs/archive/AI_FINAL_SUMMARY.md`, `docs/archive/AI_GENERATION_*.md`, `docs/archive/AI_SETUP.md` | Historical overlapping docs; **code + tests** win |
 | `venv/` vs `.venv/` | Prefer **`.venv`** (systemd uses it) |
 | `data/`, `*.session`, `.env` | Runtime secrets |
 | `var/`, caches | Generated |
