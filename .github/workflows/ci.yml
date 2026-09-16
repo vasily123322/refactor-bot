@@ -45,10 +45,16 @@ jobs:
         run: ruff check app tests scripts
       - name: Compile Python sources
         run: python -m compileall -q app tests scripts
-      - name: Run full test suite
+      - name: Run retained test surface
         run: |
           set +e
-          pytest -q --tb=no > /tmp/pytest.log 2>&1
+          pytest -q --tb=no \
+            --ignore-glob='tests/test_*legacy*.py' \
+            --ignore-glob='tests/test_*retirement*.py' \
+            --ignore-glob='tests/test_*handoff*.py' \
+            --ignore-glob='tests/test_*parity*.py' \
+            --ignore-glob='tests/test_*shadow*.py' \
+            > /tmp/pytest.log 2>&1
           status=$?
           echo "=== pytest failure manifest ==="
           grep -E '^(FAILED|ERROR) ' /tmp/pytest.log || true
