@@ -383,6 +383,7 @@ class ChannelDMReplyService:
         await self.session.commit()
         command = await self.session.get(ChannelDMReplyCommand, int(command_id))
         assert command is not None
+        await self.session.refresh(command)
         return command
 
     async def _mark_dispatch_started(self, command_id: int) -> bool:
