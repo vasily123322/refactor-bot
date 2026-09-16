@@ -82,6 +82,33 @@ class SourceIngestionReconciliationService:
         self.session = session
         self.repo = SourcesRepo(session)
 
+    async def _ensure_savepoint_parent_transaction(self) -> None:
+        """Make nested uniqueness savepoints participate in the outer transaction.
+
+        Python's sqlite3 driver still defaults to legacy transaction control, and
+        aiosqlite inherits that behavior. In this mode SELECT and SAVEPOINT do not
+        emit a physical BEGIN. A SAVEPOINT opened first can therefore be released as
+        a standalone transaction, making an inserted SourceDocument survive a later
+        Session.rollback() if candidate creation fails.
+
+        SQLAlchemy's Session/Connection transaction can already be logically active
+        while the underlying SQLite driver is not physically in a transaction, so a
+        normal ``session.begin()`` alone is insufficient. For SQLite only, inspect
+        the real async driver connection and emit BEGIN exactly when needed. Other
+        databases retain SQLAlchemy's normal transaction handling.
+        """
+        if not self.session.in_transaction():
+            await self.session.begin()
+
+        connection = await self.session.connection()
+        if connection.dialect.name != "sqlite":
+            return
+
+        raw_connection = await connection.get_raw_connection()
+        driver_connection = raw_connection.driver_connection
+        if not bool(getattr(driver_connection, "in_transaction", False)):
+            await connection.exec_driver_sql("BEGIN")
+
     async def _load_or_create_document(
         self,
         *,
@@ -224,13 +251,7 @@ class SourceIngestionReconciliationService:
         if connector.id is None or connector.channel_id is None:
             raise SourceReconciliationError("trusted source connector must be persisted")
 
-        # SQLite may otherwise treat the first SAVEPOINT opened by begin_nested() as
-        # the effective outer transaction. Releasing that savepoint can make the
-        # document durable before candidate creation has succeeded, defeating the
-        # all-or-nothing reconciliation contract. Establish the outer transaction
-        # explicitly before either uniqueness savepoint is created.
-        if not self.session.in_transaction():
-            await self.session.begin()
+        await self._ensure_savepoint_parent_transaction()
 
         now = datetime.now(timezone.utc)
         try:
