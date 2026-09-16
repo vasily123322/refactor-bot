@@ -110,7 +110,7 @@ jobs:
           package-manager-cache: false
       - name: Install Studio dependencies
         working-directory: studio
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
       - name: Test Studio adapters
         working-directory: studio
         run: npm run test
