@@ -23,7 +23,7 @@ from app.services.publication_bridge import _delivery_meta
 from app.services.publication_execution_mode import (
     CANONICAL_EXECUTION_MODE,
     CANONICAL_SCHEDULING_OUTCOME,
-    LEGACY_ALLOWLISTED_SCHEDULING_OUTCOME,
+    SchedulingBoundaryDecision,
     UnsupportedSchedulingProfileError,
     scheduling_boundary_from_legacy_payload,
 )
@@ -111,33 +111,28 @@ async def materialize_new_canonical_occurrence(
     payload: Mapping[str, Any],
     scheduled_at: datetime | None,
     dedupe_key: str | None = None,
+    boundary: SchedulingBoundaryDecision | None = None,
     commit: bool = True,
-) -> PostTask | Publication | None:
-    """Persist one fresh schedule through the explicit ownership boundary.
+) -> PostTask | Publication:
+    """Persist one fresh canonical-owned schedule occurrence.
 
-    A Publication is returned for canonical ownership. ``None`` is reserved exclusively
-    for the named retained-legacy mixed time+views profile, allowing PostingService to
-    create its compatibility PostTask. Unsupported, malformed, or legacy-provenance
-    fresh requests raise instead of silently becoming executable PostTask rows.
+    This helper never authorizes retained legacy ownership and never uses ``None`` as an
+    ownership signal. Fresh ingress must classify first, call this helper only for an
+    explicit canonical decision, and handle an explicit allowlisted-legacy decision at
+    the PostTask-creating boundary itself.
     """
 
     data = deepcopy(dict(payload or {}))
-    boundary = scheduling_boundary_from_legacy_payload(data)
+    decision = boundary or scheduling_boundary_from_legacy_payload(data)
 
-    if boundary.outcome == LEGACY_ALLOWLISTED_SCHEDULING_OUTCOME:
-        if not commit:
-            existing = await _locked_existing_owner(
-                session,
-                dedupe_key=dedupe_key,
-                commit=False,
-            )
-            if existing is not None:
-                return existing
-        return None
-
-    if boundary.outcome != CANONICAL_SCHEDULING_OUTCOME:
+    if decision.outcome != CANONICAL_SCHEDULING_OUTCOME:
         raise UnsupportedSchedulingProfileError(
-            f"unsupported scheduling profile: {boundary.reason}"
+            f"canonical materializer requires canonical scheduling outcome: {decision.reason}"
+        )
+
+    if decision.execution_mode != CANONICAL_EXECUTION_MODE:
+        raise UnsupportedSchedulingProfileError(
+            "canonical scheduling outcome has non-canonical execution mode"
         )
 
     if _has_direct_legacy_provenance(data):
@@ -145,7 +140,7 @@ async def materialize_new_canonical_occurrence(
             "fresh canonical scheduling does not accept legacy provenance"
         )
 
-    runtime_options = boundary.runtime_options
+    runtime_options = decision.runtime_options
     if runtime_options is None:
         raise UnsupportedSchedulingProfileError(
             "canonical scheduling boundary produced no runtime options"
