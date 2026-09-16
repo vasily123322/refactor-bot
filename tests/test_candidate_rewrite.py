@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 
 import pytest
 from sqlalchemy import select
@@ -47,20 +48,26 @@ async def _seed(session, *, channel_id: int, policy: str = "rewrite_with_attribu
         value=f"https://example.com/{channel_id}.xml",
         reuse_policy=policy,
     )
-    document, _ = await repo.upsert_document(
-        connector=connector,
+    content = "SOURCE BODY MUST NOT BE COPIED VERBATIM."
+    document = SourceDocument(
+        connector_id=int(connector.id),
+        channel_id=int(channel_id),
         external_id=f"entry-{channel_id}",
         title="Source title",
-        content="SOURCE BODY MUST NOT BE COPIED VERBATIM.",
+        content=content,
+        content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
         source_url="https://example.com/article",
-        metadata={"reuse_policy": policy},
+        meta={"reuse_policy": policy},
     )
-    candidate = await repo.ensure_candidate(
-        source_document_id=document.id,
-        channel_id=channel_id,
+    await repo.add_document(document)
+    candidate = ContentCandidate(
+        source_document_id=int(document.id),
+        channel_id=int(channel_id),
         suggested_action="rewrite",
-        metadata={"reuse_policy": policy},
+        meta={"reuse_policy": policy},
     )
+    await repo.add_candidate(candidate)
+    await session.commit()
     return connector, document, candidate
 
 
