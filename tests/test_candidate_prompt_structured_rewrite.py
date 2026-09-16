@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
 from app.domain.content.models import ContentItem
+from app.domain.sources.models import ContentCandidate, SourceDocument
 from app.domain.sources.rewrite import CandidateRewriteRun
 from app.repositories.sources_v2 import SourcesRepo
 from app.services.candidate_current_structured_rewrite import CandidateCurrentStructuredRewriteService
@@ -58,20 +59,26 @@ async def _seed(session, *, channel_id: int = 821):
         value=f"https://example.com/{channel_id}.xml",
         reuse_policy="rewrite_with_attribution",
     )
-    document, _ = await repo.upsert_document(
-        connector=connector,
+    content = "Source facts about a product launch and its confirmed date."
+    document = SourceDocument(
+        connector_id=int(connector.id),
+        channel_id=int(channel_id),
         external_id="prompt-entry",
         title="Source title",
-        content="Source facts about a product launch and its confirmed date.",
+        content=content,
+        content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
         source_url="https://example.com/source",
-        metadata={"reuse_policy": "rewrite_with_attribution"},
+        meta={"reuse_policy": "rewrite_with_attribution"},
     )
-    candidate = await repo.ensure_candidate(
-        source_document_id=document.id,
-        channel_id=channel_id,
+    await repo.add_document(document)
+    candidate = ContentCandidate(
+        source_document_id=int(document.id),
+        channel_id=int(channel_id),
         suggested_action="rewrite",
-        metadata={"reuse_policy": "rewrite_with_attribution"},
+        meta={"reuse_policy": "rewrite_with_attribution"},
     )
+    await repo.add_candidate(candidate)
+    await session.commit()
     return document, candidate
 
 
