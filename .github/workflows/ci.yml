@@ -46,7 +46,7 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q app tests scripts
       - name: Run full test suite
-        run: pytest -q
+        run: pytest -q --maxfail=1
 
   studio:
     name: Telegram Studio frontend
