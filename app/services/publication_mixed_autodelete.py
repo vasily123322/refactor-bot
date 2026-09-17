@@ -252,7 +252,7 @@ class PublicationMixedAutodeleteService:
         schedule: ScheduleEntry,
         item: ContentItem,
         channel: Channel,
-        view_state: PublicationAutodeleteViewState,
+        view_state: PublicationAutodeleteViewState | None,
     ) -> tuple[_Candidate | None, PublicationMixedAutodeleteResult | None]:
         publication_id = int(publication.id)
         ids = tuple(normalize_telegram_message_ids(publication.telegram_message_ids))
@@ -317,6 +317,13 @@ class PublicationMixedAutodeleteService:
         effective_seconds = _positive_int(runtime.get("effective_seconds"))
         due_at, due_token = _runtime_due_at(runtime)
         if effective_seconds != seconds or due_at is None or due_token is None:
+            return None, PublicationMixedAutodeleteResult(
+                publication_id,
+                "ineligible",
+                threshold=views,
+                message_count=len(ids),
+            )
+        if view_state is None:
             return None, PublicationMixedAutodeleteResult(
                 publication_id,
                 "ineligible",
@@ -417,7 +424,7 @@ class PublicationMixedAutodeleteService:
                 ),
             )
             .join(Channel, Channel.id == Publication.channel_id)
-            .join(
+            .outerjoin(
                 PublicationAutodeleteViewState,
                 PublicationAutodeleteViewState.publication_id == Publication.id,
             )
