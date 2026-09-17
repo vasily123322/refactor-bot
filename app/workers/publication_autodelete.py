@@ -21,6 +21,10 @@ from app.services.publication_autodelete_lease import (
     PublicationAutodeleteLeaseHandle,
     PublicationAutodeleteLeaseService,
 )
+from app.services.publication_mixed_autodelete import (
+    PublicationMixedAutodeleteService,
+    PublicationMixedAutodeleteSyncConflict,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,9 +116,20 @@ class PublicationAutodeleteWorker:
     ):
         """Execute one leased delete through the worker's exact service profile.
 
-        Subclasses may narrow admission while reusing selection/lease/cancellation
-        semantics. The default remains the historical non-repeat time-autodelete service.
+        Mixed positive time+views is probed first and, when present, is routed through
+        the shared Publication-keyed SQL destructive authority. Non-mixed time profiles
+        continue through the established time-only service unchanged.
         """
+        mixed = await PublicationMixedAutodeleteService(
+            operation_session,
+            delete_provider=self.provider,
+            allow_report=True,
+        ).timer_delete_if_due(
+            int(publication_id),
+            lease=handle,
+        )
+        if mixed is not None:
+            return mixed
         return await PublicationAutodeleteService(
             operation_session,
             provider=self.provider,
@@ -185,7 +200,7 @@ class PublicationAutodeleteWorker:
                 # Expiry is safe and makes cancellation equivalent to process death.
                 release_after = False
                 raise
-            except PublicationAutodeleteSyncConflict:
+            except (PublicationAutodeleteSyncConflict, PublicationMixedAutodeleteSyncConflict):
                 conflicts += 1
             except Exception as exc:
                 failures += 1
