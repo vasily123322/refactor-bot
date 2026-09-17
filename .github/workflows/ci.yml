@@ -65,6 +65,8 @@ jobs:
             tests/test_canonical_publication_delivery_runtime_capability.py \
             tests/test_canonical_mixed_delivery_runtime.py \
             tests/test_canonical_mixed_autodelete.py \
+            tests/test_publication_autodelete.py \
+            tests/test_publication_autodelete_worker.py \
             tests/test_channel_dm_replies.py \
             tests/test_channel_dm_reply_global_idempotency.py \
             tests/test_channel_dm_reply_intents.py \
