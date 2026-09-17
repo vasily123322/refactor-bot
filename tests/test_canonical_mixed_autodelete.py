@@ -314,6 +314,93 @@ def test_concurrent_timer_views_race_has_exactly_one_delete_winner(tmp_path) -> 
     asyncio.run(run())
 
 
+
+def test_concurrent_views_timer_race_has_exactly_one_delete_winner(tmp_path) -> None:
+    async def run() -> None:
+        engine, Session = await _new_db(tmp_path / "views-first-race.db")
+        try:
+            now = datetime.now(timezone.utc)
+            _, chat_id, publication_id = await _seed(Session, seed=13, now=now)
+            entered = asyncio.Event()
+            release = asyncio.Event()
+
+            class _BlockingProvider(_Provider):
+                async def delete_message(self, *, chat_id: int, message_id: int) -> None:
+                    self.delete_calls.append((int(chat_id), int(message_id)))
+                    entered.set()
+                    await release.wait()
+
+            views_provider = _BlockingProvider()
+            timer_provider = _Provider()
+            lease = await _lease(Session, publication_id, "shared-views-first-race-lease")
+
+            async def views_trigger():
+                async with Session() as session:
+                    return await PublicationMixedAutodeleteService(
+                        session,
+                        view_source=_Views(),
+                        delete_provider=views_provider,
+                    ).views_evaluate_and_delete(publication_id, lease=lease, now=now)
+
+            views_task = asyncio.create_task(views_trigger())
+            await entered.wait()
+
+            async with Session() as session:
+                actions = (
+                    await session.execute(
+                        select(PublicationAutodeleteAction).where(
+                            PublicationAutodeleteAction.publication_id == publication_id
+                        )
+                    )
+                ).scalars().all()
+                assert len(actions) == 1
+                assert actions[0].state == "reserved"
+
+            async with Session() as session:
+                timer = await PublicationMixedAutodeleteService(
+                    session,
+                    delete_provider=timer_provider,
+                ).timer_delete_if_due(publication_id, now=now, lease=lease)
+
+            assert timer is not None and timer.outcome == "ambiguous"
+            assert timer_provider.delete_calls == []
+
+            async with Session() as session:
+                actions = (
+                    await session.execute(
+                        select(PublicationAutodeleteAction).where(
+                            PublicationAutodeleteAction.publication_id == publication_id
+                        )
+                    )
+                ).scalars().all()
+                assert len(actions) == 1
+                assert actions[0].state == "reserved"
+
+            release.set()
+            views = await views_task
+            assert views is not None and views.outcome == "deleted"
+            assert views_provider.delete_calls == [(chat_id, 95001)]
+            assert len(views_provider.delete_calls) + len(timer_provider.delete_calls) == 1
+
+            async with Session() as session:
+                action = (
+                    await session.execute(
+                        select(PublicationAutodeleteAction).where(
+                            PublicationAutodeleteAction.publication_id == publication_id
+                        )
+                    )
+                ).scalar_one()
+                assert action.state == "succeeded"
+                publication = await session.get(Publication, publication_id)
+                assert publication is not None
+                assert publication.meta[AUTODELETE_RUNTIME_META_KEY]["deleted"] is True
+                assert await session.get(PublicationAutodeleteViewState, publication_id) is None
+        finally:
+            release.set()
+            await engine.dispose()
+
+    asyncio.run(run())
+
 def test_committed_reserved_without_provider_call_is_permanent_no_replay(tmp_path) -> None:
     async def run() -> None:
         engine, Session = await _new_db(tmp_path / "reserved-no-replay.db")
