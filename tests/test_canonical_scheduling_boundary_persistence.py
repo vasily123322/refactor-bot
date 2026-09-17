@@ -535,7 +535,11 @@ def test_historical_linked_mixed_remains_intentional_legacy() -> None:
                 admission = await CanonicalSchedulerAdmissionService(session).classify(
                     task_id=int(task.id)
                 )
-                assert admission.kind is CanonicalSchedulerAdmissionKind.LEGACY_TIME_VIEWS
+                # Very old mirror rows do not carry canonical runtime_options metadata,
+                # so admission preserves their explicit intentional-legacy owner through
+                # the generic legacy kind. Exact linked mixed rows with durable options
+                # remain covered by the LEGACY_TIME_VIEWS admission regression suite.
+                assert admission.kind is CanonicalSchedulerAdmissionKind.LEGACY_INTENTIONAL
                 assert admission.legacy_allowed is True
         finally:
             await engine.dispose()
