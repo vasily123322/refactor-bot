@@ -55,6 +55,7 @@ class _Profile:
     forward_ids: tuple[int, ...]
     time_seconds: int | None
     views_threshold: int | None
+    autodelete_report: bool
 
 
 _ALLOWED_RUNTIME_KEYS = frozenset(
@@ -114,7 +115,7 @@ def _classify(options: dict[str, Any]) -> _Profile | None:
         return None
 
     report = options.get("autodelete_report", False)
-    if type(report) is not bool or report:
+    if type(report) is not bool:
         return None
 
     pin_on = options.get("pin_on") is True
@@ -147,6 +148,8 @@ def _classify(options: dict[str, Any]) -> _Profile | None:
         if views_threshold is None:
             return None
     if time_seconds is not None and views_threshold is not None:
+        return None
+    if report and time_seconds is None and views_threshold is None:
         return None
 
     if time_seconds is not None:
@@ -191,6 +194,7 @@ def _classify(options: dict[str, Any]) -> _Profile | None:
         forward_ids=forward_ids,
         time_seconds=time_seconds,
         views_threshold=views_threshold,
+        autodelete_report=report,
     )
 
 
@@ -326,7 +330,7 @@ class CanonicalPublicationNonrepeatSchedulerProofService:
                 or bool(parity.pin_on) is not profile.pin_on
                 or parity.time_autodelete_seconds != profile.time_seconds
                 or parity.views_autodelete_threshold != profile.views_threshold
-                or bool(parity.autodelete_report)
+                or bool(parity.autodelete_report) is not profile.autodelete_report
             ):
                 return None
             capability = parse_canonical_publication_delivery_runtime_capability(

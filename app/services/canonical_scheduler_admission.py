@@ -268,22 +268,10 @@ class CanonicalSchedulerAdmissionService:
             )
 
         # A canonical-owned row must still be internally consistent with its durable
-        # runtime intent. Fallback intent paired with canonical ownership is a conflict.
+        # runtime intent. Only the explicitly retained mixed time+views profile conflicts
+        # with canonical ownership after #508; report is canonical when paired with one
+        # supported delete trigger.
         if _is_exact_time_views_fallback(options):
-            return CanonicalSchedulerAdmission(
-                CanonicalSchedulerAdmissionKind.FAIL_CLOSED,
-                publication_id=publication_id,
-                repeat=repeat,
-            )
-        if _exact_report_fallback_profile(options) is not None:
-            return CanonicalSchedulerAdmission(
-                CanonicalSchedulerAdmissionKind.FAIL_CLOSED,
-                publication_id=publication_id,
-                repeat=repeat,
-            )
-
-        report = options.get("autodelete_report", False)
-        if type(report) is not bool or report:
             return CanonicalSchedulerAdmission(
                 CanonicalSchedulerAdmissionKind.FAIL_CLOSED,
                 publication_id=publication_id,

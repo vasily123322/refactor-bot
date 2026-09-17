@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -8,6 +9,48 @@ CANONICAL_EXECUTION_MODE = "canonical"
 INTENTIONAL_LEGACY_EXECUTION_MODE = "intentional_legacy"
 PUBLICATION_EXECUTION_MODES = frozenset(
     {CANONICAL_EXECUTION_MODE, INTENTIONAL_LEGACY_EXECUTION_MODE}
+)
+
+CANONICAL_SCHEDULING_OUTCOME = "canonical"
+LEGACY_ALLOWLISTED_SCHEDULING_OUTCOME = "legacy_allowlisted"
+UNSUPPORTED_REJECT_SCHEDULING_OUTCOME = "unsupported_reject"
+SCHEDULING_BOUNDARY_OUTCOMES = frozenset(
+    {
+        CANONICAL_SCHEDULING_OUTCOME,
+        LEGACY_ALLOWLISTED_SCHEDULING_OUTCOME,
+        UNSUPPORTED_REJECT_SCHEDULING_OUTCOME,
+    }
+)
+
+# Fresh PostingService delivery support must match the top-level payload types
+# actually handled by PostingService._dispatch(). Historical/migration parsing is
+# deliberately broader and remains owned by document_from_legacy_payload().
+FRESH_SCHEDULING_CONTENT_TYPES = frozenset(
+    {
+        "text",
+        "photo",
+        "video",
+        "video_note",
+        "animation",
+        "media_group",
+        "album",
+        "audio",
+        "voice",
+    }
+)
+
+# These keys identify payloads that already belong to a historical/mirrored canonical
+# graph. Fresh scheduling must reject them before choosing either canonical or retained
+# legacy ownership. Normal fresh repeat configuration uses repeat_on/repeat_seconds and
+# is intentionally not provenance.
+FRESH_SCHEDULING_PROVENANCE_MARKERS = frozenset(
+    {
+        "_publication_id",
+        "_content_item_id",
+        "_content_revision",
+        "_content_channel_id",
+        "repeat_group_id",
+    }
 )
 
 _RUNTIME_OPTION_KEYS = frozenset(
@@ -20,6 +63,26 @@ _RUNTIME_OPTION_KEYS = frozenset(
         "autodelete_report",
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class SchedulingBoundaryDecision:
+    """Queue-time ownership decision for one immutable delivery intent."""
+
+    outcome: str
+    execution_mode: str | None
+    runtime_options: dict[str, Any] | None
+    reason: str
+
+
+class UnsupportedSchedulingProfileError(ValueError):
+    """Raised when fresh scheduling intent has no supported execution owner."""
+
+
+def has_historical_scheduling_provenance(payload: Mapping[str, Any]) -> bool:
+    """Return whether a legacy-shaped payload already carries historical identity."""
+
+    return any(key in payload for key in FRESH_SCHEDULING_PROVENANCE_MARKERS)
 
 
 def _positive_int(value: Any) -> int | None:
@@ -95,25 +158,74 @@ def _normalize_runtime_options(
     return options
 
 
-def _mode_from_normalized_options(options: Mapping[str, Any]) -> str | None:
+def _fresh_mode_from_normalized_options(options: Mapping[str, Any]) -> str | None:
     has_time = "autodelete_seconds" in options
     has_views = "autodelete_views" in options
     report = options.get("autodelete_report") is True
 
-    # The mixed time+views scheduler profile is an explicit retained legacy contract.
-    # Report may also be present; time+views still wins the intentional fallback.
+    # #509 owns migration of the one retained legacy profile. Keep the allowlist
+    # intentionally exact and independent of any current worker-readiness facts.
     if has_time and has_views:
         return INTENTIONAL_LEGACY_EXECUTION_MODE
 
-    # Exact report fallback is supported only on an otherwise exact time/views profile.
+    # Report is a canonical side effect only when attached to one supported delete
+    # trigger. Report-only intent has no delete owner and therefore has no owner at all.
+    if report and not (has_time or has_views):
+        return None
+
+    # Every other normalized fresh profile is in the canonical ownership lattice:
+    # plain, pin, forward, time*, views*, and their supported report compositions.
+    return CANONICAL_EXECUTION_MODE
+
+
+def _historical_mode_from_normalized_options(options: Mapping[str, Any]) -> str | None:
+    """Preserve ownership encoded by legacy-shaped rows created before #508."""
+
+    has_time = "autodelete_seconds" in options
+    has_views = "autodelete_views" in options
+    report = options.get("autodelete_report") is True
+
+    if has_time and has_views:
+        return INTENTIONAL_LEGACY_EXECUTION_MODE
     if report:
         if has_time or has_views:
             return INTENTIONAL_LEGACY_EXECUTION_MODE
         return None
-
-    # Every other normalized profile is in the supported canonical lattice:
-    # plain, pin, forward, pin+forward, time*, or views*.
     return CANONICAL_EXECUTION_MODE
+
+
+def _boundary_from_normalized_options(
+    options: dict[str, Any] | None,
+) -> SchedulingBoundaryDecision:
+    if options is None:
+        return SchedulingBoundaryDecision(
+            outcome=UNSUPPORTED_REJECT_SCHEDULING_OUTCOME,
+            execution_mode=None,
+            runtime_options=None,
+            reason="invalid_runtime_options",
+        )
+
+    mode = _fresh_mode_from_normalized_options(options)
+    if mode == CANONICAL_EXECUTION_MODE:
+        return SchedulingBoundaryDecision(
+            outcome=CANONICAL_SCHEDULING_OUTCOME,
+            execution_mode=CANONICAL_EXECUTION_MODE,
+            runtime_options=dict(options),
+            reason="supported_canonical_profile",
+        )
+    if mode == INTENTIONAL_LEGACY_EXECUTION_MODE:
+        return SchedulingBoundaryDecision(
+            outcome=LEGACY_ALLOWLISTED_SCHEDULING_OUTCOME,
+            execution_mode=INTENTIONAL_LEGACY_EXECUTION_MODE,
+            runtime_options=dict(options),
+            reason="retained_legacy_mixed_time_views",
+        )
+    return SchedulingBoundaryDecision(
+        outcome=UNSUPPORTED_REJECT_SCHEDULING_OUTCOME,
+        execution_mode=None,
+        runtime_options=dict(options),
+        reason="unsupported_runtime_profile",
+    )
 
 
 def runtime_options_from_legacy_payload(
@@ -130,29 +242,81 @@ def runtime_options_from_legacy_payload(
     return _normalize_runtime_options(source, allow_unrelated_keys=True)
 
 
+def scheduling_boundary_from_runtime_options(
+    runtime_options: Mapping[str, Any] | None,
+) -> SchedulingBoundaryDecision:
+    """Return the explicit fresh-ingress owner for one runtime-options mapping."""
+
+    return _boundary_from_normalized_options(
+        _normalize_runtime_options(runtime_options, allow_unrelated_keys=False)
+    )
+
+
+def scheduling_boundary_from_legacy_payload(
+    payload: Mapping[str, Any] | None,
+) -> SchedulingBoundaryDecision:
+    """Return the explicit fresh-ingress owner for one legacy-shaped source payload."""
+
+    if payload is None:
+        source: dict[str, Any] = {}
+    elif isinstance(payload, Mapping):
+        source = {str(key): item for key, item in payload.items()}
+    else:
+        return _boundary_from_normalized_options(None)
+
+    if has_historical_scheduling_provenance(source):
+        return SchedulingBoundaryDecision(
+            outcome=UNSUPPORTED_REJECT_SCHEDULING_OUTCOME,
+            execution_mode=None,
+            runtime_options=None,
+            reason="historical_provenance",
+        )
+
+    content_type = source.get("type")
+    if not isinstance(content_type, str) or content_type not in FRESH_SCHEDULING_CONTENT_TYPES:
+        return SchedulingBoundaryDecision(
+            outcome=UNSUPPORTED_REJECT_SCHEDULING_OUTCOME,
+            execution_mode=None,
+            runtime_options=None,
+            reason="unsupported_content_type",
+        )
+
+    if "repeat_on" in source:
+        repeat_on = source.get("repeat_on")
+        if type(repeat_on) is not bool:
+            return _boundary_from_normalized_options(None)
+        if repeat_on:
+            repeat_seconds = _positive_int(source.get("repeat_seconds"))
+            if repeat_seconds is None:
+                return _boundary_from_normalized_options(None)
+
+    return _boundary_from_normalized_options(
+        _normalize_runtime_options(source, allow_unrelated_keys=True)
+    )
+
+
 def execution_mode_from_runtime_options(
     runtime_options: Mapping[str, Any] | None,
 ) -> str | None:
-    """Classify immutable queue-time runtime intent without live readiness facts."""
+    """Classify normalized fresh runtime intent without performing admission.
 
-    options = _normalize_runtime_options(
-        runtime_options,
-        allow_unrelated_keys=False,
-    )
-    if options is None:
-        return None
-    return _mode_from_normalized_options(options)
+    Fresh scheduling entrypoints must use `scheduling_boundary_from_runtime_options`
+    and reject the explicit unsupported outcome before persistence. Keeping this helper
+    non-raising avoids turning internal capability/proof classification into a queue
+    admission side effect.
+    """
+
+    return scheduling_boundary_from_runtime_options(runtime_options).execution_mode
 
 
 def execution_mode_from_legacy_payload(
     payload: Mapping[str, Any] | None,
 ) -> str | None:
-    """Classify one legacy queue occurrence from source intent only.
+    """Classify one historical legacy queue occurrence from source intent only.
 
-    Content/render fields are intentionally ignored. The classification never reads a
-    PostTask identity, Publication linkage, or current canonical worker-started state.
-    Repeat shape is validated because malformed repeat intent must not gain canonical
-    ownership merely by having an otherwise supported delivery profile.
+    This intentionally preserves pre-#508 report ownership for already-created linked
+    PostTask rows. Fresh scheduling must use `scheduling_boundary_from_legacy_payload`
+    instead, so report-capable profiles cannot silently fall back to legacy transport.
     """
 
     if payload is None:
@@ -174,7 +338,7 @@ def execution_mode_from_legacy_payload(
     options = runtime_options_from_legacy_payload(source)
     if options is None:
         return None
-    return _mode_from_normalized_options(options)
+    return _historical_mode_from_normalized_options(options)
 
 
 def has_canonical_execution_authority(execution_mode: object) -> bool:

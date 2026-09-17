@@ -22,8 +22,11 @@ from app.services.posting_dedupe import acquire_posting_dedupe_lock
 from app.services.publication_bridge import _delivery_meta
 from app.services.publication_execution_mode import (
     CANONICAL_EXECUTION_MODE,
-    execution_mode_from_legacy_payload,
-    runtime_options_from_legacy_payload,
+    CANONICAL_SCHEDULING_OUTCOME,
+    SchedulingBoundaryDecision,
+    UnsupportedSchedulingProfileError,
+    has_historical_scheduling_provenance,
+    scheduling_boundary_from_legacy_payload,
 )
 from app.services.publication_runtime import (
     AUTODELETE_RUNTIME_META_KEY,
@@ -32,14 +35,6 @@ from app.services.publication_runtime import (
 from app.services.scheduling import as_utc
 
 
-_DIRECT_PROVENANCE_MARKERS = frozenset(
-    {
-        "_publication_id",
-        "_content_item_id",
-        "_content_revision",
-        "_content_channel_id",
-    }
-)
 _POSTING_DEDUPE_META_KEY = "posting_dedupe_key"
 
 
@@ -78,16 +73,6 @@ async def _find_existing_posting_owner(
     return await find_direct_canonical_by_dedupe(session, key)
 
 
-def _is_new_canonical_payload(payload: Mapping[str, Any]) -> bool:
-    if any(key in payload for key in _DIRECT_PROVENANCE_MARKERS):
-        return False
-    if payload.get("repeat_group_id") is not None:
-        # Existing repeat transport/provenance remains on its established migration
-        # path. Stage 5 already owns canonical PostTask-free successors.
-        return False
-    return execution_mode_from_legacy_payload(payload) == CANONICAL_EXECUTION_MODE
-
-
 async def _locked_existing_owner(
     session: AsyncSession,
     *,
@@ -113,59 +98,47 @@ async def materialize_new_canonical_occurrence(
     payload: Mapping[str, Any],
     scheduled_at: datetime | None,
     dedupe_key: str | None = None,
+    boundary: SchedulingBoundaryDecision | None = None,
     commit: bool = True,
-) -> PostTask | Publication | None:
-    """Persist one new supported queue occurrence without compatibility PostTask.
+) -> PostTask | Publication:
+    """Persist one fresh canonical-owned schedule occurrence.
 
-    Eligibility and runtime normalization reuse the same intrinsic legacy-payload
-    classifier used by the migration mirror. Content parsing also reuses the mirror's
-    normalized content boundary, while `_delivery_meta` remains the canonical writer
-    for immutable queue-time runtime intent.
-
-    ``PostingService.schedule()`` calls this helper with ``commit=False`` before its
-    legacy fallback. For that caller, every fallback path first acquires the same durable
-    dedupe mutex used by canonical creation and leaves it held until the caller commits
-    either the canonical owner or the compatibility PostTask. This preserves the old
-    DB-global dedupe boundary across the new two-store execution split.
+    This helper never authorizes retained legacy ownership and never uses ``None`` as an
+    ownership signal. Fresh ingress must classify first, call this helper only for an
+    explicit canonical decision, and handle an explicit allowlisted-legacy decision at
+    the PostTask-creating boundary itself.
     """
 
     data = deepcopy(dict(payload or {}))
-    canonical_eligible = _is_new_canonical_payload(data)
-    if not canonical_eligible:
-        if not commit:
-            existing = await _locked_existing_owner(
-                session,
-                dedupe_key=dedupe_key,
-                commit=False,
-            )
-            if existing is not None:
-                return existing
-        return None
+    decision = boundary or scheduling_boundary_from_legacy_payload(data)
 
-    runtime_options = runtime_options_from_legacy_payload(data)
+    if decision.outcome != CANONICAL_SCHEDULING_OUTCOME:
+        raise UnsupportedSchedulingProfileError(
+            f"canonical materializer requires canonical scheduling outcome: {decision.reason}"
+        )
+
+    if decision.execution_mode != CANONICAL_EXECUTION_MODE:
+        raise UnsupportedSchedulingProfileError(
+            "canonical scheduling outcome has non-canonical execution mode"
+        )
+
+    if has_historical_scheduling_provenance(data):
+        raise UnsupportedSchedulingProfileError(
+            "fresh canonical scheduling does not accept legacy provenance"
+        )
+
+    runtime_options = decision.runtime_options
     if runtime_options is None:
-        if not commit:
-            existing = await _locked_existing_owner(
-                session,
-                dedupe_key=dedupe_key,
-                commit=False,
-            )
-            if existing is not None:
-                return existing
-        return None
+        raise UnsupportedSchedulingProfileError(
+            "canonical scheduling boundary produced no runtime options"
+        )
 
     try:
         document = document_from_legacy_payload(_content_payload(data))
-    except LegacyPayloadError:
-        if not commit:
-            existing = await _locked_existing_owner(
-                session,
-                dedupe_key=dedupe_key,
-                commit=False,
-            )
-            if existing is not None:
-                return existing
-        return None
+    except LegacyPayloadError as exc:
+        raise UnsupportedSchedulingProfileError(
+            "unsupported scheduling content payload"
+        ) from exc
 
     existing = await _locked_existing_owner(
         session,

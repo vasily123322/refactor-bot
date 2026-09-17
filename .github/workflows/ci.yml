@@ -61,6 +61,7 @@ jobs:
             tests/test_candidate_rewrite_safety.py \
             tests/test_candidate_structured_edit.py \
             tests/test_canonical_scheduler_explicit_admission.py \
+            tests/test_canonical_scheduling_boundary_persistence.py \
             tests/test_channel_dm_replies.py \
             tests/test_channel_dm_reply_global_idempotency.py \
             tests/test_channel_dm_reply_intents.py \
