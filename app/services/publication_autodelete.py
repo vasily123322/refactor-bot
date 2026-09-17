@@ -28,6 +28,10 @@ from app.services.publication_autodelete_lease import (
     PublicationAutodeleteLeaseHandle,
     PublicationAutodeleteLeaseService,
 )
+from app.services.publication_mixed_autodelete import (
+    PublicationMixedAutodeleteService,
+    PublicationMixedAutodeleteSyncConflict,
+)
 from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
 from app.services.telegram_results import (
     normalize_telegram_message_ids,
@@ -723,6 +727,34 @@ class PublicationAutodeleteService:
             return PublicationAutodeleteResult(0, "ineligible")
         if publication_id <= 0:
             return PublicationAutodeleteResult(publication_id, "ineligible")
+
+        try:
+            mixed = await PublicationMixedAutodeleteService(
+                self.session,
+                delete_provider=self.provider,
+                allow_report=self.allow_report,
+            ).timer_delete_if_due(
+                publication_id,
+                now=now,
+                lease=lease,
+            )
+        except PublicationMixedAutodeleteSyncConflict as exc:
+            raise PublicationAutodeleteSyncConflict() from exc
+        if mixed is not None:
+            outcome = (
+                mixed.outcome
+                if mixed.outcome
+                in {"deleted", "already_deleted", "not_due", "ineligible", "retry", "ambiguous"}
+                else "retry"
+            )
+            return PublicationAutodeleteResult(
+                publication_id=mixed.publication_id,
+                outcome=outcome,
+                message_count=mixed.message_count,
+                deleted_count=mixed.deleted_count,
+                unavailable_count=mixed.unavailable_count,
+                ambiguous_count=mixed.ambiguous_count,
+            )
 
         fixed_authority_now = now is not None
         current = _utc(now)
