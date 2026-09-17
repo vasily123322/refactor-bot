@@ -158,23 +158,24 @@ def _normalize_runtime_options(
     return options
 
 
+def _is_mixed_time_views(options: Mapping[str, Any]) -> bool:
+    return "autodelete_seconds" in options and "autodelete_views" in options
+
+
 def _fresh_mode_from_normalized_options(options: Mapping[str, Any]) -> str | None:
     has_time = "autodelete_seconds" in options
     has_views = "autodelete_views" in options
     report = options.get("autodelete_report") is True
 
-    # #509 owns migration of the one retained legacy profile. Keep the allowlist
-    # intentionally exact and independent of any current worker-readiness facts.
-    if has_time and has_views:
-        return INTENTIONAL_LEGACY_EXECUTION_MODE
-
-    # Report is a canonical side effect only when attached to one supported delete
-    # trigger. Report-only intent has no delete owner and therefore has no owner at all.
+    # #509 converges time+views on one Publication-keyed destructive authority, so the
+    # last fresh retained-legacy profile now belongs to canonical ownership as well.
+    # Repeat+mixed is rejected separately by fresh ingress until repeat destructive
+    # orchestration is explicitly proven; historical classification is unchanged below.
     if report and not (has_time or has_views):
         return None
 
-    # Every other normalized fresh profile is in the canonical ownership lattice:
-    # plain, pin, forward, time*, views*, and their supported report compositions.
+    # Every normalized fresh non-repeat profile is in the canonical ownership lattice:
+    # plain, pin, forward, time*, views*, mixed time+views*, and supported reports.
     return CANONICAL_EXECUTION_MODE
 
 
@@ -218,7 +219,7 @@ def _boundary_from_normalized_options(
             outcome=LEGACY_ALLOWLISTED_SCHEDULING_OUTCOME,
             execution_mode=INTENTIONAL_LEGACY_EXECUTION_MODE,
             runtime_options=dict(options),
-            reason="retained_legacy_mixed_time_views",
+            reason="retained_legacy_profile",
         )
     return SchedulingBoundaryDecision(
         outcome=UNSUPPORTED_REJECT_SCHEDULING_OUTCOME,
@@ -281,18 +282,26 @@ def scheduling_boundary_from_legacy_payload(
             reason="unsupported_content_type",
         )
 
+    repeat_enabled = False
     if "repeat_on" in source:
         repeat_on = source.get("repeat_on")
         if type(repeat_on) is not bool:
             return _boundary_from_normalized_options(None)
-        if repeat_on:
+        repeat_enabled = bool(repeat_on)
+        if repeat_enabled:
             repeat_seconds = _positive_int(source.get("repeat_seconds"))
             if repeat_seconds is None:
                 return _boundary_from_normalized_options(None)
 
-    return _boundary_from_normalized_options(
-        _normalize_runtime_options(source, allow_unrelated_keys=True)
-    )
+    options = _normalize_runtime_options(source, allow_unrelated_keys=True)
+    if repeat_enabled and options is not None and _is_mixed_time_views(options):
+        return SchedulingBoundaryDecision(
+            outcome=UNSUPPORTED_REJECT_SCHEDULING_OUTCOME,
+            execution_mode=None,
+            runtime_options=dict(options),
+            reason="unsupported_repeat_mixed_time_views",
+        )
+    return _boundary_from_normalized_options(options)
 
 
 def execution_mode_from_runtime_options(
