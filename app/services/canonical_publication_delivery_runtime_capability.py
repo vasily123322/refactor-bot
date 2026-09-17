@@ -125,16 +125,14 @@ def parse_canonical_publication_delivery_runtime_capability(
     if not effective_ok or not base_ok:
         return None
     time_autodelete_seconds = effective_seconds or base_seconds
-    if time_autodelete_seconds is not None and views is not None:
-        # Historical runtime treats time- and views-based deletion as separate modes.
-        # Refuse ambiguous dual authority instead of letting one mechanism shadow the
-        # other after canonical cutover.
-        return None
     if report and time_autodelete_seconds is None and views is None:
         # A deletion report has no independent execution meaning. Reject it instead of
         # silently dropping requested semantics when no delete trigger exists.
         return None
 
+    # Mixed positive time+views is a supported canonical capability after #509. The
+    # two readiness mechanisms remain independent, but their irreversible provider
+    # DELETE authority converges on PublicationAutodeleteActionLedger.
     return CanonicalPublicationDeliveryRuntimeCapability(
         silent=silent,
         pin_on=pin_on,
