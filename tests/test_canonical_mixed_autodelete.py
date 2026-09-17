@@ -314,7 +314,6 @@ def test_concurrent_timer_views_race_has_exactly_one_delete_winner(tmp_path) -> 
     asyncio.run(run())
 
 
-
 def test_concurrent_views_timer_race_has_exactly_one_delete_winner(tmp_path) -> None:
     async def run() -> None:
         engine, Session = await _new_db(tmp_path / "views-first-race.db")
