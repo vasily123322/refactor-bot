@@ -565,3 +565,80 @@ def test_report_failure_is_best_effort_and_cannot_reauthorize_delete(tmp_path) -
             await engine.dispose()
 
     asyncio.run(run())
+
+def test_time_only_probe_falls_through_without_views_state(tmp_path) -> None:
+    async def run() -> None:
+        engine, Session = await _new_db(tmp_path / "time-only-fallthrough.db")
+        try:
+            now = datetime.now(timezone.utc)
+            _, _, publication_id = await _seed(Session, seed=14, now=now)
+            async with Session() as session:
+                publication = await session.get(Publication, publication_id)
+                state = await session.get(PublicationAutodeleteViewState, publication_id)
+                assert publication is not None and state is not None
+                meta = dict(publication.meta or {})
+                meta["runtime_options"] = {"autodelete_seconds": 600}
+                publication.meta = meta
+                await session.delete(state)
+                await session.commit()
+
+            provider = _Provider()
+            async with Session() as session:
+                result = await PublicationMixedAutodeleteService(
+                    session,
+                    delete_provider=provider,
+                ).timer_delete_if_due(publication_id, now=now)
+            assert result is None
+            assert provider.delete_calls == []
+
+            async with Session() as session:
+                actions = (
+                    await session.execute(
+                        select(PublicationAutodeleteAction).where(
+                            PublicationAutodeleteAction.publication_id == publication_id
+                        )
+                    )
+                ).scalars().all()
+                assert actions == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_mixed_missing_views_state_remains_fail_closed(tmp_path) -> None:
+    async def run() -> None:
+        engine, Session = await _new_db(tmp_path / "mixed-missing-views-state.db")
+        try:
+            now = datetime.now(timezone.utc)
+            _, _, publication_id = await _seed(Session, seed=15, now=now)
+            async with Session() as session:
+                state = await session.get(PublicationAutodeleteViewState, publication_id)
+                assert state is not None
+                await session.delete(state)
+                await session.commit()
+
+            provider = _Provider()
+            async with Session() as session:
+                result = await PublicationMixedAutodeleteService(
+                    session,
+                    delete_provider=provider,
+                ).timer_delete_if_due(publication_id, now=now)
+            assert result is not None
+            assert result.outcome == "ineligible"
+            assert provider.delete_calls == []
+
+            async with Session() as session:
+                actions = (
+                    await session.execute(
+                        select(PublicationAutodeleteAction).where(
+                            PublicationAutodeleteAction.publication_id == publication_id
+                        )
+                    )
+                ).scalars().all()
+                assert actions == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
