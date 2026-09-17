@@ -91,7 +91,30 @@ def test_runtime_capability_accepts_views_autodelete_and_report_without_time_tim
     assert views.autodelete_report is True
 
 
-def test_runtime_capability_rejects_unknown_malformed_dual_delete_and_report_without_trigger() -> None:
+def test_runtime_capability_accepts_mixed_time_views_with_shared_destructive_owner() -> None:
+    mixed = parse_canonical_publication_delivery_runtime_capability(
+        {
+            "autodelete_seconds": 60,
+            "autodelete_views": 10,
+            "autodelete_report": True,
+        }
+    )
+    assert mixed is not None
+    assert mixed.time_autodelete_seconds == 60
+    assert mixed.views_autodelete_threshold == 10
+    assert mixed.time_autodelete_requested is True
+    assert mixed.views_autodelete_requested is True
+    assert mixed.autodelete_report is True
+
+    effective = parse_canonical_publication_delivery_runtime_capability(
+        {"autodelete_effective_seconds": 120, "autodelete_views": 20}
+    )
+    assert effective is not None
+    assert effective.time_autodelete_seconds == 120
+    assert effective.views_autodelete_threshold == 20
+
+
+def test_runtime_capability_rejects_unknown_malformed_and_report_without_trigger() -> None:
     invalid = [
         {"future_side_effect": True},
         {"silent": 1},
@@ -107,8 +130,6 @@ def test_runtime_capability_rejects_unknown_malformed_dual_delete_and_report_wit
         {"autodelete_effective_seconds": -1},
         {"autodelete_views": "many"},
         {"autodelete_views": -1},
-        {"autodelete_seconds": 60, "autodelete_views": 10},
-        {"autodelete_effective_seconds": 60, "autodelete_views": 10},
         {"autodelete_report": 1},
         {"autodelete_report": True},
     ]
