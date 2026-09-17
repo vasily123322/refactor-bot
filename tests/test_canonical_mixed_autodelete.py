@@ -566,6 +566,7 @@ def test_report_failure_is_best_effort_and_cannot_reauthorize_delete(tmp_path) -
 
     asyncio.run(run())
 
+
 def test_time_only_probe_falls_through_without_views_state(tmp_path) -> None:
     async def run() -> None:
         engine, Session = await _new_db(tmp_path / "time-only-fallthrough.db")
