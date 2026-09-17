@@ -399,13 +399,7 @@ class PublicationMixedAutodeleteService:
         lock: bool,
     ) -> tuple[_Candidate | None, PublicationMixedAutodeleteResult | None]:
         statement = (
-            select(
-                Publication,
-                ScheduleEntry,
-                ContentItem,
-                Channel,
-                PublicationAutodeleteViewState,
-            )
+            select(Publication, ScheduleEntry, ContentItem, Channel)
             .join(
                 ScheduleEntry,
                 and_(
@@ -424,10 +418,6 @@ class PublicationMixedAutodeleteService:
                 ),
             )
             .join(Channel, Channel.id == Publication.channel_id)
-            .outerjoin(
-                PublicationAutodeleteViewState,
-                PublicationAutodeleteViewState.publication_id == Publication.id,
-            )
             .where(
                 Publication.id == int(publication_id),
                 Publication.status == "published",
@@ -441,12 +431,34 @@ class PublicationMixedAutodeleteService:
             return None, PublicationMixedAutodeleteResult(
                 int(publication_id), "ineligible"
             )
+
+        publication, schedule, item, channel = row
+        meta = _mapping(publication.meta)
+        if meta is None:
+            return None, PublicationMixedAutodeleteResult(
+                int(publication_id), "ineligible"
+            )
+        intent, _, _, _ = _mixed_intent(meta, allow_report=self.allow_report)
+        if intent == "not_mixed":
+            return None, None
+        if intent != "mixed":
+            return None, PublicationMixedAutodeleteResult(
+                int(publication_id), "ineligible"
+            )
+
+        view_statement = select(PublicationAutodeleteViewState).where(
+            PublicationAutodeleteViewState.publication_id == int(publication_id)
+        )
+        if lock:
+            view_statement = view_statement.with_for_update()
+        view_state = (await self.session.execute(view_statement)).scalar_one_or_none()
+
         return self._candidate_from_row(
-            publication=row[0],
-            schedule=row[1],
-            item=row[2],
-            channel=row[3],
-            view_state=row[4],
+            publication=publication,
+            schedule=schedule,
+            item=item,
+            channel=channel,
+            view_state=view_state,
         )
 
     async def _candidate(
