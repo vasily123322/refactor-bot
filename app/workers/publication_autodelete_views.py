@@ -22,6 +22,10 @@ from app.services.publication_autodelete_views import (
 from app.services.publication_autodelete_views_state import (
     PublicationAutodeleteViewStateService,
 )
+from app.services.publication_mixed_autodelete import (
+    PublicationMixedAutodeleteService,
+    PublicationMixedAutodeleteSyncConflict,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,15 +201,27 @@ class PublicationAutodeleteViewsWorker:
 
             try:
                 async with self.session_factory() as operation_session:
-                    result = await PublicationAutodeleteViewsService(
+                    result = await PublicationMixedAutodeleteService(
                         operation_session,
                         view_source=self.view_source,
                         delete_provider=self.delete_provider,
                         next_check_seconds=self.next_check_seconds,
                         allow_report=True,
-                        allow_repeat_views=self.allow_repeat_views,
+                    ).views_evaluate_and_delete(
+                        int(publication_id),
                         lease=handle,
-                    ).evaluate_and_delete(int(publication_id), now=current)
+                        now=current,
+                    )
+                    if result is None:
+                        result = await PublicationAutodeleteViewsService(
+                            operation_session,
+                            view_source=self.view_source,
+                            delete_provider=self.delete_provider,
+                            next_check_seconds=self.next_check_seconds,
+                            allow_report=True,
+                            allow_repeat_views=self.allow_repeat_views,
+                            lease=handle,
+                        ).evaluate_and_delete(int(publication_id), now=current)
 
                 if result.outcome == "deleted":
                     deleted += 1
@@ -266,7 +282,10 @@ class PublicationAutodeleteViewsWorker:
             except asyncio.CancelledError:
                 release_after = False
                 raise
-            except PublicationAutodeleteViewsSyncConflict:
+            except (
+                PublicationAutodeleteViewsSyncConflict,
+                PublicationMixedAutodeleteSyncConflict,
+            ):
                 conflicts += 1
             except Exception as exc:
                 failures += 1
