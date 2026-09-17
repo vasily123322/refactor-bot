@@ -189,7 +189,7 @@ def test_posting_reject_rolls_back_without_canonical_or_legacy_owner(payload) ->
         "repeat-group-id",
     ],
 )
-def test_posting_mixed_time_views_rejects_historical_provenance_before_legacy_allowlist(
+def test_posting_mixed_time_views_rejects_historical_provenance_before_canonical_cutover(
     marker,
     value,
 ) -> None:
@@ -220,38 +220,63 @@ def test_posting_mixed_time_views_rejects_historical_provenance_before_legacy_al
     asyncio.run(run())
 
 
-def test_posting_mixed_positive_time_views_is_only_fresh_posttask_allowlist() -> None:
+def test_posting_mixed_positive_time_views_is_canonical_and_posttask_free() -> None:
     async def run() -> None:
         engine, Session = await _new_db()
         try:
             _owner, channel = await _seed_channel(Session, 3)
+            runtime_options = {
+                "autodelete_seconds": 600,
+                "autodelete_views": 100,
+                "autodelete_report": True,
+            }
             result = await PostingService(_Bot(), Session).schedule(
                 int(channel.id),
                 {
                     "type": "text",
-                    "text": "Mixed retained legacy",
-                    "autodelete_seconds": 600,
-                    "autodelete_views": 100,
-                    "autodelete_report": True,
+                    "text": "Mixed canonical",
+                    **runtime_options,
                 },
                 datetime.now(timezone.utc) + timedelta(minutes=20),
-                dedupe_key="boundary-mixed-allowlist",
+                dedupe_key="boundary-mixed-canonical",
             )
-            assert isinstance(result, PostTask)
+            assert isinstance(result, Publication)
 
             async with Session() as session:
-                task = await session.get(PostTask, int(result.id))
-                assert task is not None
-                linked = (
-                    await session.execute(
-                        select(Publication).where(
-                            Publication.legacy_post_task_id == int(task.id)
-                        )
-                    )
-                ).scalar_one()
-                assert linked.execution_mode == INTENTIONAL_LEGACY_EXECUTION_MODE
+                persisted = await session.get(Publication, int(result.id))
+                assert persisted is not None
+                assert persisted.execution_mode == CANONICAL_EXECUTION_MODE
+                assert persisted.legacy_post_task_id is None
+                assert dict(persisted.meta or {}).get("runtime_options") == runtime_options
                 schedules, publications, tasks, _revisions = await _counts(session)
-                assert (schedules, publications, tasks) == (1, 1, 1)
+                assert (schedules, publications, tasks) == (1, 1, 0)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_posting_repeat_mixed_is_explicit_reject_without_posttask() -> None:
+    async def run() -> None:
+        engine, Session = await _new_db()
+        try:
+            _owner, channel = await _seed_channel(Session, 9)
+            with pytest.raises(UnsupportedSchedulingProfileError):
+                await PostingService(_Bot(), Session).schedule(
+                    int(channel.id),
+                    {
+                        "type": "text",
+                        "text": "Repeat mixed remains closed",
+                        "repeat_on": True,
+                        "repeat_seconds": 3600,
+                        "autodelete_seconds": 600,
+                        "autodelete_views": 100,
+                    },
+                    datetime.now(timezone.utc) + timedelta(minutes=20),
+                    dedupe_key="boundary-repeat-mixed-reject",
+                )
+            async with Session() as session:
+                assert await _counts(session) == (0, 0, 0, 0)
         finally:
             await engine.dispose()
 
@@ -289,6 +314,69 @@ def test_publication_bridge_supported_report_is_canonical_and_posttask_free() ->
                 assert publication.legacy_post_task_id is None
                 schedules, publications, tasks, _revisions = await _counts(session)
                 assert (schedules, publications, tasks) == (1, 1, 0)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_publication_bridge_mixed_is_canonical_and_posttask_free() -> None:
+    async def run() -> None:
+        engine, Session = await _new_db()
+        try:
+            owner, channel = await _seed_channel(Session, 10)
+            async with Session() as session:
+                item = await ContentRepo(session).create(
+                    channel_id=int(channel.id),
+                    document=PostDocument(
+                        blocks=[{"id": "b1", "type": "text", "text": "Bridge mixed"}]
+                    ),
+                    created_by_tg_user_id=int(owner.tg_user_id),
+                )
+                publication = await LegacyPublicationBridge(session).queue(
+                    content_item_id=int(item.id),
+                    scheduled_at=datetime.now(timezone.utc) + timedelta(minutes=25),
+                    runtime_options={
+                        "autodelete_seconds": 600,
+                        "autodelete_views": 100,
+                        "autodelete_report": True,
+                    },
+                )
+                assert publication.execution_mode == CANONICAL_EXECUTION_MODE
+                assert publication.legacy_post_task_id is None
+                schedules, publications, tasks, _revisions = await _counts(session)
+                assert (schedules, publications, tasks) == (1, 1, 0)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_publication_bridge_repeat_mixed_is_explicit_reject_without_transport() -> None:
+    async def run() -> None:
+        engine, Session = await _new_db()
+        try:
+            owner, channel = await _seed_channel(Session, 11)
+            async with Session() as session:
+                item = await ContentRepo(session).create(
+                    channel_id=int(channel.id),
+                    document=PostDocument(
+                        blocks=[{"id": "b1", "type": "text", "text": "Bridge repeat mixed"}]
+                    ),
+                    created_by_tg_user_id=int(owner.tg_user_id),
+                )
+                with pytest.raises(PublicationBridgeError):
+                    await LegacyPublicationBridge(session).queue(
+                        content_item_id=int(item.id),
+                        scheduled_at=datetime.now(timezone.utc) + timedelta(minutes=25),
+                        repeat_rule={"enabled": True, "seconds": 3600},
+                        runtime_options={
+                            "autodelete_seconds": 600,
+                            "autodelete_views": 100,
+                        },
+                    )
+                schedules, publications, tasks, revisions = await _counts(session)
+                assert (schedules, publications, tasks, revisions) == (0, 0, 0, 1)
         finally:
             await engine.dispose()
 
@@ -412,6 +500,47 @@ def test_fresh_canonical_repeat_report_continues_without_posttask() -> None:
                 }
                 schedules, publications, tasks, _revisions = await _counts(session)
                 assert (schedules, publications, tasks) == (2, 2, 0)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_historical_linked_mixed_remains_intentional_legacy() -> None:
+    async def run() -> None:
+        engine, Session = await _new_db()
+        try:
+            _owner, channel = await _seed_channel(Session, 12)
+            async with Session() as session:
+                task = PostTask(
+                    channel_id=int(channel.id),
+                    status="pending",
+                    scheduled_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+                    payload={
+                        "type": "text",
+                        "text": "Historical linked mixed",
+                        "autodelete_seconds": 600,
+                        "autodelete_views": 100,
+                    },
+                )
+                session.add(task)
+                await session.flush()
+                publication = await mirror_legacy_post_task(session, task, commit=False)
+                assert publication is not None
+                await session.commit()
+                await session.refresh(publication)
+
+                assert publication.execution_mode == INTENTIONAL_LEGACY_EXECUTION_MODE
+                assert publication.legacy_post_task_id == int(task.id)
+                admission = await CanonicalSchedulerAdmissionService(session).classify(
+                    task_id=int(task.id)
+                )
+                # Very old mirror rows do not carry canonical runtime_options metadata,
+                # so admission preserves their explicit intentional-legacy owner through
+                # the generic legacy kind. Exact linked mixed rows with durable options
+                # remain covered by the LEGACY_TIME_VIEWS admission regression suite.
+                assert admission.kind is CanonicalSchedulerAdmissionKind.LEGACY_INTENTIONAL
+                assert admission.legacy_allowed is True
         finally:
             await engine.dispose()
 

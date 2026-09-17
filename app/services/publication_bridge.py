@@ -198,6 +198,18 @@ class LegacyPublicationBridge:
             raise PublicationBridgeError(
                 f"unsupported scheduling profile: {boundary.reason}"
             )
+        if (
+            rule.get("enabled")
+            and boundary.runtime_options is not None
+            and "autodelete_seconds" in boundary.runtime_options
+            and "autodelete_views" in boundary.runtime_options
+        ):
+            # #509 proves shared mixed destructive authority for the ordinary canonical
+            # occurrence. Repeat mixed remains explicitly closed until its dedicated
+            # repeat workers are converged; never fall back to a fresh PostTask.
+            raise PublicationBridgeError(
+                "unsupported scheduling profile: unsupported_repeat_mixed_time_views"
+            )
         for key, value in runtime_intent.items():
             payload[key] = deepcopy(value)
 

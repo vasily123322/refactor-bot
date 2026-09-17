@@ -29,6 +29,10 @@ from app.services.publication_autodelete_views_action_ledger import (
     PublicationAutodeleteViewsActionReservation,
     inspect_publication_autodelete_views_actions,
 )
+from app.services.publication_mixed_autodelete import (
+    PublicationMixedAutodeleteService,
+    PublicationMixedAutodeleteSyncConflict,
+)
 from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
 from app.services.telegram_results import (
     normalize_telegram_message_ids,
@@ -933,6 +937,47 @@ class PublicationAutodeleteViewsService:
             return PublicationAutodeleteViewsResult(
                 publication_id=safe_publication_id, outcome="ineligible"
             )
+
+        if self.lease is not None:
+            try:
+                mixed = await PublicationMixedAutodeleteService(
+                    self.session,
+                    view_source=self.view_source,
+                    delete_provider=self.delete_provider,
+                    next_check_seconds=self.next_check_seconds,
+                    allow_report=self.allow_report,
+                ).views_evaluate_and_delete(
+                    safe_publication_id,
+                    lease=self.lease,
+                    now=now,
+                )
+            except PublicationMixedAutodeleteSyncConflict as exc:
+                raise PublicationAutodeleteViewsSyncConflict() from exc
+            if mixed is not None:
+                outcome = (
+                    mixed.outcome
+                    if mixed.outcome
+                    in {
+                        "deleted",
+                        "already_deleted",
+                        "below_threshold",
+                        "deferred",
+                        "not_due",
+                        "ineligible",
+                        "retry",
+                    }
+                    else "retry"
+                )
+                return PublicationAutodeleteViewsResult(
+                    publication_id=mixed.publication_id,
+                    outcome=outcome,
+                    threshold=mixed.threshold,
+                    observed_views=mixed.observed_views,
+                    message_count=mixed.message_count,
+                    deleted_count=mixed.deleted_count,
+                    unavailable_count=mixed.unavailable_count,
+                    ambiguous_count=mixed.ambiguous_count,
+                )
 
         current = _utc(now)
         candidate, early = await self._candidate(safe_publication_id, now=current)
