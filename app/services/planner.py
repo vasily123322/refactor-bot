@@ -45,7 +45,6 @@ class PlannerEntry:
     attempt_status: str | None
     attempt_started_at: datetime | None
     attempt_finished_at: datetime | None
-    legacy_post_task_id: int | None
 
 
 class PlannerService:
@@ -116,11 +115,6 @@ class PlannerService:
             attempt_status=(str(attempt.status) if attempt is not None else None),
             attempt_started_at=(attempt.started_at if attempt is not None else None),
             attempt_finished_at=(attempt.finished_at if attempt is not None else None),
-            legacy_post_task_id=(
-                int(publication.legacy_post_task_id)
-                if publication is not None and publication.legacy_post_task_id is not None
-                else None
-            ),
         )
 
     async def list_entries(
