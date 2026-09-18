@@ -10,6 +10,7 @@ from app.core.db import Base
 from app.domain.content import PostDocument
 from app.domain.models import Channel, Client, PostTask
 from app.domain.publishing.models import ScheduleEntry
+from app.services.publication_execution_mode import INTENTIONAL_LEGACY_EXECUTION_MODE
 from app.repositories.content import ContentRepo
 from app.services.canonical_publication_edit import CanonicalPublicationEditCoordinator
 from app.services.publication_bridge import LegacyPublicationBridge
@@ -50,21 +51,47 @@ def test_inconsistent_linked_transport_is_rejected_before_provider_call(tmp_path
                     ),
                     created_by_tg_user_id=71401,
                 )
+                scheduled_at = datetime(2026, 8, 10, 8, 0, tzinfo=timezone.utc)
+                runtime_options = {
+                    "autodelete_seconds": 3600,
+                    "autodelete_views": 100,
+                }
                 publication = await LegacyPublicationBridge(session).queue(
                     content_item_id=int(item.id),
-                    scheduled_at=datetime(2026, 8, 10, 8, 0, tzinfo=timezone.utc),
-                    runtime_options={
-                        "autodelete_seconds": 3600,
-                        "autodelete_views": 100,
-                    },
+                    scheduled_at=scheduled_at,
                 )
                 schedule = await session.get(
                     ScheduleEntry, int(publication.schedule_entry_id or 0)
                 )
-                task = await session.get(
-                    PostTask, int(publication.legacy_post_task_id or 0)
+                assert schedule is not None
+
+                # Historical linked mixed rows predate the #509 fresh-ingress cutover.
+                # Seed that compatibility state explicitly instead of asking current
+                # mixed ingress to recreate a legacy PostTask.
+                task = PostTask(
+                    channel_id=int(channel.id),
+                    status="pending",
+                    payload={
+                        "type": "text",
+                        "text": "Before",
+                        **runtime_options,
+                    },
+                    dedupe_key=f"publication:{int(publication.id)}",
+                    scheduled_at=scheduled_at,
                 )
-                assert schedule is not None and task is not None
+                session.add(task)
+                await session.flush()
+                publication.execution_mode = INTENTIONAL_LEGACY_EXECUTION_MODE
+                publication.legacy_post_task_id = int(task.id)
+                publication.meta = {
+                    **dict(publication.meta or {}),
+                    "runtime_options": dict(runtime_options),
+                }
+                schedule.meta = {
+                    **dict(schedule.meta or {}),
+                    "runtime_options": dict(runtime_options),
+                    "legacy_post_task_id": int(task.id),
+                }
                 publication.status = "published"
                 schedule.status = "completed"
                 publication.telegram_message_ids = [85101]

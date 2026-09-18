@@ -110,6 +110,67 @@ async def _legacy_schedule(
         return task, publication
 
 
+async def _historical_linked_schedule(
+    Session,
+    *,
+    channel: Channel,
+    payload: dict,
+    when: datetime,
+    dedupe_key: str,
+) -> tuple[PostTask, Publication]:
+    canonical_payload = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"autodelete_seconds", "autodelete_views"}
+    }
+    publication, _ = await _direct_canonical(
+        Session,
+        channel=channel,
+        payload=canonical_payload,
+        when=when,
+        dedupe_key=dedupe_key,
+    )
+
+    async with Session() as session:
+        persisted = await session.get(Publication, int(publication.id))
+        assert persisted is not None
+        schedule = await session.get(ScheduleEntry, int(persisted.schedule_entry_id or 0))
+        assert schedule is not None
+
+        task = PostTask(
+            channel_id=int(channel.id),
+            status="pending",
+            payload=dict(payload),
+            dedupe_key=f"publication:{int(persisted.id)}",
+            scheduled_at=when,
+        )
+        session.add(task)
+        await session.flush()
+
+        runtime_options = {
+            key: payload[key]
+            for key in ("autodelete_seconds", "autodelete_views")
+            if key in payload
+        }
+        publication_meta = dict(persisted.meta or {})
+        publication_meta.pop("canonical_posttask_free", None)
+        if runtime_options:
+            publication_meta["runtime_options"] = dict(runtime_options)
+        persisted.meta = publication_meta
+        persisted.execution_mode = INTENTIONAL_LEGACY_EXECUTION_MODE
+        persisted.legacy_post_task_id = int(task.id)
+
+        schedule_meta = dict(schedule.meta or {})
+        schedule_meta.pop("canonical_posttask_free", None)
+        if runtime_options:
+            schedule_meta["runtime_options"] = dict(runtime_options)
+        schedule_meta["legacy_post_task_id"] = int(task.id)
+        schedule.meta = schedule_meta
+
+        await session.commit()
+        return task, persisted
+
+
 def test_supported_schedule_materializes_direct_canonical_pair_without_posttask() -> None:
     async def run() -> None:
         engine, Session = await _new_db()
@@ -450,7 +511,7 @@ def test_new_direct_schedule_does_not_mutate_existing_linked_compatibility_row()
         engine, Session = await _new_db()
         try:
             channel = await _channel(Session, 11)
-            legacy_task, legacy_publication = await _legacy_schedule(
+            legacy_task, legacy_publication = await _historical_linked_schedule(
                 Session,
                 channel=channel,
                 payload={

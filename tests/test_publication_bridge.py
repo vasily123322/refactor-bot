@@ -11,7 +11,7 @@ from app.domain.content import PostDocument
 from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.repositories.content import ContentRepo
-from app.services.publication_bridge import LegacyPublicationBridge
+from app.services.publication_bridge import LegacyPublicationBridge, _scheduler_payload
 from app.services.scheduling import as_utc
 
 
@@ -19,6 +19,48 @@ _INTENTIONAL_LEGACY_RUNTIME = {
     "autodelete_seconds": 60,
     "autodelete_views": 1,
 }
+
+
+async def _seed_historical_linked_publication(
+    session,
+    *,
+    item,
+    document: PostDocument,
+) -> tuple[Publication, PostTask]:
+    # #509 made fresh non-repeat mixed canonical/PostTask-free. These bridge tests
+    # exercise compatibility projection for rows that were linked before that cutover,
+    # so seed the historical transport relationship explicitly.
+    publication = await LegacyPublicationBridge(session).queue(
+        content_item_id=int(item.id),
+    )
+    schedule = await session.get(ScheduleEntry, int(publication.schedule_entry_id or 0))
+    assert schedule is not None
+
+    task_payload = _scheduler_payload(document)
+    task_payload.update(_INTENTIONAL_LEGACY_RUNTIME)
+    task = PostTask(
+        channel_id=int(item.channel_id),
+        status="pending",
+        payload=task_payload,
+        dedupe_key=f"publication:{int(publication.id)}",
+        scheduled_at=schedule.scheduled_at,
+    )
+    session.add(task)
+    await session.flush()
+
+    publication.execution_mode = "intentional_legacy"
+    publication.legacy_post_task_id = int(task.id)
+    publication.meta = {
+        **dict(publication.meta or {}),
+        "runtime_options": dict(_INTENTIONAL_LEGACY_RUNTIME),
+    }
+    schedule.meta = {
+        **dict(schedule.meta or {}),
+        "runtime_options": dict(_INTENTIONAL_LEGACY_RUNTIME),
+        "legacy_post_task_id": int(task.id),
+    }
+    await session.commit()
+    return publication, task
 
 
 def test_publication_bridge_queues_content_on_existing_scheduler() -> None:
@@ -150,20 +192,20 @@ def test_publication_bridge_reconciles_success_and_records_attempt() -> None:
                 await conn.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             async with Session() as session:
+                document = PostDocument(
+                    blocks=[{"id": "b1", "type": "text", "text": "Hello"}]
+                )
                 item = await ContentRepo(session).create(
                     channel_id=1,
-                    document=PostDocument(
-                        blocks=[{"id": "b1", "type": "text", "text": "Hello"}]
-                    ),
+                    document=document,
                 )
                 bridge = LegacyPublicationBridge(session)
-                publication = await bridge.queue(
-                    content_item_id=item.id,
-                    runtime_options=_INTENTIONAL_LEGACY_RUNTIME,
+                publication, task = await _seed_historical_linked_publication(
+                    session,
+                    item=item,
+                    document=document,
                 )
                 assert publication.execution_mode == "intentional_legacy"
-                task = await session.get(PostTask, publication.legacy_post_task_id)
-                assert task is not None
                 task.status = "done"
                 task.payload = {
                     **dict(task.payload or {}),
@@ -218,29 +260,31 @@ def test_reconcile_task_uses_db_link_not_stale_payload_marker() -> None:
                 await conn.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             async with Session() as session:
+                first_document = PostDocument(
+                    blocks=[{"id": "b1", "type": "text", "text": "First"}]
+                )
+                second_document = PostDocument(
+                    blocks=[{"id": "b2", "type": "text", "text": "Second"}]
+                )
                 first_item = await ContentRepo(session).create(
                     channel_id=1,
-                    document=PostDocument(
-                        blocks=[{"id": "b1", "type": "text", "text": "First"}]
-                    ),
+                    document=first_document,
                 )
                 second_item = await ContentRepo(session).create(
                     channel_id=1,
-                    document=PostDocument(
-                        blocks=[{"id": "b2", "type": "text", "text": "Second"}]
-                    ),
+                    document=second_document,
                 )
                 bridge = LegacyPublicationBridge(session)
-                first = await bridge.queue(
-                    content_item_id=first_item.id,
-                    runtime_options=_INTENTIONAL_LEGACY_RUNTIME,
+                first, _ = await _seed_historical_linked_publication(
+                    session,
+                    item=first_item,
+                    document=first_document,
                 )
-                second = await bridge.queue(
-                    content_item_id=second_item.id,
-                    runtime_options=_INTENTIONAL_LEGACY_RUNTIME,
+                second, second_task = await _seed_historical_linked_publication(
+                    session,
+                    item=second_item,
+                    document=second_document,
                 )
-                second_task = await session.get(PostTask, second.legacy_post_task_id)
-                assert second_task is not None
 
                 second_task.status = "processing"
                 second_task.payload = {
@@ -286,19 +330,19 @@ def test_publication_bridge_reconciles_scheduler_failure() -> None:
                 await conn.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             async with Session() as session:
+                document = PostDocument(
+                    blocks=[{"id": "b1", "type": "text", "text": "Hello"}]
+                )
                 item = await ContentRepo(session).create(
                     channel_id=1,
-                    document=PostDocument(
-                        blocks=[{"id": "b1", "type": "text", "text": "Hello"}]
-                    ),
+                    document=document,
                 )
                 bridge = LegacyPublicationBridge(session)
-                publication = await bridge.queue(
-                    content_item_id=item.id,
-                    runtime_options=_INTENTIONAL_LEGACY_RUNTIME,
+                publication, task = await _seed_historical_linked_publication(
+                    session,
+                    item=item,
+                    document=document,
                 )
-                task = await session.get(PostTask, publication.legacy_post_task_id)
-                assert task is not None
                 task.status = "failed"
                 task.error = "telegram unavailable"
                 await session.commit()
@@ -340,13 +384,12 @@ def test_publication_bridge_queues_rich_document_for_shared_renderer() -> None:
                     blocks=[{"id": "p1", "type": "paragraph", "content": "Hello"}],
                 )
                 item = await ContentRepo(session).create(channel_id=1, document=document)
-                publication = await LegacyPublicationBridge(session).queue(
-                    content_item_id=item.id,
-                    runtime_options=_INTENTIONAL_LEGACY_RUNTIME,
+                _, task = await _seed_historical_linked_publication(
+                    session,
+                    item=item,
+                    document=document,
                 )
 
-                task = await session.get(PostTask, publication.legacy_post_task_id)
-                assert task is not None
                 assert task.payload["type"] == "rich_document"
                 assert task.payload["post_document"] == document.to_dict()
                 assert "_publication_id" not in task.payload
