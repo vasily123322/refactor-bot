@@ -11,7 +11,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content.models import ContentItem, ContentRevision
-from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.canonical_repeat_plan_reservation import (
     CANONICAL_REPEAT_PLAN_RESERVATION_META_KEY,
@@ -33,13 +32,11 @@ class CanonicalRepeatTransportResult:
     outcome: Literal[
         "created",
         "existing",
-        "existing_transport",
         "ineligible",
         "conflict",
     ]
     publication_id: int | None = None
     schedule_entry_id: int | None = None
-    legacy_post_task_id: int | None = None
 
 
 def _mapping(value: Any) -> dict[str, Any] | None:
@@ -75,11 +72,8 @@ def _scheduled_at(value: Any) -> datetime | None:
 class CanonicalRepeatTransportAdapter:
     """Materialize one reserved canonical repeat plan into canonical durable state.
 
-    Reservation is the planning authority. Supported canonical successors no longer
-    need a compatibility PostTask as their execution representation: exact content,
-    schedule, repeat cadence, runtime intent, ownership mode and source lineage are all
-    persisted on canonical rows. Existing exact legacy transport is still detected and
-    blocks creation so this cutover cannot introduce a second execution owner.
+    Reservation is the planning authority. Exact content, schedule, repeat cadence,
+    runtime intent, ownership mode and source lineage are persisted on canonical rows.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -106,31 +100,6 @@ class CanonicalRepeatTransportAdapter:
             )
         ).one_or_none()
 
-    async def _exact_transport_ids(
-        self,
-        *,
-        channel_id: int,
-        repeat_group_id: int,
-        scheduled_at: datetime,
-    ) -> tuple[int, ...]:
-        rows = (
-            await self.session.execute(
-                select(PostTask)
-                .where(
-                    PostTask.channel_id == int(channel_id),
-                    PostTask.payload["repeat_group_id"].as_integer()
-                    == int(repeat_group_id),
-                )
-                .order_by(PostTask.id.asc())
-                .limit(200)
-            )
-        ).scalars().all()
-        expected = as_utc(scheduled_at)
-        return tuple(
-            int(task.id)
-            for task in rows
-            if task.scheduled_at is not None and as_utc(task.scheduled_at) == expected
-        )
 
     async def _existing_after_integrity_conflict(
         self,
@@ -145,7 +114,6 @@ class CanonicalRepeatTransportAdapter:
                 outcome="existing",
                 publication_id=verification.successor_publication_id,
                 schedule_entry_id=verification.successor_schedule_entry_id,
-                legacy_post_task_id=verification.successor_legacy_post_task_id,
             )
         return CanonicalRepeatTransportResult(
             source_publication_id=int(source_publication_id),
@@ -179,7 +147,6 @@ class CanonicalRepeatTransportAdapter:
                 outcome="existing",
                 publication_id=verification.successor_publication_id,
                 schedule_entry_id=verification.successor_schedule_entry_id,
-                legacy_post_task_id=verification.successor_legacy_post_task_id,
             )
         if verification.outcome != "pending":
             await self.session.rollback()
@@ -236,19 +203,6 @@ class CanonicalRepeatTransportAdapter:
         if not canonical_repeat_runtime_options_supported(runtime_options):
             await self.session.rollback()
             return CanonicalRepeatTransportResult(safe_source_id, "conflict")
-
-        transport_ids = await self._exact_transport_ids(
-            channel_id=channel_id,
-            repeat_group_id=repeat_group_id,
-            scheduled_at=expected_at,
-        )
-        if transport_ids:
-            await self.session.rollback()
-            return CanonicalRepeatTransportResult(
-                source_publication_id=safe_source_id,
-                outcome=("existing_transport" if len(transport_ids) == 1 else "conflict"),
-                legacy_post_task_id=(transport_ids[0] if len(transport_ids) == 1 else None),
-            )
 
         item = await self.session.get(ContentItem, content_item_id)
         revision = (
@@ -311,7 +265,6 @@ class CanonicalRepeatTransportAdapter:
                 outcome="created",
                 publication_id=int(publication.id),
                 schedule_entry_id=int(schedule.id),
-                legacy_post_task_id=None,
             )
         except IntegrityError:
             await self.session.rollback()
