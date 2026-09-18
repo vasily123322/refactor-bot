@@ -10,8 +10,7 @@ from typing import Sequence, Union
 
 from alembic import op
 
-import app.domain  # noqa: F401 register ORM tables in Base.metadata
-from app.core.db import Base
+from migration_snapshots.schema_20260809 import Base as FrozenBaselineBase
 
 
 revision: str = "20260809_0001"
@@ -20,7 +19,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 # Freeze the historical baseline membership. Never replace this with an unfiltered
-# Base.metadata.create_all(): future ORM tables must be introduced by later Alembic
+# FrozenBaselineBase.metadata.create_all(): future ORM tables must be introduced by later Alembic
 # revisions, otherwise a fresh database would create them during 0001 and collide
 # with the explicit revision that owns them.
 _BASELINE_TABLE_NAMES = frozenset(
@@ -63,18 +62,19 @@ _BASELINE_TABLE_NAMES = frozenset(
 
 def upgrade() -> None:
     bind = op.get_bind()
-    known_names = set(Base.metadata.tables)
-    missing_from_registry = _BASELINE_TABLE_NAMES - known_names
-    if missing_from_registry:
+    known_names = set(FrozenBaselineBase.metadata.tables)
+    if known_names != _BASELINE_TABLE_NAMES:
+        missing = sorted(_BASELINE_TABLE_NAMES - known_names)
+        extra = sorted(known_names - _BASELINE_TABLE_NAMES)
         raise RuntimeError(
-            "Alembic baseline ORM registry is incomplete: "
-            + ", ".join(sorted(missing_from_registry))
+            "frozen Alembic baseline registry mismatch "
+            f"(missing={missing}, extra={extra})"
         )
 
     # SQLAlchemy's sorted_tables respects FK dependencies. checkfirst=True keeps
     # adoption non-destructive for existing current databases while still creating
     # the complete frozen baseline on an empty database.
-    for table in Base.metadata.sorted_tables:
+    for table in FrozenBaselineBase.metadata.sorted_tables:
         if table.name in _BASELINE_TABLE_NAMES:
             table.create(bind=bind, checkfirst=True)
 
