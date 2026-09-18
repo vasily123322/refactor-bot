@@ -4,145 +4,70 @@ from types import SimpleNamespace
 
 import pytest
 
-import app.services.admin_remove_allrepeat as remove_module
 from app.services.admin_remove_allrepeat import AdminRemoveAllRepeatService
-from app.services.canonical_scheduler_admission import (
-    CanonicalSchedulerAdmission,
-    CanonicalSchedulerAdmissionKind,
-)
-
-
-class _Scalars:
-    def __init__(self, values):
-        self._values = list(values)
-
-    def all(self):
-        return list(self._values)
 
 
 class _Result:
-    def __init__(self, values):
-        self._values = list(values)
+    def __init__(self, rows):
+        self._rows = list(rows)
 
-    def scalars(self):
-        return _Scalars(self._values)
+    def all(self):
+        return list(self._rows)
 
 
 class _Session:
-    def __init__(self, tasks):
-        self.tasks = list(tasks)
+    def __init__(self, rows):
+        self.rows = list(rows)
         self.commits = 0
 
     async def execute(self, _statement):
-        return _Result(self.tasks)
+        return _Result(self.rows)
 
     async def commit(self):
         self.commits += 1
 
 
-async def _execute(monkeypatch, *, tasks, admissions):
-    class _AdmissionService:
-        def __init__(self, _session):
-            pass
-
-        async def classify(self, *, task_id):
-            return admissions[int(task_id)]
-
-    monkeypatch.setattr(
-        remove_module,
-        "CanonicalSchedulerAdmissionService",
-        _AdmissionService,
-    )
-    session = _Session(tasks)
-    result = await AdminRemoveAllRepeatService(session).execute()
-    return result, session
-
-
-def _task(task_id: int):
+def _schedule(*, status="pending", repeat=True, meta=None):
     return SimpleNamespace(
-        id=task_id,
-        status="pending",
-        payload={
-            "repeat_on": True,
-            "repeat_group_id": 77,
-            "repeat_seconds": 3600,
-            "autodelete_seconds": 60,
-            "autodelete_views": 10,
-        },
+        id=1,
+        status=status,
+        repeat_rule={"enabled": True, "seconds": 3600} if repeat else {},
+        meta=dict(meta or {}),
+    )
+
+
+def _publication(*, status="queued", meta=None):
+    return SimpleNamespace(
+        id=2,
+        status=status,
+        last_error="old",
+        meta=dict(meta or {}),
     )
 
 
 @pytest.mark.asyncio
-async def test_linked_supported_started_row_is_not_legacy_mutated(monkeypatch):
-    task = _task(1)
-    before_payload = dict(task.payload)
-    admission = CanonicalSchedulerAdmission(
-        CanonicalSchedulerAdmissionKind.CANONICAL_PROOF_REQUIRED,
-        publication_id=101,
-        profile="plain",
-        repeat=True,
+async def test_pending_canonical_repeat_is_cancelled_without_posttask_mutation():
+    schedule = _schedule(
+        meta={
+            "repeat_group_id": 10,
+            "runtime_options": {
+                "autodelete_seconds": 60,
+                "autodelete_views": 10,
+                "pin_on": True,
+            },
+        }
     )
+    publication = _publication(meta=dict(schedule.meta))
 
-    result, session = await _execute(
-        monkeypatch,
-        tasks=[task],
-        admissions={1: admission},
-    )
+    session = _Session([(schedule, publication)])
+    result = await AdminRemoveAllRepeatService(session).execute()
 
-    assert task.status == "pending"
-    assert task.payload == before_payload
-    assert task.payload["repeat_on"] is True
-    assert task.payload["repeat_seconds"] == 3600
-    assert task.payload["autodelete_seconds"] == 60
-    assert task.payload["autodelete_views"] == 10
-    assert result.removed_pending == 0
-    assert result.disabled_flags == 0
-    assert result.cleared_autodelete == 0
-    assert result.protected_canonical == 1
-    assert session.commits == 1
-
-
-@pytest.mark.asyncio
-async def test_ambiguous_or_drifted_link_fails_closed_without_mutation(monkeypatch):
-    task = _task(2)
-    before_payload = dict(task.payload)
-    admission = CanonicalSchedulerAdmission(
-        CanonicalSchedulerAdmissionKind.FAIL_CLOSED,
-        publication_id=202,
-    )
-
-    result, _session = await _execute(
-        monkeypatch,
-        tasks=[task],
-        admissions={2: admission},
-    )
-
-    assert task.status == "pending"
-    assert task.payload == before_payload
-    assert result.protected_canonical == 1
-
-
-@pytest.mark.asyncio
-async def test_unlinked_legacy_row_keeps_existing_bulk_cleanup_semantics(monkeypatch):
-    task = _task(3)
-    admission = CanonicalSchedulerAdmission(
-        CanonicalSchedulerAdmissionKind.LEGACY_UNLINKED
-    )
-
-    result, session = await _execute(
-        monkeypatch,
-        tasks=[task],
-        admissions={3: admission},
-    )
-
-    assert task.status == "skipped"
-    assert task.payload["repeat_on"] is False
-    assert "repeat_seconds" not in task.payload
-    assert task.payload["repeat_group_id"] == 77
-    assert "autodelete_seconds" not in task.payload
-    assert "autodelete_views" not in task.payload
-    assert task.payload["autodeleted"] is True
-    assert task.payload["autodeleted_at"]
+    assert schedule.status == "cancelled"
+    assert publication.status == "cancelled"
+    assert publication.last_error is None
+    assert schedule.repeat_rule == {"enabled": False}
+    assert schedule.meta["runtime_options"] == {"pin_on": True}
+    assert publication.meta["runtime_options"] == {"pin_on": True}
     assert result.removed_pending == 1
     assert result.disabled_flags == 1
     assert result.cleared_autodelete == 1
@@ -151,40 +76,30 @@ async def test_unlinked_legacy_row_keeps_existing_bulk_cleanup_semantics(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_time_views_fallback_stays_legacy_without_opening_canonical_row(monkeypatch):
-    legacy_fallback = _task(4)
-    canonical = _task(5)
-    canonical_before = dict(canonical.payload)
-    admissions = {
-        4: CanonicalSchedulerAdmission(
-            CanonicalSchedulerAdmissionKind.LEGACY_TIME_VIEWS,
-            publication_id=404,
-            profile="time",
-            repeat=True,
-        ),
-        5: CanonicalSchedulerAdmission(
-            CanonicalSchedulerAdmissionKind.CANONICAL_PROOF_REQUIRED,
-            publication_id=505,
-            profile="time",
-            repeat=True,
-        ),
-    }
+async def test_nonmutable_canonical_repeat_is_preserved():
+    schedule = _schedule(status="completed", meta={"repeat_group_id": 10})
+    publication = _publication(status="published", meta={"repeat_group_id": 10})
+    before_rule = dict(schedule.repeat_rule)
+    before_meta = dict(schedule.meta)
 
-    result, _session = await _execute(
-        monkeypatch,
-        tasks=[legacy_fallback, canonical],
-        admissions=admissions,
-    )
+    result = await AdminRemoveAllRepeatService(_Session([(schedule, publication)])).execute()
 
-    assert legacy_fallback.status == "skipped"
-    assert legacy_fallback.payload["repeat_on"] is False
-    assert "autodelete_seconds" not in legacy_fallback.payload
-    assert canonical.status == "pending"
-    assert canonical.payload == canonical_before
-    assert result.removed_pending == 1
-    assert result.disabled_flags == 1
-    assert result.cleared_autodelete == 1
+    assert schedule.status == "completed"
+    assert publication.status == "published"
+    assert schedule.repeat_rule == before_rule
+    assert schedule.meta == before_meta
+    assert result.removed_pending == 0
+    assert result.disabled_flags == 0
+    assert result.cleared_autodelete == 0
     assert result.protected_canonical == 1
+
+
+def test_service_has_no_posttask_or_scheduler_admission_dependency():
+    from pathlib import Path
+
+    source = Path("app/services/admin_remove_allrepeat.py").read_text(encoding="utf-8")
+    assert "PostTask" not in source
+    assert "canonical_scheduler_admission" not in source
 
 
 def test_guarded_admin_router_precedes_legacy_main_router():
