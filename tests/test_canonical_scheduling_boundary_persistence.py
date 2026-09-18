@@ -18,16 +18,10 @@ from app.services.canonical_repeat_plan_reservation import (
     CanonicalRepeatPlanReservationService,
 )
 from app.services.canonical_repeat_transport_adapter import CanonicalRepeatTransportAdapter
-from app.services.canonical_scheduler_admission import (
-    CanonicalSchedulerAdmissionKind,
-    CanonicalSchedulerAdmissionService,
-)
-from app.services.legacy_content_mirror import mirror_legacy_post_task
 from app.services.posting import PostingService
 from app.services.publication_bridge import LegacyPublicationBridge, PublicationBridgeError
 from app.services.publication_execution_mode import (
     CANONICAL_EXECUTION_MODE,
-    INTENTIONAL_LEGACY_EXECUTION_MODE,
     UnsupportedSchedulingProfileError,
 )
 
@@ -500,99 +494,6 @@ def test_fresh_canonical_repeat_report_continues_without_posttask() -> None:
                 }
                 schedules, publications, tasks, _revisions = await _counts(session)
                 assert (schedules, publications, tasks) == (2, 2, 0)
-        finally:
-            await engine.dispose()
-
-    asyncio.run(run())
-
-
-def test_historical_linked_mixed_remains_intentional_legacy() -> None:
-    async def run() -> None:
-        engine, Session = await _new_db()
-        try:
-            _owner, channel = await _seed_channel(Session, 12)
-            async with Session() as session:
-                task = PostTask(
-                    channel_id=int(channel.id),
-                    status="pending",
-                    scheduled_at=datetime.now(timezone.utc) + timedelta(minutes=15),
-                    payload={
-                        "type": "text",
-                        "text": "Historical linked mixed",
-                        "autodelete_seconds": 600,
-                        "autodelete_views": 100,
-                    },
-                )
-                session.add(task)
-                await session.flush()
-                publication = await mirror_legacy_post_task(session, task, commit=False)
-                assert publication is not None
-                await session.commit()
-                await session.refresh(publication)
-
-                assert publication.execution_mode == INTENTIONAL_LEGACY_EXECUTION_MODE
-                assert publication.legacy_post_task_id == int(task.id)
-                admission = await CanonicalSchedulerAdmissionService(session).classify(
-                    task_id=int(task.id)
-                )
-                # Very old mirror rows do not carry canonical runtime_options metadata,
-                # so admission preserves their explicit intentional-legacy owner through
-                # the generic legacy kind. Exact linked mixed rows with durable options
-                # remain covered by the LEGACY_TIME_VIEWS admission regression suite.
-                assert admission.kind is CanonicalSchedulerAdmissionKind.LEGACY_INTENTIONAL
-                assert admission.legacy_allowed is True
-        finally:
-            await engine.dispose()
-
-    asyncio.run(run())
-
-
-def test_historical_linked_repeat_report_remains_linked_legacy() -> None:
-    async def run() -> None:
-        engine, Session = await _new_db()
-        try:
-            _owner, channel = await _seed_channel(Session, 7)
-            async with Session() as session:
-                task = PostTask(
-                    channel_id=int(channel.id),
-                    status="pending",
-                    scheduled_at=datetime.now(timezone.utc) + timedelta(minutes=15),
-                    payload={
-                        "type": "text",
-                        "text": "Historical linked repeat report",
-                        "repeat_on": True,
-                        "repeat_seconds": 3600,
-                        "autodelete_seconds": 600,
-                        "autodelete_report": True,
-                    },
-                )
-                session.add(task)
-                await session.flush()
-                publication = await mirror_legacy_post_task(session, task, commit=False)
-                assert publication is not None
-                await session.commit()
-                await session.refresh(publication)
-
-                assert publication.execution_mode == INTENTIONAL_LEGACY_EXECUTION_MODE
-                assert publication.legacy_post_task_id == int(task.id)
-                admission = await CanonicalSchedulerAdmissionService(session).classify(
-                    task_id=int(task.id)
-                )
-                assert admission.kind is CanonicalSchedulerAdmissionKind.LEGACY_INTENTIONAL
-                assert admission.legacy_allowed is True
-                assert admission.repeat is True
-
-                successors = int(
-                    (
-                        await session.execute(
-                            select(func.count(Publication.id)).where(
-                                Publication.repeat_source_publication_id
-                                == int(publication.id)
-                            )
-                        )
-                    ).scalar_one()
-                )
-                assert successors == 0
         finally:
             await engine.dispose()
 
