@@ -22,7 +22,7 @@ from app.services.canonical_repeat_reservation_verifier import (
 from app.services.publication_bridge import _delivery_meta
 from app.services.publication_execution_mode import (
     CANONICAL_EXECUTION_MODE,
-    execution_mode_from_runtime_options,
+    canonical_repeat_runtime_options_supported,
 )
 from app.services.scheduling import as_utc
 
@@ -233,7 +233,7 @@ class CanonicalRepeatTransportAdapter:
         # This Stage 5 cutover is canonical-only. Intentional legacy fallback (including
         # time+views/report) keeps its existing legacy scheduler path and is never
         # silently converted into canonical ownership here.
-        if execution_mode_from_runtime_options(runtime_options) != CANONICAL_EXECUTION_MODE:
+        if not canonical_repeat_runtime_options_supported(runtime_options):
             await self.session.rollback()
             return CanonicalRepeatTransportResult(safe_source_id, "conflict")
 
