@@ -201,7 +201,7 @@ class CanonicalRepeatContinuationWorker:
             reserved = False
 
         materialized = await self._materialize(publication_id)
-        if materialized.outcome not in {"created", "existing", "existing_transport"}:
+        if materialized.outcome not in {"created", "existing"}:
             return "conflict" if materialized.outcome == "conflict" else "ineligible"
 
         verified = await self._verify(publication_id)
