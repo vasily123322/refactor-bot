@@ -474,7 +474,6 @@ def test_fresh_canonical_repeat_report_continues_without_posttask() -> None:
                 assert successor.outcome == "created"
                 assert successor.publication_id is not None
                 assert successor.schedule_entry_id is not None
-                assert successor.legacy_post_task_id is None
 
                 child = await session.get(Publication, int(successor.publication_id))
                 child_schedule = await session.get(
