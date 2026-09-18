@@ -169,6 +169,7 @@ export default function App() {
   const [document, setDocument] = useState<PostDocument>(emptyTextDocument());
   const [previewMessageIds, setPreviewMessageIds] = useState<number[]>([]);
   const [initialLoading, setInitialLoading] = useState(true);
+  const [bootstrapLoadFailed, setBootstrapLoadFailed] = useState(false);
   const [activeOperations, setActiveOperations] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -349,6 +350,7 @@ export default function App() {
     void Promise.all([studioApi.me(), studioApi.channels()])
       .then(([nextUser, nextChannels]) => {
         if (cancelled) return;
+        setBootstrapLoadFailed(false);
         setUser(nextUser);
         setChannels(nextChannels);
         if (nextChannels.length) {
@@ -356,7 +358,11 @@ export default function App() {
           setSelectedChannelId(nextChannels[0].id);
         }
       })
-      .catch((reason) => !cancelled && setError(errorMessage(reason)))
+      .catch((reason) => {
+        if (cancelled) return;
+        setBootstrapLoadFailed(true);
+        setError(errorMessage(reason));
+      })
       .finally(() => {
         if (!cancelled) setInitialLoading(false);
       });
@@ -542,15 +548,15 @@ export default function App() {
   const previewing = activeOperations.has('telegram-preview');
   const publishing = activeOperations.has('publish');
   const editorTransitionBusy = openingContent || creatingDraft || switchingChannel;
-  const contentDataView = selectedChannelId === null
-    ? 'loaded-empty'
-    : resolveChannelDataView(itemsLoadState, selectedChannelId, items.length);
+  const contentDataView = bootstrapLoadFailed
+    ? 'error-without-valid-data'
+    : selectedChannelId === null
+      ? 'loaded-empty'
+      : resolveChannelDataView(itemsLoadState, selectedChannelId, items.length);
   const contentInitialLoading = initialLoading
     || (selectedChannelId !== null && contentDataView === 'loading');
-  const contentLoadFailed = selectedChannelId !== null
-    && contentDataView === 'error-without-valid-data';
-  const contentEmpty = !initialLoading
-    && (selectedChannelId === null || contentDataView === 'loaded-empty');
+  const contentLoadFailed = contentDataView === 'error-without-valid-data';
+  const contentEmpty = !initialLoading && contentDataView === 'loaded-empty';
 
   useTelegramComposerMainButton({
     active: view === 'content',
