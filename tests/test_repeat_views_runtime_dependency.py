@@ -105,6 +105,22 @@ def test_repeat_capable_worker_passes_exact_mode_and_lease_into_service(monkeypa
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=2),
         )
 
+        class FakeMixedService:
+            def __init__(self, session, **kwargs) -> None:
+                captured["mixed_session"] = session
+                captured["mixed_kwargs"] = kwargs
+
+            async def views_evaluate_and_delete(
+                self,
+                publication_id: int,
+                *,
+                lease,
+                now,
+            ):
+                captured["mixed_publication_id"] = publication_id
+                captured["mixed_lease"] = lease
+                return None
+
         class FakeService:
             def __init__(self, session, **kwargs) -> None:
                 captured["session"] = session
@@ -118,6 +134,11 @@ def test_repeat_capable_worker_passes_exact_mode_and_lease_into_service(monkeypa
                     ambiguous_count=0,
                 )
 
+        monkeypatch.setattr(
+            worker_module,
+            "PublicationMixedAutodeleteService",
+            FakeMixedService,
+        )
         monkeypatch.setattr(
             worker_module,
             "PublicationAutodeleteViewsService",
@@ -149,6 +170,8 @@ def test_repeat_capable_worker_passes_exact_mode_and_lease_into_service(monkeypa
         tick = await worker.run_once()
         assert tick.leased == 1
         assert tick.ineligible == 1
+        assert captured["mixed_publication_id"] == 17
+        assert captured["mixed_lease"] is handle
         assert captured["publication_id"] == 17
         kwargs = captured["kwargs"]
         assert kwargs["allow_repeat_views"] is True  # type: ignore[index]
