@@ -2,6 +2,7 @@ import { AppRoot } from '@telegram-apps/telegram-ui';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AIStudioPanel } from './AIStudioPanel';
+import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
 import { StudioApiError, studioApi } from './api';
 import { ChannelOnboardingControl } from './ChannelOnboardingControl';
 import { runComposerPreviewOnce } from './composerPreviewAction';
@@ -59,6 +60,8 @@ function Sidebar({
   onSelectChannel,
   onView,
   onChannelsChanged,
+  loading,
+  channelSelectionDisabled,
 }: {
   user: StudioUser | null;
   channels: Channel[];
@@ -67,6 +70,8 @@ function Sidebar({
   onSelectChannel: (id: number) => void;
   onView: (view: StudioView) => void;
   onChannelsChanged: () => Promise<void>;
+  loading: boolean;
+  channelSelectionDisabled: boolean;
 }) {
   return (
     <aside className="sidebar">
@@ -74,7 +79,7 @@ function Sidebar({
         <span className="brand-mark">TS</span>
         <div>
           <strong>Telegram Studio</strong>
-          <small>{user?.full_name || user?.username || 'Content OS'}</small>
+          <small>{loading ? 'Загрузка…' : user?.full_name || user?.username || 'Content OS'}</small>
         </div>
       </div>
 
@@ -112,14 +117,25 @@ function Sidebar({
       </nav>
 
       <div className="sidebar-section-title">Каналы</div>
-      <div className="channel-list">
-        {channels.map((channel) => (
+      <div className="channel-list" aria-busy={loading || undefined}>
+        {loading ? (
+          <>
+            <span className="sr-only" role="status" aria-live="polite">Загружаю каналы…</span>
+            {[0, 1, 2].map((index) => (
+              <div className="content-row-skeleton" key={index} aria-hidden="true">
+                <SkeletonBlock height={12} width="70%" />
+                <SkeletonBlock height={9} width="45%" />
+              </div>
+            ))}
+          </>
+        ) : channels.map((channel) => (
           <button
             className={
               channel.id === selectedChannelId ? 'channel-button selected' : 'channel-button'
             }
             key={channel.id}
             onClick={() => onSelectChannel(channel.id)}
+            disabled={channelSelectionDisabled}
           >
             <span className="channel-avatar">
               {(channel.title || 'T').trim().slice(0, 1).toUpperCase()}
@@ -145,7 +161,8 @@ export default function App() {
   const [selected, setSelected] = useState<ContentDetail | null>(null);
   const [document, setDocument] = useState<PostDocument>(emptyTextDocument());
   const [previewMessageIds, setPreviewMessageIds] = useState<number[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [activeOperations, setActiveOperations] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -159,6 +176,7 @@ export default function App() {
   const editVersionRef = useRef(0);
   const inFlightSaveRef = useRef<Promise<boolean> | null>(null);
   const inFlightPreviewRef = useRef<Promise<void> | null>(null);
+  const loadedItemsChannelRef = useRef<number | null>(null);
 
   useTelegramDirtyClosingProtection(dirty);
   useTelegramStudioBackButton(view, setView);
@@ -175,7 +193,29 @@ export default function App() {
 
   const loadItems = useCallback(async (channelId: number) => {
     const rows = await studioApi.content(channelId);
+    if (channelIdRef.current !== channelId) return;
+    loadedItemsChannelRef.current = channelId;
     setItems(rows);
+  }, []);
+
+  const runOperation = useCallback(async <T,>(
+    key: string,
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    setActiveOperations((current) => {
+      const next = new Set(current);
+      next.add(key);
+      return next;
+    });
+    try {
+      return await operation();
+    } finally {
+      setActiveOperations((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
+    }
   }, []);
 
   const refreshChannels = useCallback(async () => {
@@ -302,7 +342,10 @@ export default function App() {
           setSelectedChannelId(nextChannels[0].id);
         }
       })
-      .catch((reason) => !cancelled && setError(errorMessage(reason)));
+      .catch((reason) => !cancelled && setError(errorMessage(reason)))
+      .finally(() => {
+        if (!cancelled) setInitialLoading(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -312,6 +355,8 @@ export default function App() {
     if (selectedChannelId === null) return;
     installEditorDocument(null, emptyTextDocument());
     setPreviewMessageIds([]);
+    loadedItemsChannelRef.current = null;
+    setItems([]);
     void loadItems(selectedChannelId).catch((reason) => setError(errorMessage(reason)));
   }, [installEditorDocument, loadItems, selectedChannelId]);
 
@@ -332,19 +377,18 @@ export default function App() {
     const channelId = channelIdRef.current;
     if (channelId === null) return;
     setView('content');
-    setBusy(true);
     setError(null);
-    try {
-      const detail = await studioApi.contentItem(channelId, contentId);
-      if (channelIdRef.current !== channelId) return;
-      installEditorDocument(detail, detail.document);
-      setPreviewMessageIds([]);
-      await loadItems(channelId);
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    await runOperation('open-content', async () => {
+      try {
+        const detail = await studioApi.contentItem(channelId, contentId);
+        if (channelIdRef.current !== channelId) return;
+        installEditorDocument(detail, detail.document);
+        setPreviewMessageIds([]);
+        await loadItems(channelId);
+      } catch (reason) {
+        setError(errorMessage(reason));
+      }
+    });
   };
 
   const openItem = async (item: ContentSummary) => openContentById(item.id);
@@ -358,6 +402,8 @@ export default function App() {
       }
       channelIdRef.current = channelId;
       selectedRef.current = null;
+      loadedItemsChannelRef.current = null;
+      setItems([]);
       setSelectedChannelId(channelId);
     })();
   };
@@ -369,24 +415,23 @@ export default function App() {
     }
     const channelId = channelIdRef.current;
     if (channelId === null) return;
-    setBusy(true);
     setError(null);
-    try {
-      const initial = mode === 'rich' ? emptyRichDocument() : emptyTextDocument();
-      const detail = await studioApi.createContent(
-        channelId,
-        initial,
-        mode === 'rich' ? 'Новый Rich пост' : 'Новый пост',
-      );
-      if (channelIdRef.current !== channelId) return;
-      installEditorDocument(detail, detail.document);
-      setPreviewMessageIds([]);
-      await loadItems(channelId);
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    await runOperation('create-draft', async () => {
+      try {
+        const initial = mode === 'rich' ? emptyRichDocument() : emptyTextDocument();
+        const detail = await studioApi.createContent(
+          channelId,
+          initial,
+          mode === 'rich' ? 'Новый Rich пост' : 'Новый пост',
+        );
+        if (channelIdRef.current !== channelId) return;
+        installEditorDocument(detail, detail.document);
+        setPreviewMessageIds([]);
+        await loadItems(channelId);
+      } catch (reason) {
+        setError(errorMessage(reason));
+      }
+    });
   };
 
   const save = () => {
@@ -395,8 +440,7 @@ export default function App() {
 
   const exactPreview = useCallback((): Promise<void> => runComposerPreviewOnce(
     inFlightPreviewRef,
-    async () => {
-      setBusy(true);
+    async () => runOperation('telegram-preview', async () => {
       setError(null);
       try {
         const result = await studioApi.telegramPreview(
@@ -408,11 +452,9 @@ export default function App() {
         setNotice('Настоящий preview отправлен в Telegram');
       } catch (reason) {
         setError(errorMessage(reason));
-      } finally {
-        setBusy(false);
       }
-    },
-  ), [previewMessageIds]);
+    }),
+  ), [previewMessageIds, runOperation]);
 
   const publishNow = async () => {
     if (dirtyRef.current) {
@@ -426,18 +468,17 @@ export default function App() {
     const currentSelected = selectedRef.current;
     const channelId = channelIdRef.current;
     if (!currentSelected || channelId === null) return;
-    setBusy(true);
     setError(null);
-    try {
-      const publication = await studioApi.publishNow(channelId, currentSelected.id);
-      setNotice(`Публикация #${publication.id} поставлена в очередь`);
-      emitStudioHaptic('publish-success');
-    } catch (reason) {
-      emitStudioHaptic('publish-error');
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    await runOperation('publish', async () => {
+      try {
+        const publication = await studioApi.publishNow(channelId, currentSelected.id);
+        setNotice(`Публикация #${publication.id} поставлена в очередь`);
+        emitStudioHaptic('publish-success');
+      } catch (reason) {
+        emitStudioHaptic('publish-error');
+        setError(errorMessage(reason));
+      }
+    });
   };
 
   const text = documentText(document);
@@ -468,12 +509,19 @@ export default function App() {
         ? '● Изменения сохранятся автоматически'
         : '✓ Автосохранено';
   const telegramPreviewActionLabel = '👁 В Telegram';
+  const openingContent = activeOperations.has('open-content');
+  const creatingDraft = activeOperations.has('create-draft');
+  const previewing = activeOperations.has('telegram-preview');
+  const publishing = activeOperations.has('publish');
+  const editorTransitionBusy = openingContent || creatingDraft;
+  const contentInitialLoading = initialLoading
+    || (selectedChannelId !== null && loadedItemsChannelRef.current !== selectedChannelId);
 
   useTelegramComposerMainButton({
     active: view === 'content',
     label: telegramPreviewActionLabel,
-    disabled: busy,
-    loading: busy,
+    disabled: previewing || editorTransitionBusy || publishing,
+    loading: previewing,
     onSubmit: exactPreview,
   });
 
@@ -488,6 +536,8 @@ export default function App() {
           onSelectChannel={selectChannel}
           onView={setView}
           onChannelsChanged={refreshChannels}
+          loading={initialLoading}
+          channelSelectionDisabled={editorTransitionBusy || publishing}
         />
 
         {view === 'planner' ? (
@@ -514,18 +564,22 @@ export default function App() {
                 <h1>{selected ? selected.title || `Пост #${selected.id}` : 'Контент'}</h1>
               </div>
               <div className="top-actions">
-                <button className="button secondary" onClick={() => void createDraft('classic')} disabled={busy || !channel}>
+                <button className="button secondary" onClick={() => void createDraft('classic')} disabled={editorTransitionBusy || publishing || !channel}>
                   + Classic
                 </button>
-                <button className="button secondary" onClick={() => void createDraft('rich')} disabled={busy || !channel}>
+                <button className="button secondary" onClick={() => void createDraft('rich')} disabled={editorTransitionBusy || publishing || !channel}>
                   + Rich
                 </button>
-                <button className="button secondary" onClick={exactPreview} disabled={busy}>
+                <button className="button secondary" onClick={exactPreview} disabled={previewing || editorTransitionBusy || publishing}>
                   {telegramPreviewActionLabel}
                 </button>
-                <button className="button primary" onClick={() => void publishNow()} disabled={busy || !selected}>
+                <button className="button primary" onClick={() => void publishNow()} disabled={publishing || editorTransitionBusy || previewing || !selected}>
                   Опубликовать
                 </button>
+                {creatingDraft && <InlineStatus>Создаю новый черновик…</InlineStatus>}
+                {openingContent && <InlineStatus>Открываю публикацию…</InlineStatus>}
+                {previewing && <InlineStatus>Отправляю preview в Telegram…</InlineStatus>}
+                {publishing && <InlineStatus>Ставлю публикацию в очередь…</InlineStatus>}
               </div>
             </header>
 
@@ -536,10 +590,10 @@ export default function App() {
               </div>
             )}
             {notice && (
-              <div className="banner success">
+              <InlineStatus className="banner success">
                 {notice}
                 <button onClick={() => setNotice(null)}>×</button>
-              </div>
+              </InlineStatus>
             )}
 
             <div className="studio-grid">
@@ -550,13 +604,33 @@ export default function App() {
                     <small>{items.length} объектов в Content domain</small>
                   </div>
                 </div>
-                <div className="content-list">
-                  {items.length === 0 && <div className="empty-state">Создайте первый пост.</div>}
+                <AsyncRegion
+                  className="content-list"
+                  loading={contentInitialLoading}
+                  empty={items.length === 0}
+                  loadingLabel="Загружаю публикации…"
+                  loadingFallback={
+                    <div className="content-list-skeleton">
+                      {[0, 1, 2, 3].map((index) => (
+                        <div className="content-row-skeleton" key={index}>
+                          <SkeletonBlock height={12} width={index % 2 ? '58%' : '74%'} />
+                          <SkeletonBlock height={9} width="42%" />
+                        </div>
+                      ))}
+                    </div>
+                  }
+                  emptyFallback={
+                    <div className="empty-state">
+                      {channel ? 'Создайте первый пост.' : 'Подключите или выберите канал.'}
+                    </div>
+                  }
+                >
                   {items.map((item) => (
                     <button
                       key={item.id}
                       className={selected?.id === item.id ? 'content-row selected' : 'content-row'}
                       onClick={() => void openItem(item)}
+                      disabled={editorTransitionBusy || publishing}
                     >
                       <span>
                         <strong>{item.title || `Пост #${item.id}`}</strong>
@@ -565,7 +639,7 @@ export default function App() {
                       <span className={`status status-${item.status}`}>{item.status}</span>
                     </button>
                   ))}
-                </div>
+                </AsyncRegion>
               </section>
 
               <section className="editor-panel">
@@ -579,7 +653,7 @@ export default function App() {
                   <button
                     className="button primary compact"
                     onClick={save}
-                    disabled={busy || !selected || !dirty || saveState === 'saving'}
+                    disabled={!selected || !dirty || saveState === 'saving'}
                   >
                     {saveButtonLabel}
                   </button>
@@ -615,7 +689,6 @@ export default function App() {
           </main>
         )}
       </div>
-      {busy && <div className="busy-indicator" aria-label="Выполняется операция" />}
     </AppRoot>
   );
 }
