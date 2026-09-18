@@ -4,11 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content.models import ContentItem
-from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.services.scheduling import as_utc
 
@@ -50,7 +49,7 @@ class PlannerEntry:
 
 
 class PlannerService:
-    """Planner read/write boundary synchronized with the legacy scheduler bridge."""
+    """Planner read/write boundary for canonical ScheduleEntry/Publication state."""
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -168,7 +167,7 @@ class PlannerService:
 
     async def _locked_schedule(
         self, *, channel_id: int, schedule_id: int
-    ) -> tuple[ScheduleEntry, Publication | None, PostTask | None]:
+    ) -> tuple[ScheduleEntry, Publication | None]:
         result = await self.session.execute(
             select(ScheduleEntry)
             .where(
@@ -188,16 +187,12 @@ class PlannerService:
                 .with_for_update()
             )
         ).scalar_one_or_none()
-        task = None
-        if publication is not None and publication.legacy_post_task_id is not None:
-            task = await self.session.get(PostTask, int(publication.legacy_post_task_id))
-        return schedule, publication, task
+        return schedule, publication
 
     @staticmethod
     def _ensure_mutable(
         schedule: ScheduleEntry,
         publication: Publication | None,
-        task: PostTask | None,
     ) -> None:
         if str(schedule.status) != "pending":
             raise PlannerConflictError(
@@ -207,39 +202,7 @@ class PlannerService:
             raise PlannerConflictError(
                 f"publication is no longer queued (status={publication.status})"
             )
-        if task is not None and str(task.status) != "pending":
-            raise PlannerConflictError(
-                f"scheduler task is no longer pending (status={task.status})"
-            )
 
-    async def _cas_pending_task(
-        self,
-        task: PostTask | None,
-        **values,
-    ) -> None:
-        if task is None:
-            return
-        try:
-            result = await self.session.execute(
-                update(PostTask)
-                .where(
-                    PostTask.id == int(task.id),
-                    PostTask.status == "pending",
-                )
-                .values(**values)
-                .execution_options(synchronize_session=False)
-            )
-        except Exception:
-            await self.session.rollback()
-            raise
-
-        if int(getattr(result, "rowcount", 0) or 0) != 1:
-            await self.session.rollback()
-            raise PlannerConflictError("scheduler task is no longer pending")
-
-        # Keep expire_on_commit=False identity map coherent after synchronize_session=False.
-        for key, value in values.items():
-            setattr(task, key, value)
 
     async def reschedule(
         self,
@@ -249,12 +212,11 @@ class PlannerService:
         scheduled_at: datetime,
         timezone_name: str | None = None,
     ) -> PlannerEntry:
-        schedule, publication, task = await self._locked_schedule(
+        schedule, publication = await self._locked_schedule(
             channel_id=channel_id, schedule_id=schedule_id
         )
-        self._ensure_mutable(schedule, publication, task)
+        self._ensure_mutable(schedule, publication)
         when = as_utc(scheduled_at)
-        await self._cas_pending_task(task, scheduled_at=when)
         schedule.scheduled_at = when
         if timezone_name is not None:
             schedule.timezone = timezone_name
@@ -266,11 +228,10 @@ class PlannerService:
         return await self.get_entry(channel_id=channel_id, schedule_id=schedule_id)
 
     async def cancel(self, *, channel_id: int, schedule_id: int) -> PlannerEntry:
-        schedule, publication, task = await self._locked_schedule(
+        schedule, publication = await self._locked_schedule(
             channel_id=channel_id, schedule_id=schedule_id
         )
-        self._ensure_mutable(schedule, publication, task)
-        await self._cas_pending_task(task, status="cancelled")
+        self._ensure_mutable(schedule, publication)
         schedule.status = "cancelled"
         if publication is not None:
             publication.status = "cancelled"

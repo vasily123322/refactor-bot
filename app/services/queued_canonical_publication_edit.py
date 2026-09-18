@@ -9,18 +9,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.content.models import ContentItem, ContentRevision
-from app.domain.models import Channel, Client, PostTask
+from app.domain.models import Channel, Client
 from app.domain.publication_delivery import PublicationDeliveryLease
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.services.content import LegacyPayloadError, document_from_legacy_payload
-from app.services.publication_bridge import _runtime_intent, _scheduler_payload
 from app.services.publication_edit_persistence import (
     PublicationEditConflictError,
     PublicationEditPersistenceError,
     _content_payload,
 )
-from app.services.rich_media_assets import RichMediaAssetError, RichMediaAssetResolver
-from app.services.scheduling import as_utc
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,9 +31,8 @@ class QueuedCanonicalPublicationEditResult:
 class QueuedCanonicalPublicationEditCoordinator:
     """Atomically edit canonical content before delivery has started.
 
-    Publication identity and canonical content are authoritative. The linked PostTask is
-    only a compatibility projection for the legacy scheduler and is updated in the same
-    transaction after all ownership, lifecycle, linkage and execution barriers pass.
+    Publication identity and canonical content are authoritative. Editing is committed
+    only after ownership, lifecycle, linkage and delivery-start barriers pass.
     """
 
     def __init__(
@@ -78,47 +74,6 @@ class QueuedCanonicalPublicationEditCoordinator:
             )
         return deepcopy(dict(raw))
 
-    async def _compatibility_payload(
-        self,
-        session: AsyncSession,
-        *,
-        document,
-        channel_id: int,
-        repeat_rule: Mapping[str, Any],
-        runtime_options: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        try:
-            render_document = await RichMediaAssetResolver(session).resolve(
-                document,
-                channel_id=int(channel_id),
-            )
-            projected = _scheduler_payload(document, render_document=render_document)
-        except (RichMediaAssetError, RuntimeError) as exc:
-            raise PublicationEditPersistenceError(str(exc)) from exc
-
-        rule = deepcopy(dict(repeat_rule or {}))
-        if rule.get("enabled"):
-            try:
-                seconds = int(rule.get("seconds") or 0)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise PublicationEditConflictError(
-                    "canonical repeat rule is malformed"
-                ) from exc
-            if seconds <= 0:
-                raise PublicationEditConflictError("canonical repeat rule is malformed")
-            projected["repeat_on"] = True
-            projected["repeat_seconds"] = seconds
-        elif rule:
-            projected["repeat_on"] = False
-            projected.pop("repeat_seconds", None)
-
-        try:
-            runtime_intent = _runtime_intent(runtime_options, payload=projected)
-        except RuntimeError as exc:
-            raise PublicationEditConflictError(str(exc)) from exc
-        for key, value in runtime_intent.items():
-            projected[key] = deepcopy(value)
-        return projected
 
     async def edit_and_persist(
         self,
@@ -257,54 +212,6 @@ class QueuedCanonicalPublicationEditCoordinator:
                         "publication delivery lease is active"
                     )
 
-                task: PostTask | None = None
-                raw_legacy_task_id = publication.legacy_post_task_id
-                if raw_legacy_task_id is not None:
-                    try:
-                        legacy_task_id = int(raw_legacy_task_id)
-                    except (TypeError, ValueError, OverflowError) as exc:
-                        raise PublicationEditConflictError(
-                            "queued compatibility transport linkage is malformed"
-                        ) from exc
-                    if legacy_task_id <= 0:
-                        raise PublicationEditConflictError(
-                            "queued compatibility transport linkage is malformed"
-                        )
-                    try:
-                        schedule_task_id = int(
-                            dict(schedule.meta or {}).get("legacy_post_task_id") or 0
-                        )
-                    except (TypeError, ValueError, OverflowError) as exc:
-                        raise PublicationEditConflictError(
-                            "queued compatibility transport linkage is malformed"
-                        ) from exc
-                    if schedule_task_id != legacy_task_id:
-                        raise PublicationEditConflictError(
-                            "queued compatibility transport linkage changed"
-                        )
-
-                    task = (
-                        await session.execute(
-                            select(PostTask)
-                            .where(PostTask.id == legacy_task_id)
-                            .with_for_update()
-                        )
-                    ).scalar_one_or_none()
-                    if task is None:
-                        raise PublicationEditConflictError(
-                            "queued compatibility transport is missing"
-                        )
-                    if (
-                        str(task.status or "") != "pending"
-                        or int(task.channel_id) != int(publication.channel_id)
-                        or str(task.dedupe_key or "")
-                        != f"publication:{safe_publication_id}"
-                        or as_utc(task.scheduled_at) != as_utc(schedule.scheduled_at)
-                    ):
-                        raise PublicationEditConflictError(
-                            "queued compatibility transport is not safely pending"
-                        )
-
                 runtime_options = self._canonical_runtime_options(publication)
                 try:
                     document = document_from_legacy_payload(
@@ -315,16 +222,6 @@ class QueuedCanonicalPublicationEditCoordinator:
                     )
                 except LegacyPayloadError as exc:
                     raise PublicationEditPersistenceError(str(exc)) from exc
-
-                projected_payload: dict[str, Any] | None = None
-                if task is not None:
-                    projected_payload = await self._compatibility_payload(
-                        session,
-                        document=document,
-                        channel_id=int(publication.channel_id),
-                        repeat_rule=dict(schedule.repeat_rule or {}),
-                        runtime_options=runtime_options,
-                    )
 
                 next_revision = safe_expected_revision + 1
                 session.add(
@@ -344,10 +241,6 @@ class QueuedCanonicalPublicationEditCoordinator:
                 publication.content_revision = next_revision
                 schedule.content_revision = next_revision
 
-                # Compatibility-only projection. Canonical-only publications never
-                # read, lock, or mutate PostTask. Never mutate legacy execution fields.
-                if task is not None:
-                    task.payload = projected_payload
 
                 await session.commit()
                 return QueuedCanonicalPublicationEditResult(

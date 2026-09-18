@@ -9,8 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content import PostDocument
 from app.domain.content.models import ContentItem, ContentRevision
-from app.domain.models import PostTask
-from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
+from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.publication_execution_mode import (
     CANONICAL_EXECUTION_MODE,
     CANONICAL_SCHEDULING_OUTCOME,
@@ -18,33 +17,14 @@ from app.services.publication_execution_mode import (
     scheduling_boundary_from_runtime_options,
 )
 from app.services.rich_media_assets import RichMediaAssetError, RichMediaAssetResolver
-from app.services.scheduler_errors import (
-    MISSING_SCHEDULER_TASK_ERROR,
-    public_scheduler_error,
-)
 from app.services.scheduling import as_utc
 from app.services.telegram_renderer import TelegramRenderError, TelegramRenderer
-from app.services.telegram_results import (
-    normalize_telegram_message_ids,
-    normalize_telegram_result_link,
-)
 
 
 class PublicationBridgeError(RuntimeError):
     pass
 
 
-_TASK_TO_PUBLICATION_STATUS = {
-    "pending": "queued",
-    "processing": "sending",
-    "done": "published",
-    "failed": "failed",
-    "skipped": "skipped",
-    "cancelled": "cancelled",
-}
-
-_TERMINAL_TASK_STATUSES = frozenset({"done", "failed", "skipped", "cancelled"})
-_ACTIVE_PUBLICATION_STATUSES = frozenset({"queued", "sending"})
 _RUNTIME_RESERVED_KEYS = frozenset(
     {
         "repeat_on",
@@ -115,7 +95,7 @@ def _delivery_meta(
 
     `runtime_options` is a reserved canonical field. It records the options supplied
     at queue time, before the legacy scheduler adds result/runtime-generated fields.
-    Deep copies keep ScheduleEntry, Publication and PostTask payload independent.
+    Deep copies keep ScheduleEntry, Publication and render payload state independent.
     """
     meta = deepcopy(dict(metadata or {}))
     meta.pop("runtime_options", None)
@@ -126,7 +106,7 @@ def _delivery_meta(
 
 
 class LegacyPublicationBridge:
-    """Bridge the new content/planner domain onto canonical or retained legacy delivery."""
+    """Compatibility-named facade that queues canonical Publication/ScheduleEntry rows."""
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -259,291 +239,3 @@ class LegacyPublicationBridge:
             await self.session.rollback()
             raise
 
-    async def _latest_attempt(
-        self,
-        publication_id: int,
-    ) -> PublicationAttempt | None:
-        return (
-            await self.session.execute(
-                select(PublicationAttempt)
-                .where(PublicationAttempt.publication_id == int(publication_id))
-                .order_by(PublicationAttempt.attempt.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-
-    async def _sync_attempt(
-        self,
-        *,
-        publication: Publication,
-        task: PostTask,
-        task_status: str,
-        ids: list[int],
-    ) -> None:
-        if task_status != "processing" and task_status not in _TERMINAL_TASK_STATUSES:
-            return
-
-        latest = await self._latest_attempt(int(publication.id))
-        recorded_count = max(0, int(publication.attempt_count or 0))
-        if latest is not None:
-            recorded_count = max(recorded_count, int(latest.attempt))
-            publication.attempt_count = recorded_count
-
-        if task_status == "processing":
-            if latest is not None and latest.finished_at is None:
-                latest.status = "sending"
-                latest.error = None
-                return
-
-            attempt_number = (
-                int(latest.attempt) + 1
-                if latest is not None
-                else max(1, recorded_count)
-            )
-            publication.attempt_count = max(recorded_count, attempt_number)
-            self.session.add(
-                PublicationAttempt(
-                    publication_id=int(publication.id),
-                    attempt=attempt_number,
-                    status="sending",
-                    telegram_message_ids=None,
-                    error=None,
-                    meta={"legacy_post_task_id": int(task.id)},
-                    finished_at=None,
-                )
-            )
-            return
-
-        terminal_status = str(publication.status)
-        terminal_error = publication.last_error
-        finished_at = datetime.now(timezone.utc)
-
-        if latest is None:
-            attempt_number = max(1, recorded_count)
-            publication.attempt_count = max(recorded_count, attempt_number)
-            self.session.add(
-                PublicationAttempt(
-                    publication_id=int(publication.id),
-                    attempt=attempt_number,
-                    status=terminal_status,
-                    telegram_message_ids=ids or None,
-                    error=terminal_error,
-                    meta={"legacy_post_task_id": int(task.id)},
-                    finished_at=finished_at,
-                )
-            )
-            return
-
-        if latest.finished_at is None:
-            latest.status = terminal_status
-            latest.telegram_message_ids = ids or None
-            latest.error = terminal_error
-            latest.finished_at = finished_at
-            return
-
-        if str(latest.status) == terminal_status:
-            # Recovery may learn result IDs/error after the first terminal projection.
-            # Enrich the same immutable attempt identity instead of duplicating it.
-            latest.telegram_message_ids = ids or None
-            latest.error = terminal_error
-            return
-
-        # A terminal task state changed after an already-finished attempt. Preserve
-        # append-only attempt history rather than rewriting the previous outcome.
-        attempt_number = int(latest.attempt) + 1
-        publication.attempt_count = max(recorded_count, attempt_number)
-        self.session.add(
-            PublicationAttempt(
-                publication_id=int(publication.id),
-                attempt=attempt_number,
-                status=terminal_status,
-                telegram_message_ids=ids or None,
-                error=terminal_error,
-                meta={"legacy_post_task_id": int(task.id), "recovered_transition": True},
-                finished_at=finished_at,
-            )
-        )
-
-    async def _fail_missing_transport(
-        self,
-        publication: Publication,
-        *,
-        legacy_task_id: int | None,
-    ) -> Publication:
-        previous_status = str(publication.status or "")
-        if previous_status not in _ACTIVE_PUBLICATION_STATUSES:
-            # Once the canonical domain reached a terminal outcome, disappearance of
-            # compatibility transport must never rewrite that durable result.
-            return publication
-
-        latest = await self._latest_attempt(int(publication.id))
-        recorded_count = max(0, int(publication.attempt_count or 0))
-        if latest is not None:
-            recorded_count = max(recorded_count, int(latest.attempt))
-            publication.attempt_count = recorded_count
-
-        publication.status = "failed"
-        publication.last_error = MISSING_SCHEDULER_TASK_ERROR
-        publication.telegram_message_ids = None
-        publication.result_link = None
-
-        schedule = (
-            await self.session.get(ScheduleEntry, int(publication.schedule_entry_id))
-            if publication.schedule_entry_id is not None
-            else None
-        )
-        if schedule is not None:
-            schedule.status = "failed"
-
-        # A normal queued orphan has no evidence an actual send attempt began, so do
-        # not invent one. `sending` or an existing unfinished attempt *is* evidence of
-        # an attempt and must be closed in the append-only attempt history.
-        should_close_attempt = previous_status == "sending" or (
-            latest is not None and latest.finished_at is None
-        )
-        if should_close_attempt:
-            finished_at = datetime.now(timezone.utc)
-            recovery_meta: dict[str, Any] = {"recovered_missing_transport": True}
-            if legacy_task_id is not None:
-                recovery_meta["legacy_post_task_id"] = int(legacy_task_id)
-
-            if latest is None:
-                attempt_number = max(1, recorded_count)
-                publication.attempt_count = max(recorded_count, attempt_number)
-                self.session.add(
-                    PublicationAttempt(
-                        publication_id=int(publication.id),
-                        attempt=attempt_number,
-                        status="failed",
-                        telegram_message_ids=None,
-                        error=MISSING_SCHEDULER_TASK_ERROR,
-                        meta=recovery_meta,
-                        finished_at=finished_at,
-                    )
-                )
-            elif latest.finished_at is None:
-                latest.status = "failed"
-                latest.telegram_message_ids = None
-                latest.error = MISSING_SCHEDULER_TASK_ERROR
-                latest.meta = {**dict(latest.meta or {}), **recovery_meta}
-                latest.finished_at = finished_at
-            else:
-                attempt_number = int(latest.attempt) + 1
-                publication.attempt_count = max(recorded_count, attempt_number)
-                self.session.add(
-                    PublicationAttempt(
-                        publication_id=int(publication.id),
-                        attempt=attempt_number,
-                        status="failed",
-                        telegram_message_ids=None,
-                        error=MISSING_SCHEDULER_TASK_ERROR,
-                        meta={**recovery_meta, "recovered_transition": True},
-                        finished_at=finished_at,
-                    )
-                )
-
-        try:
-            await self.session.commit()
-            await self.session.refresh(publication)
-            return publication
-        except Exception:
-            await self.session.rollback()
-            raise
-
-    async def _apply_task_state(
-        self,
-        publication: Publication,
-        task: PostTask,
-    ) -> Publication:
-        task_status = str(task.status or "pending")
-        publication.status = _TASK_TO_PUBLICATION_STATUS.get(task_status, task_status)
-        payload = dict(task.payload or {})
-        ids = normalize_telegram_message_ids(payload.get("result_ids"))
-        publication.telegram_message_ids = ids or None
-        publication.result_link = normalize_telegram_result_link(payload.get("result_link"))
-        publication.last_error = (
-            public_scheduler_error(task.error) if task_status == "failed" else None
-        )
-
-        schedule = (
-            await self.session.get(ScheduleEntry, int(publication.schedule_entry_id))
-            if publication.schedule_entry_id is not None
-            else None
-        )
-        if schedule is not None:
-            if task_status == "done":
-                schedule.status = "completed"
-            elif task_status in {"failed", "skipped", "cancelled"}:
-                schedule.status = task_status
-
-        await self._sync_attempt(
-            publication=publication,
-            task=task,
-            task_status=task_status,
-            ids=ids,
-        )
-
-        try:
-            await self.session.commit()
-            await self.session.refresh(publication)
-            return publication
-        except Exception:
-            await self.session.rollback()
-            raise
-
-    async def reconcile_task(self, task: PostTask) -> Publication | None:
-        """Project one scheduler task into its linked Publication, if any.
-
-        Linkage is resolved from Publication.legacy_post_task_id instead of trusting
-        payload markers. This makes synchronous scheduler projection safe for old
-        repeat rows that may still carry stale `_publication_id` values.
-        """
-        publication = (
-            await self.session.execute(
-                select(Publication).where(
-                    Publication.legacy_post_task_id == int(task.id)
-                )
-            )
-        ).scalar_one_or_none()
-        if publication is None:
-            return None
-        return await self._apply_task_state(publication, task)
-
-    async def reconcile(self, publication_id: int) -> Publication:
-        publication = await self.session.get(Publication, int(publication_id))
-        if publication is None:
-            raise PublicationBridgeError(f"publication {publication_id} not found")
-
-        legacy_task_id = (
-            int(publication.legacy_post_task_id)
-            if publication.legacy_post_task_id is not None
-            else None
-        )
-        if legacy_task_id is None:
-            if publication.execution_mode == CANONICAL_EXECUTION_MODE:
-                return publication
-            return await self._fail_missing_transport(
-                publication,
-                legacy_task_id=None,
-            )
-
-        task = await self.session.get(PostTask, legacy_task_id)
-        if task is None:
-            return await self._fail_missing_transport(
-                publication,
-                legacy_task_id=legacy_task_id,
-            )
-
-        return await self._apply_task_state(publication, task)
-
-    async def reconcile_active(self, *, limit: int = 100) -> int:
-        result = await self.session.execute(
-            select(Publication.id)
-            .where(Publication.status.in_(tuple(_ACTIVE_PUBLICATION_STATUSES)))
-            .order_by(Publication.id.asc())
-            .limit(max(1, min(int(limit), 500)))
-        )
-        ids = [int(value) for value in result.scalars().all()]
-        for publication_id in ids:
-            await self.reconcile(publication_id)
-        return len(ids)
