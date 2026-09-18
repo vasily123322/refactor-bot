@@ -1,6 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
+import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
+import {
+  ChannelRequestOwnership,
+  resolveChannelDataView,
+  type ChannelLoadState,
+} from './asyncControl';
 import type { AIActivityRunView, AIActivityView } from './api';
 import type { Channel } from './types';
 
@@ -40,24 +46,55 @@ function runTitle(run: AIActivityRunView): string {
 
 export function AIStudioPanel({ channel }: { channel: Channel | null }) {
   const [activity, setActivity] = useState<AIActivityView | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadState, setLoadState] = useState<ChannelLoadState | null>(null);
+  const [error, setError] = useState<{ channelId: number; message: string } | null>(null);
+  const requestOwnershipRef = useRef(new ChannelRequestOwnership());
+  const validDataChannelRef = useRef<number | null>(null);
+  const channelIdRef = useRef<number | null>(channel?.id ?? null);
+  channelIdRef.current = channel?.id ?? null;
 
   const load = useCallback(async () => {
-    if (!channel) {
+    const channelId = channelIdRef.current;
+    if (channelId === null) {
+      requestOwnershipRef.current.invalidate();
+      validDataChannelRef.current = null;
       setActivity(null);
+      setLoadState(null);
+      setRefreshing(false);
+      setError(null);
       return;
     }
-    setBusy(true);
+
+    const token = requestOwnershipRef.current.begin(channelId);
+    const hasValidData = validDataChannelRef.current === channelId;
+    const isCurrent = () => requestOwnershipRef.current.isCurrent(token, channelIdRef.current);
+
+    setRefreshing(true);
     setError(null);
-    try {
-      setActivity(await studioApi.aiActivity(channel.id, 100));
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setBusy(false);
+    if (!hasValidData) {
+      validDataChannelRef.current = null;
+      setActivity(null);
+      setLoadState({ channelId, phase: 'loading' });
     }
-  }, [channel]);
+
+    try {
+      const nextActivity = await studioApi.aiActivity(channelId, 100);
+      if (!isCurrent()) return;
+      validDataChannelRef.current = channelId;
+      setActivity(nextActivity);
+      setLoadState({ channelId, phase: 'loaded' });
+    } catch (reason) {
+      if (!isCurrent()) return;
+      if (validDataChannelRef.current !== channelId) {
+        setActivity(null);
+        setLoadState({ channelId, phase: 'error-without-valid-data' });
+      }
+      setError({ channelId, message: errorMessage(reason) });
+    } finally {
+      if (isCurrent()) setRefreshing(false);
+    }
+  }, [channel?.id]);
 
   useEffect(() => {
     void load();
@@ -68,6 +105,10 @@ export function AIStudioPanel({ channel }: { channel: Channel | null }) {
   }
 
   const usage = activity?.usage;
+  const aiDataView = resolveChannelDataView(loadState, channel.id, activity ? 1 : 0);
+  const initialLoading = aiDataView === 'loading';
+  const loadFailedWithoutValidData = aiDataView === 'error-without-valid-data';
+  const hasValidData = aiDataView === 'loaded-data';
 
   return (
     <div className="ai-studio-page">
@@ -78,62 +119,109 @@ export function AIStudioPanel({ channel }: { channel: Channel | null }) {
           <p>Read-only usage и provenance. Эта страница не запускает генерацию и не расходует AI-токены.</p>
         </div>
         <div className="top-actions">
-          <button className="button secondary" onClick={() => void load()} disabled={busy}>
-            {busy ? 'Обновляю…' : '↻ Обновить'}
+          <button className="button secondary" onClick={() => void load()} disabled={refreshing}>
+            ↻ Обновить
           </button>
+          {refreshing && hasValidData && <InlineStatus>Обновляю AI Studio…</InlineStatus>}
         </div>
       </header>
 
-      {error && (
+      {error?.channelId === channel.id && (
         <div className="banner error" role="alert">
-          {error}
+          {error.message}
           <button onClick={() => setError(null)}>×</button>
         </div>
       )}
 
-      <section className="ai-usage-grid">
-        <article className="ai-stat-card">
-          <small>Channel AI</small>
-          <strong>{usage?.configured ? (usage.enabled ? 'Включён' : 'Выключен') : 'Не настроен'}</strong>
-          <span>{usage?.model || '—'}</span>
-        </article>
-        <article className="ai-stat-card">
-          <small>Сегодня</small>
-          <strong>{usage ? usage.tokens_used_day.toLocaleString('ru-RU') : '—'}</strong>
-          <span>{usage ? usageLabel(usage.tokens_used_day, usage.tokens_limit_day) : '—'}</span>
-        </article>
-        <article className="ai-stat-card">
-          <small>Месяц</small>
-          <strong>{usage ? usage.tokens_used_month.toLocaleString('ru-RU') : '—'}</strong>
-          <span>{usage ? usageLabel(usage.tokens_used_month, usage.tokens_limit_month) : '—'}</span>
-        </article>
-        <article className="ai-stat-card">
-          <small>Request settings</small>
-          <strong>{usage?.max_tokens ? `${usage.max_tokens} max tokens` : '—'}</strong>
-          <span>{usage?.temperature !== null && usage?.temperature !== undefined ? `temperature ${usage.temperature}` : '—'}</span>
-        </article>
+      <section className="ai-usage-grid" aria-busy={initialLoading || undefined}>
+        {initialLoading ? (
+          [0, 1, 2, 3].map((index) => (
+            <article className="ai-stat-card ai-card-skeleton" key={index}>
+              <SkeletonBlock height={10} width="38%" />
+              <SkeletonBlock height={21} width={index % 2 ? '52%' : '66%'} />
+              <SkeletonBlock height={10} width="72%" />
+            </article>
+          ))
+        ) : loadFailedWithoutValidData ? (
+          <div className="empty-state">Данные AI Studio не загружены. Повторите попытку.</div>
+        ) : (
+          <>
+            <article className="ai-stat-card">
+              <small>Channel AI</small>
+              <strong>{usage?.configured ? (usage.enabled ? 'Включён' : 'Выключен') : 'Не настроен'}</strong>
+              <span>{usage?.model || '—'}</span>
+            </article>
+            <article className="ai-stat-card">
+              <small>Сегодня</small>
+              <strong>{usage ? usage.tokens_used_day.toLocaleString('ru-RU') : '—'}</strong>
+              <span>{usage ? usageLabel(usage.tokens_used_day, usage.tokens_limit_day) : '—'}</span>
+            </article>
+            <article className="ai-stat-card">
+              <small>Месяц</small>
+              <strong>{usage ? usage.tokens_used_month.toLocaleString('ru-RU') : '—'}</strong>
+              <span>{usage ? usageLabel(usage.tokens_used_month, usage.tokens_limit_month) : '—'}</span>
+            </article>
+            <article className="ai-stat-card">
+              <small>Request settings</small>
+              <strong>{usage?.max_tokens ? `${usage.max_tokens} max tokens` : '—'}</strong>
+              <span>{usage?.temperature !== null && usage?.temperature !== undefined ? `temperature ${usage.temperature}` : '—'}</span>
+            </article>
+          </>
+        )}
       </section>
 
-      <section className="ai-status-grid">
-        <article className="ai-status-card">
-          <strong>Enrichment runs</strong>
-          <span>{activity ? countLabel(activity.enrichment_counts) : '—'}</span>
-        </article>
-        <article className="ai-status-card">
-          <strong>Rewrite runs</strong>
-          <span>{activity ? countLabel(activity.rewrite_counts) : '—'}</span>
-        </article>
+      <section className="ai-status-grid" aria-busy={initialLoading || undefined}>
+        {initialLoading ? (
+          [0, 1].map((index) => (
+            <article className="ai-status-card ai-card-skeleton" key={index}>
+              <SkeletonBlock height={12} width="34%" />
+              <SkeletonBlock height={10} width="68%" />
+            </article>
+          ))
+        ) : loadFailedWithoutValidData ? (
+          <div className="empty-state">AI activity недоступна до успешной загрузки.</div>
+        ) : (
+          <>
+            <article className="ai-status-card">
+              <strong>Enrichment runs</strong>
+              <span>{activity ? countLabel(activity.enrichment_counts) : 'нет запусков'}</span>
+            </article>
+            <article className="ai-status-card">
+              <strong>Rewrite runs</strong>
+              <span>{activity ? countLabel(activity.rewrite_counts) : 'нет запусков'}</span>
+            </article>
+          </>
+        )}
       </section>
 
       <section className="ai-runs-card">
         <div className="panel-heading">
           <div>
             <h2>Последние AI runs</h2>
-            <small>{activity?.runs.length || 0} записей · без source/generated content</small>
+            <small>
+              {initialLoading ? 'Загружаю AI provenance…' : `${activity?.runs.length ?? 0} записей · без source/generated content`}
+            </small>
           </div>
         </div>
-        <div className="ai-run-list">
-          {!activity?.runs.length && <div className="empty-state">AI provenance пока пуст.</div>}
+        <AsyncRegion
+          className="ai-run-list"
+          loading={initialLoading}
+          error={loadFailedWithoutValidData}
+          empty={hasValidData && !activity?.runs.length}
+          loadingLabel="Загружаю AI Studio…"
+          loadingFallback={
+            <>
+              {[0, 1, 2].map((index) => (
+                <article className="ai-run-row ai-card-skeleton" key={index}>
+                  <SkeletonBlock height={18} width="44%" radius={999} />
+                  <SkeletonBlock height={10} width="78%" />
+                </article>
+              ))}
+            </>
+          }
+          emptyFallback={<div className="empty-state">AI provenance пока пуст.</div>}
+          errorFallback={<div className="empty-state">AI provenance не загружен.</div>}
+        >
           {activity?.runs.map((run) => (
             <article className="ai-run-row" key={`${run.kind}:${run.id}`}>
               <div className="ai-run-main">
@@ -151,7 +239,7 @@ export function AIStudioPanel({ channel }: { channel: Channel | null }) {
               </div>
             </article>
           ))}
-        </div>
+        </AsyncRegion>
       </section>
     </div>
   );
