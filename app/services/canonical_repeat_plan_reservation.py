@@ -17,7 +17,7 @@ from app.services.canonical_repeat_planner import (
 )
 from app.services.publication_execution_mode import (
     CANONICAL_EXECUTION_MODE,
-    execution_mode_from_runtime_options,
+    canonical_repeat_runtime_options_supported,
 )
 from app.services.scheduling import as_utc
 
@@ -105,10 +105,7 @@ class CanonicalRepeatPlanReservationService:
         # Canonical continuation never converts an intentional legacy or unknown
         # runtime profile into canonical ownership. This decision uses only the durable
         # queue-time runtime snapshot, not current worker readiness or PostTask presence.
-        if (
-            execution_mode_from_runtime_options(authority.runtime_options)
-            != CANONICAL_EXECUTION_MODE
-        ):
+        if not canonical_repeat_runtime_options_supported(authority.runtime_options):
             await self.session.rollback()
             return CanonicalRepeatPlanReservationResult(
                 publication_id=safe_publication_id,
