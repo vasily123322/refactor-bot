@@ -357,7 +357,13 @@ export default function App() {
     setPreviewMessageIds([]);
     loadedItemsChannelRef.current = null;
     setItems([]);
-    void loadItems(selectedChannelId).catch((reason) => setError(errorMessage(reason)));
+    void loadItems(selectedChannelId).catch((reason) => {
+      if (channelIdRef.current === selectedChannelId) {
+        loadedItemsChannelRef.current = selectedChannelId;
+        setItems([]);
+        setError(errorMessage(reason));
+      }
+    });
   }, [installEditorDocument, loadItems, selectedChannelId]);
 
   useEffect(() => {
@@ -601,7 +607,7 @@ export default function App() {
                 <div className="panel-heading">
                   <div>
                     <h2>Публикации</h2>
-                    <small>{items.length} объектов в Content domain</small>
+                    <small>{contentInitialLoading ? 'Загружаю Content domain…' : `${items.length} объектов в Content domain`}</small>
                   </div>
                 </div>
                 <AsyncRegion
@@ -672,7 +678,7 @@ export default function App() {
                   <span>
                     {text.length} UTF-16 единиц · {document.mode === 'rich' ? 'native Rich Message blocks' : 'Telegram text limit: 4096'}
                   </span>
-                  <span>{saveFooterLabel}</span>
+                  <InlineStatus>{saveFooterLabel}</InlineStatus>
                 </footer>
               </section>
 
