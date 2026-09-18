@@ -12,7 +12,7 @@ import app.domain  # noqa: F401 register the complete ORM schema
 from app.core.db import Base
 
 
-HEAD = "20260818_0013"
+HEAD = "20260918_0014"
 
 
 def _run_alembic(
@@ -83,6 +83,7 @@ def test_alembic_baseline_is_frozen_and_followup_revisions_are_idempotent(
         "studio_channel_onboarding_requests",
         "channel_dm_reply_commands",
         "channel_dm_reply_intents",
+        "canonical_runtime_safety_audits",
     }
     assert followup_tables <= current_orm_tables
 
@@ -123,6 +124,7 @@ def test_followup_revisions_adopt_tables_precreated_by_legacy_create_all(
         "studio_channel_onboarding_requests",
         "channel_dm_reply_commands",
         "channel_dm_reply_intents",
+        "canonical_runtime_safety_audits",
     )
 
     baseline = _run_alembic(repo_root, database_path, "20260809_0001")

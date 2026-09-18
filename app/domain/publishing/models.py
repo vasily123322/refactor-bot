@@ -132,3 +132,35 @@ class PublicationAttempt(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     finished_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+
+
+
+class CanonicalRuntimeSafetyAudit(Base):
+    """Durable no-replay/provenance snapshot for retired legacy runtime state."""
+
+    __tablename__ = "canonical_runtime_safety_audits"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_fingerprint",
+            name="uq_canonical_runtime_safety_audit_source",
+        ),
+        Index(
+            "ix_canonical_runtime_safety_audit_publication",
+            "publication_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    publication_id: Mapped[int | None] = mapped_column(
+        ForeignKey("publications.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

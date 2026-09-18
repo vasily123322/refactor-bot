@@ -265,51 +265,27 @@ class Scheduler(BaseScheduler):
     ) -> bool:
         if not bool(pl.get("repeat_on", False)):
             return False
-
+        sched = getattr(post, "scheduled_at", None)
+        if sched is None:
+            return False
         boot_time = self._boot_time or datetime.now(timezone.utc)
-        scheduled_at = getattr(post, "scheduled_at", None)
-        if scheduled_at is None:
+        if self._as_utc(sched) > boot_time:
             return False
-        scheduled_at = self._as_utc(scheduled_at)
-        if scheduled_at > boot_time:
-            return False
-
+        payload = dict(pl)
+        payload["repeat_on"] = False
+        payload["legacy_repeat_continuation_frozen"] = True
+        post.payload = payload
         post.status = "skipped"
-        repeat_seconds = int(pl.get("repeat_seconds") or 0)
-        if repeat_seconds > 0:
-            next_when = self._compute_next_repeat_time(
-                scheduled_at, repeat_seconds, boot_time
-            )
-            payload = self._cleanup_runtime_fields(dict(pl))
-            ad_base = int(
-                pl.get("autodelete_seconds")
-                or pl.get("autodelete_effective_seconds")
-                or 0
-            )
-            if ad_base > 0:
-                payload["autodelete_seconds"] = ad_base
-            payload.pop("autodelete_at", None)
-            payload = self._inherit_flags_for_repeat(payload, int(post.id))
-            session.add(
-                PostTask(
-                    channel_id=int(post.channel_id),
-                    payload=payload,
-                    dedupe_key=None,
-                    scheduled_at=next_when,
-                )
-            )
-
         try:
             await session.commit()
         except Exception:
-            await self._rollback(session, "overdue repeat reschedule")
-            logger.exception(
-                "Scheduler: failed to skip/reschedule overdue repeat post_id={}",
-                int(post.id),
-            )
+            await self._rollback(session, "freeze overdue legacy repeat")
             raise
+        logger.info(
+            "Scheduler: frozen overdue legacy repeat post_id={} without successor",
+            int(post.id),
+        )
         return True
-
     async def _dedupe_repeat_series(
         self, session: AsyncSession, post: PostTask, pl: dict
     ) -> None:
@@ -355,64 +331,31 @@ class Scheduler(BaseScheduler):
             self._boot_cleanup_done = True
             return items
 
-        boot_time = self._boot_time
-        overdue: list[PostTask] = []
+        remaining: list[PostTask] = []
+        changed = False
         for post in items:
             payload = dict(getattr(post, "payload", None) or {})
             when = getattr(post, "scheduled_at", None)
-            if bool(payload.get("repeat_on", False)) and when is not None:
-                if self._as_utc(when) <= boot_time:
-                    overdue.append(post)
-
-        if not overdue:
-            self._boot_cleanup_done = True
-            return items
-
-        scheduled_groups: set[int] = set()
-        try:
-            for post in overdue:
+            if (
+                bool(payload.get("repeat_on", False))
+                and when is not None
+                and self._as_utc(when) <= self._boot_time
+            ):
+                payload["repeat_on"] = False
+                payload["legacy_repeat_continuation_frozen"] = True
+                post.payload = payload
                 post.status = "skipped"
-                payload = dict(getattr(post, "payload", None) or {})
-                repeat_seconds = int(payload.get("repeat_seconds") or 0)
-                if repeat_seconds <= 0:
-                    continue
-                group_id = int(payload.get("repeat_group_id") or int(post.id))
-                if group_id in scheduled_groups or group_id in self._boot_group_scheduled:
-                    continue
-                scheduled_groups.add(group_id)
-                next_when = self._compute_next_repeat_time(
-                    self._as_utc(post.scheduled_at), repeat_seconds, boot_time
-                )
-                next_payload = self._cleanup_runtime_fields(payload)
-                ad_base = int(
-                    payload.get("autodelete_seconds")
-                    or payload.get("autodelete_effective_seconds")
-                    or 0
-                )
-                if ad_base > 0:
-                    next_payload["autodelete_seconds"] = ad_base
-                next_payload.pop("autodelete_at", None)
-                next_payload = self._inherit_flags_for_repeat(
-                    next_payload, int(post.id)
-                )
-                session.add(
-                    PostTask(
-                        channel_id=int(post.channel_id),
-                        payload=next_payload,
-                        dedupe_key=None,
-                        scheduled_at=next_when,
-                    )
-                )
-            await session.commit()
-        except Exception:
-            await self._rollback(session, "boot repeat cleanup")
-            logger.exception("Scheduler: boot repeat cleanup failed")
-            raise
-
-        self._boot_group_scheduled.update(scheduled_groups)
+                changed = True
+                continue
+            remaining.append(post)
+        if changed:
+            try:
+                await session.commit()
+            except Exception:
+                await self._rollback(session, "freeze boot legacy repeat")
+                raise
         self._boot_cleanup_done = True
-        return [post for post in items if post not in overdue]
-
+        return remaining
     async def _prevent_repeat_overflow(
         self, session: AsyncSession, items: list[PostTask]
     ) -> None:
@@ -528,49 +471,16 @@ class Scheduler(BaseScheduler):
     ) -> None:
         if not bool(pl.get("repeat_on", False)):
             return
-        repeat_seconds = int(pl.get("repeat_seconds") or 0)
-        if repeat_seconds <= 0:
-            return
-
-        base = getattr(post, "scheduled_at", None)
-        base = self._as_utc(base) if base is not None else datetime.now(timezone.utc)
-        next_when = base + timedelta(seconds=repeat_seconds)
-        now = datetime.now(timezone.utc)
-        while next_when <= now:
-            next_when += timedelta(seconds=repeat_seconds)
-
-        payload = self._cleanup_runtime_fields(dict(pl))
-        ad_base = int(
-            pl.get("autodelete_seconds")
-            or pl.get("autodelete_effective_seconds")
-            or 0
-        )
-        if ad_base > 0:
-            payload["autodelete_seconds"] = ad_base
-            payload["autodelete_at"] = (
-                next_when + timedelta(seconds=ad_base)
-            ).isoformat()
-        payload = self._inherit_flags_for_repeat(payload, int(post.id))
-        session.add(
-            PostTask(
-                channel_id=int(post.channel_id),
-                payload=payload,
-                dedupe_key=None,
-                scheduled_at=next_when,
-            )
-        )
+        payload = dict(pl)
+        payload["repeat_on"] = False
+        payload["legacy_repeat_continuation_frozen"] = True
+        post.payload = payload
         try:
             await session.commit()
         except Exception:
-            await self._rollback(session, "next repeat scheduling")
-            logger.exception(
-                "Scheduler: failed to schedule next repeat after published post_id={}",
-                int(post.id),
-            )
-            return
-
+            await self._rollback(session, "freeze legacy repeat continuation")
+            raise
         logger.info(
-            "Scheduler: repeat scheduled next post for id={} at={}",
+            "Scheduler: legacy repeat continuation frozen post_id={} without successor",
             int(post.id),
-            next_when,
         )

@@ -22,7 +22,7 @@ from app.core.schema import (
 )
 
 
-HEAD = "20260818_0013"
+HEAD = "20260918_0014"
 
 
 def _upgrade(repo_root: Path, database_path: Path, target: str) -> None:
