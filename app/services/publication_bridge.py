@@ -191,10 +191,11 @@ class LegacyPublicationBridge:
         runtime_intent = _runtime_intent(runtime_options, payload=payload)
         boundary = scheduling_boundary_from_runtime_options(runtime_intent)
         execution_mode = boundary.execution_mode
-        if boundary.outcome not in {
-            CANONICAL_SCHEDULING_OUTCOME,
-            LEGACY_ALLOWLISTED_SCHEDULING_OUTCOME,
-        } or execution_mode is None:
+        if boundary.outcome == LEGACY_ALLOWLISTED_SCHEDULING_OUTCOME:
+            raise PublicationBridgeError(
+                "legacy PostTask creation is frozen"
+            )
+        if boundary.outcome != CANONICAL_SCHEDULING_OUTCOME or execution_mode is None:
             raise PublicationBridgeError(
                 f"unsupported scheduling profile: {boundary.reason}"
             )
@@ -237,58 +238,20 @@ class LegacyPublicationBridge:
         try:
             await self.session.flush()
             publication.schedule_entry_id = int(schedule.id)
-
-            if boundary.outcome == CANONICAL_SCHEDULING_OUTCOME:
-                if execution_mode != CANONICAL_EXECUTION_MODE:
-                    raise PublicationBridgeError(
-                        "canonical scheduling outcome has non-canonical execution mode"
-                    )
-                if rule.get("enabled"):
-                    # Canonical roots are deliberately PostTask-free. Use the durable
-                    # Publication identity as the repeat-group anchor, matching the
-                    # direct canonical materializer and continuation contract.
-                    repeat_group_id = int(publication.id)
-                    schedule.meta = {
-                        **deepcopy(dict(schedule.meta or {})),
-                        "repeat_group_id": repeat_group_id,
-                    }
-                    publication.meta = {
-                        **deepcopy(dict(publication.meta or {})),
-                        "repeat_group_id": repeat_group_id,
-                    }
-                await self.session.commit()
-                await self.session.refresh(publication)
-                return publication
-
-            if boundary.outcome != LEGACY_ALLOWLISTED_SCHEDULING_OUTCOME:
+            if execution_mode != CANONICAL_EXECUTION_MODE:
                 raise PublicationBridgeError(
-                    f"fresh legacy transport is not allowlisted: {boundary.reason}"
+                    "canonical scheduling outcome has non-canonical execution mode"
                 )
-            task = PostTask(
-                channel_id=int(item.channel_id),
-                status="pending",
-                payload=payload,
-                dedupe_key=f"publication:{int(publication.id)}",
-                scheduled_at=when,
-            )
-            self.session.add(task)
-            await self.session.flush()
-            task_id = int(task.id)
-            publication.legacy_post_task_id = task_id
-
-            schedule_meta = {
-                **deepcopy(dict(schedule.meta or {})),
-                "legacy_post_task_id": task_id,
-            }
             if rule.get("enabled"):
-                # Retained legacy repeat identity remains tied to its transport row.
-                schedule_meta["repeat_group_id"] = task_id
+                repeat_group_id = int(publication.id)
+                schedule.meta = {
+                    **deepcopy(dict(schedule.meta or {})),
+                    "repeat_group_id": repeat_group_id,
+                }
                 publication.meta = {
                     **deepcopy(dict(publication.meta or {})),
-                    "repeat_group_id": task_id,
+                    "repeat_group_id": repeat_group_id,
                 }
-            schedule.meta = schedule_meta
-
             await self.session.commit()
             await self.session.refresh(publication)
             return publication
