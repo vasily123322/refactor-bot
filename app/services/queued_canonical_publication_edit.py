@@ -257,45 +257,53 @@ class QueuedCanonicalPublicationEditCoordinator:
                         "publication delivery lease is active"
                     )
 
-                legacy_task_id = int(publication.legacy_post_task_id or 0)
-                if legacy_task_id <= 0:
-                    raise PublicationEditConflictError(
-                        "queued compatibility transport linkage is missing"
-                    )
-                try:
-                    schedule_task_id = int(
-                        dict(schedule.meta or {}).get("legacy_post_task_id") or 0
-                    )
-                except (TypeError, ValueError, OverflowError) as exc:
-                    raise PublicationEditConflictError(
-                        "queued compatibility transport linkage is malformed"
-                    ) from exc
-                if schedule_task_id != legacy_task_id:
-                    raise PublicationEditConflictError(
-                        "queued compatibility transport linkage changed"
-                    )
+                task: PostTask | None = None
+                raw_legacy_task_id = publication.legacy_post_task_id
+                if raw_legacy_task_id is not None:
+                    try:
+                        legacy_task_id = int(raw_legacy_task_id)
+                    except (TypeError, ValueError, OverflowError) as exc:
+                        raise PublicationEditConflictError(
+                            "queued compatibility transport linkage is malformed"
+                        ) from exc
+                    if legacy_task_id <= 0:
+                        raise PublicationEditConflictError(
+                            "queued compatibility transport linkage is malformed"
+                        )
+                    try:
+                        schedule_task_id = int(
+                            dict(schedule.meta or {}).get("legacy_post_task_id") or 0
+                        )
+                    except (TypeError, ValueError, OverflowError) as exc:
+                        raise PublicationEditConflictError(
+                            "queued compatibility transport linkage is malformed"
+                        ) from exc
+                    if schedule_task_id != legacy_task_id:
+                        raise PublicationEditConflictError(
+                            "queued compatibility transport linkage changed"
+                        )
 
-                task = (
-                    await session.execute(
-                        select(PostTask)
-                        .where(PostTask.id == legacy_task_id)
-                        .with_for_update()
-                    )
-                ).scalar_one_or_none()
-                if task is None:
-                    raise PublicationEditConflictError(
-                        "queued compatibility transport is missing"
-                    )
-                if (
-                    str(task.status or "") != "pending"
-                    or int(task.channel_id) != int(publication.channel_id)
-                    or str(task.dedupe_key or "")
-                    != f"publication:{safe_publication_id}"
-                    or as_utc(task.scheduled_at) != as_utc(schedule.scheduled_at)
-                ):
-                    raise PublicationEditConflictError(
-                        "queued compatibility transport is not safely pending"
-                    )
+                    task = (
+                        await session.execute(
+                            select(PostTask)
+                            .where(PostTask.id == legacy_task_id)
+                            .with_for_update()
+                        )
+                    ).scalar_one_or_none()
+                    if task is None:
+                        raise PublicationEditConflictError(
+                            "queued compatibility transport is missing"
+                        )
+                    if (
+                        str(task.status or "") != "pending"
+                        or int(task.channel_id) != int(publication.channel_id)
+                        or str(task.dedupe_key or "")
+                        != f"publication:{safe_publication_id}"
+                        or as_utc(task.scheduled_at) != as_utc(schedule.scheduled_at)
+                    ):
+                        raise PublicationEditConflictError(
+                            "queued compatibility transport is not safely pending"
+                        )
 
                 runtime_options = self._canonical_runtime_options(publication)
                 try:
@@ -308,13 +316,15 @@ class QueuedCanonicalPublicationEditCoordinator:
                 except LegacyPayloadError as exc:
                     raise PublicationEditPersistenceError(str(exc)) from exc
 
-                projected_payload = await self._compatibility_payload(
-                    session,
-                    document=document,
-                    channel_id=int(publication.channel_id),
-                    repeat_rule=dict(schedule.repeat_rule or {}),
-                    runtime_options=runtime_options,
-                )
+                projected_payload: dict[str, Any] | None = None
+                if task is not None:
+                    projected_payload = await self._compatibility_payload(
+                        session,
+                        document=document,
+                        channel_id=int(publication.channel_id),
+                        repeat_rule=dict(schedule.repeat_rule or {}),
+                        runtime_options=runtime_options,
+                    )
 
                 next_revision = safe_expected_revision + 1
                 session.add(
@@ -334,9 +344,10 @@ class QueuedCanonicalPublicationEditCoordinator:
                 publication.content_revision = next_revision
                 schedule.content_revision = next_revision
 
-                # Compatibility-only projection. Never mutate status, schedule time,
-                # dedupe identity or execution metadata here.
-                task.payload = projected_payload
+                # Compatibility-only projection. Canonical-only publications never
+                # read, lock, or mutate PostTask. Never mutate legacy execution fields.
+                if task is not None:
+                    task.payload = projected_payload
 
                 await session.commit()
                 return QueuedCanonicalPublicationEditResult(
