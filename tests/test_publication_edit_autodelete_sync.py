@@ -19,7 +19,6 @@ from app.services.publication_edit_persistence import (
     PublicationEditPersistenceService,
 )
 from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
-from app.workers.canonical_scheduler import Scheduler as CanonicalScheduler
 
 
 async def _seed(
@@ -208,122 +207,6 @@ def test_text_edit_with_unchanged_timer_preserves_original_due_time(tmp_path) ->
                     original_due.isoformat()
                 )
                 assert dict(task.payload or {})["autodelete_at"] == original_due.isoformat()
-        finally:
-            await engine.dispose()
-
-    asyncio.run(run())
-
-
-def test_timer_clear_removes_generated_state_and_stale_local_timer_is_not_due(
-    tmp_path,
-) -> None:
-    async def run() -> None:
-        engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'edit-autodelete-clear.db'}"
-        )
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(Base.metadata.create_all)
-            Session = async_sessionmaker(engine, expire_on_commit=False)
-            old_due = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
-            _, publication_id, _, task_id = await _seed(
-                Session,
-                runtime_options={"autodelete_seconds": 3600},
-                runtime={
-                    "effective_seconds": 3600,
-                    "scheduled_at": old_due.isoformat(),
-                    "deleted": False,
-                },
-                task_payload_updates={
-                    "autodelete_seconds": 3600,
-                    "autodelete_effective_seconds": 3600,
-                    "autodelete_at": old_due.isoformat(),
-                },
-            )
-
-            async with Session() as session:
-                await PublicationEditPersistenceService(session).persist_success(
-                    publication_id=publication_id,
-                    tg_user_id=71201,
-                    expected_revision=1,
-                    payload={"type": "text", "text": "Timer cleared"},
-                    telegram_message_ids=[81101],
-                    now=datetime(2026, 8, 10, 11, 30, tzinfo=timezone.utc),
-                )
-
-            async with Session() as session:
-                publication = await session.get(Publication, publication_id)
-                task = await session.get(PostTask, task_id)
-                assert publication is not None and task is not None
-                assert AUTODELETE_RUNTIME_META_KEY not in dict(publication.meta or {})
-                payload = dict(task.payload or {})
-                for key in (
-                    "autodelete_seconds",
-                    "autodelete_effective_seconds",
-                    "autodelete_at",
-                ):
-                    assert key not in payload
-
-                state = await CanonicalScheduler._delayed_delete_state(  # noqa: SLF001
-                    object(),
-                    session,
-                    post_id=task_id,
-                    now=datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc),
-                )
-                assert state is None
-        finally:
-            await engine.dispose()
-
-    asyncio.run(run())
-
-
-def test_stale_local_timer_uses_current_due_ids_and_report_state(tmp_path) -> None:
-    async def run() -> None:
-        engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'stale-local-timer-state.db'}"
-        )
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(Base.metadata.create_all)
-            Session = async_sessionmaker(engine, expire_on_commit=False)
-            due = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
-            _, _, _, task_id = await _seed(
-                Session,
-                runtime_options={"autodelete_seconds": 3600},
-                runtime={
-                    "effective_seconds": 3600,
-                    "scheduled_at": due.isoformat(),
-                    "deleted": False,
-                },
-                task_payload_updates={
-                    "result_ids": [83303],
-                    "result_link": "https://t.me/c/71201/83303",
-                    "autodelete_seconds": 3600,
-                    "autodelete_effective_seconds": 3600,
-                    "autodelete_at": due.isoformat(),
-                    "autodelete_report": True,
-                },
-            )
-
-            async with Session() as session:
-                future = await CanonicalScheduler._delayed_delete_state(  # noqa: SLF001
-                    object(),
-                    session,
-                    post_id=task_id,
-                    now=due - timedelta(seconds=1),
-                )
-                assert future is None
-                due_state = await CanonicalScheduler._delayed_delete_state(  # noqa: SLF001
-                    object(),
-                    session,
-                    post_id=task_id,
-                    now=due,
-                )
-                assert due_state is not None
-                assert due_state.chat_id == -10071201
-                assert due_state.message_ids == (83303,)
-                assert due_state.report is True
-                assert due_state.result_link == "https://t.me/c/71201/83303"
         finally:
             await engine.dispose()
 

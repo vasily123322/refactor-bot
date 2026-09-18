@@ -10,9 +10,12 @@ from app.core.db import Base
 from app.domain.models import Channel, Client, PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.content_plan_published_rows import list_published_content_plan_rows
-from app.services.legacy_content_mirror import mirror_legacy_post_task
-from app.services.publication_execution_mode import INTENTIONAL_LEGACY_EXECUTION_MODE
+from app.services.posting import PostingService
 from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
+
+
+class _Bot:
+    pass
 
 
 async def _seed_published(Session) -> tuple[int, int, int, int]:
@@ -34,27 +37,43 @@ async def _seed_published(Session) -> tuple[int, int, int, int]:
         )
         session.add(channel)
         await session.commit()
+        channel_id = int(channel.id)
+
+    created = await PostingService(_Bot(), Session).schedule(
+        channel_id,
+        {
+            "type": "text",
+            "text": "Canonical row survives transport retirement",
+            "autodelete_seconds": 7200,
+            "autodelete_views": 1500,
+        },
+        scheduled,
+        dedupe_key="published-content-plan-canonical",
+    )
+
+    async with Session() as session:
+        publication = await session.get(Publication, int(created.id))
+        assert publication is not None and publication.schedule_entry_id is not None
+        schedule = await session.get(ScheduleEntry, int(publication.schedule_entry_id))
+        assert schedule is not None
 
         task = PostTask(
-            channel_id=int(channel.id),
+            channel_id=channel_id,
             status="done",
             scheduled_at=scheduled,
             payload={
                 "type": "text",
-                "text": "Canonical row survives transport retirement",
-                "autodelete_seconds": 7200,
-                "autodelete_views": 1500,
+                "text": "Historical transport evidence",
+                "result_ids": [7500101],
             },
         )
         session.add(task)
         await session.flush()
-        publication = await mirror_legacy_post_task(session, task, commit=False)
-        assert publication is not None
-        assert publication.execution_mode == INTENTIONAL_LEGACY_EXECUTION_MODE
-        task_id = int(task.id)
-        schedule_id = int(publication.schedule_entry_id or 0)
-        schedule = await session.get(ScheduleEntry, schedule_id)
-        assert schedule is not None
+
+        publication.legacy_post_task_id = int(task.id)
+        publication.status = "published"
+        publication.telegram_message_ids = [7500101]
+        schedule.status = "completed"
         publication.meta = {
             **dict(publication.meta or {}),
             "runtime_options": {
@@ -67,7 +86,7 @@ async def _seed_published(Session) -> tuple[int, int, int, int]:
             },
         }
         await session.commit()
-        return int(channel.id), int(publication.id), schedule_id, task_id
+        return channel_id, int(publication.id), int(schedule.id), int(task.id)
 
 
 def test_published_row_projects_link_presence_without_raw_post_task_identity(tmp_path) -> None:

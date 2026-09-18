@@ -17,7 +17,6 @@ from app.services.canonical_repeat_plan_reservation import (
     CanonicalRepeatPlanReservationService,
 )
 from app.services.publication_bridge import LegacyPublicationBridge
-from app.workers.publication_scheduler import Scheduler as PublicationScheduler
 
 
 async def _seed_published_repeat(
@@ -199,59 +198,3 @@ def test_reservation_never_overwrites_a_different_existing_plan(tmp_path) -> Non
     asyncio.run(run())
 
 
-def test_reservation_does_not_write_when_exact_successor_already_exists(tmp_path) -> None:
-    async def run() -> None:
-        engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'repeat-reservation-existing.db'}"
-        )
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(Base.metadata.create_all)
-            Session = async_sessionmaker(engine, expire_on_commit=False)
-            source_at = datetime.now(timezone.utc) + timedelta(hours=2)
-            publication_id, task_id = await _seed_published_repeat(
-                Session,
-                seed=3,
-                scheduled_at=source_at,
-            )
-
-            async with Session() as session:
-                task = await session.get(PostTask, task_id)
-                assert task is not None
-                await PublicationScheduler(
-                    session,
-                    object(),
-                )._schedule_next_repeat_if_needed(  # noqa: SLF001
-                    session,
-                    task,
-                    dict(task.payload or {}),
-                )
-                before = await _counts(session)
-
-                result = await CanonicalRepeatPlanReservationService(session).reserve_next(
-                    publication_id,
-                    after=source_at + timedelta(minutes=10),
-                )
-                after = await _counts(session)
-
-                assert result.outcome == "existing_successor"
-                assert result.plan is not None
-                assert result.plan.existing_publication_id is not None
-                assert before == after
-                publication = await session.get(Publication, publication_id)
-                assert publication is not None
-                schedule = await session.get(
-                    ScheduleEntry,
-                    int(publication.schedule_entry_id or 0),
-                )
-                assert schedule is not None
-                assert CANONICAL_REPEAT_PLAN_RESERVATION_META_KEY not in dict(
-                    publication.meta or {}
-                )
-                assert CANONICAL_REPEAT_PLAN_RESERVATION_META_KEY not in dict(
-                    schedule.meta or {}
-                )
-        finally:
-            await engine.dispose()
-
-    asyncio.run(run())

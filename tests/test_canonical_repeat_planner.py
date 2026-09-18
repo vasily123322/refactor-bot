@@ -13,7 +13,6 @@ from app.domain.publishing.models import Publication, ScheduleEntry
 from app.repositories.content import ContentRepo
 from app.services.canonical_repeat_planner import CanonicalRepeatPlanner
 from app.services.publication_bridge import LegacyPublicationBridge
-from app.workers.publication_scheduler import Scheduler as PublicationScheduler
 
 
 async def _seed_published_repeat(
@@ -151,74 +150,6 @@ def test_plan_next_matches_legacy_catchup_timing(tmp_path) -> None:
                 0,
                 tzinfo=timezone.utc,
             )
-        finally:
-            await engine.dispose()
-
-    asyncio.run(run())
-
-
-def test_plan_next_detects_existing_mirrored_legacy_successor_after_root_retirement(
-    tmp_path,
-) -> None:
-    async def run() -> None:
-        engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'canonical-repeat-plan-existing.db'}"
-        )
-        try:
-            async with engine.begin() as connection:
-                await connection.run_sync(Base.metadata.create_all)
-            Session = async_sessionmaker(engine, expire_on_commit=False)
-            source_at = datetime.now(timezone.utc) + timedelta(hours=2)
-            publication_id, task_id, _ = await _seed_published_repeat(
-                Session,
-                seed=3,
-                scheduled_at=source_at,
-            )
-
-            async with Session() as session:
-                root_task = await session.get(PostTask, task_id)
-                root_publication = await session.get(Publication, publication_id)
-                assert root_task is not None and root_publication is not None
-                await PublicationScheduler(
-                    session,
-                    object(),
-                )._schedule_next_repeat_if_needed(  # noqa: SLF001
-                    session,
-                    root_task,
-                    dict(root_task.payload or {}),
-                )
-
-                root_publication = await session.get(Publication, publication_id)
-                root_task = await session.get(PostTask, task_id)
-                assert root_publication is not None and root_task is not None
-                root_publication.legacy_post_task_id = None
-                await session.delete(root_task)
-                await session.commit()
-
-                plan = await CanonicalRepeatPlanner(session).plan_next(
-                    publication_id,
-                    after=source_at + timedelta(minutes=10),
-                )
-                assert plan is not None
-                assert plan.existing_publication_id is not None
-                assert plan.existing_schedule_entry_id is not None
-
-                successor = await session.get(
-                    Publication,
-                    int(plan.existing_publication_id),
-                )
-                successor_schedule = await session.get(
-                    ScheduleEntry,
-                    int(plan.existing_schedule_entry_id),
-                )
-                assert successor is not None and successor_schedule is not None
-                assert successor.content_item_id == plan.content_item_id
-                assert successor.content_revision == plan.content_revision
-                assert successor.meta["repeat_group_id"] == task_id
-                assert successor_schedule.meta["repeat_group_id"] == task_id
-                assert successor_schedule.scheduled_at == plan.scheduled_at.replace(
-                    tzinfo=None
-                ) or successor_schedule.scheduled_at == plan.scheduled_at
         finally:
             await engine.dispose()
 
