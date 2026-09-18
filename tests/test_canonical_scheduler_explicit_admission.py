@@ -338,3 +338,45 @@ def test_dispatcher_starts_canonical_repeat_continuation_outside_legacy_schedule
         'await _safe_stop(\n                "canonical repeat continuation",'
         in DISPATCHER_SOURCE
     )
+
+
+@pytest.mark.asyncio
+async def test_canonical_repeat_proof_conflict_never_falls_back_to_legacy(monkeypatch):
+    admission = CanonicalSchedulerAdmission(
+        CanonicalSchedulerAdmissionKind.CANONICAL_PROOF_REQUIRED,
+        publication_id=10,
+        profile="plain",
+        repeat=True,
+    )
+    parent_items = []
+
+    class _AdmissionService:
+        def __init__(self, _session):
+            pass
+
+        async def classify(self, *, task_id):
+            assert task_id == 1
+            return admission
+
+    async def _parent_mark(_self, _session, items):
+        parent_items.extend(items)
+
+    async def _proof_false(_self, _session, *, task_id):
+        assert task_id == 1
+        return False
+
+    monkeypatch.setattr(
+        scheduler_module,
+        "CanonicalSchedulerAdmissionService",
+        _AdmissionService,
+    )
+    monkeypatch.setattr(RecoveryScheduler, "_mark_processing", _parent_mark)
+    scheduler = object.__new__(scheduler_module.Scheduler)
+    scheduler._yield_proven_repeat_to_canonical_primary = MethodType(
+        _proof_false,
+        scheduler,
+    )
+    items = [SimpleNamespace(id=1)]
+    await scheduler._mark_processing(_Session(), items)
+    assert items == []
+    assert parent_items == []
