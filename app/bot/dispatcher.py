@@ -46,6 +46,7 @@ from app.workers.candidate_enrichment import LocalCandidateEnrichmentWorker
 from app.workers.canonical_publication_delivery_recovery import (
     CanonicalPublicationDeliveryRecoveryWorker,
 )
+from app.workers.canonical_repeat_continuation import CanonicalRepeatContinuationWorker
 from app.workers.canonical_repeat_continuation_scheduler import Scheduler
 from app.workers.canonical_repeat_time_autodelete import (
     CanonicalRepeatTimeAutodeleteWorker,
@@ -105,6 +106,25 @@ async def _legacy_schema_bootstrap() -> None:
     init_db_if_needed_sync()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+async def _start_canonical_repeat_continuation_worker_if_enabled():
+    if not settings.canonical_repeat_successful_planning_enabled:
+        logger.info("Boot: canonical repeat continuation worker disabled")
+        return None
+
+    worker = CanonicalRepeatContinuationWorker(session_factory=AsyncSessionLocal)
+    try:
+        await worker.start()
+    except BaseException:
+        try:
+            await worker.stop()
+        except Exception:
+            logger.exception(
+                "Boot: failed to clean up canonical repeat continuation worker after startup failure"
+            )
+        raise
+    return worker
 
 
 async def _start_canonical_publication_delivery_recovery_worker_if_enabled():
@@ -441,6 +461,7 @@ async def run_bot() -> None:
     userbot_started = False
     scheduler = None
     scheduler_recovery = None
+    canonical_repeat_continuation = None
     canonical_publication_delivery = None
     canonical_publication_delivery_recovery = None
     publication_reconciler = None
@@ -479,8 +500,18 @@ async def run_bot() -> None:
             logger.info("Boot: AI models config loaded: {} entries", len(config_models))
 
         posting = PostingService(bot, AsyncSessionLocal)
-        scheduler = Scheduler(AsyncSessionLocal, posting)
+        # Historical PostTask runtime remains temporarily for intentional legacy drain,
+        # but canonical repeat continuation has an independent lifecycle from P5 onward.
+        scheduler = Scheduler(
+            AsyncSessionLocal,
+            posting,
+            repeat_continuation_enabled=False,
+        )
         await scheduler.start()
+
+        canonical_repeat_continuation = (
+            await _start_canonical_repeat_continuation_worker_if_enabled()
+        )
 
         scheduler_recovery = SchedulerRecoveryWorker(
             session_factory=AsyncSessionLocal,
@@ -493,7 +524,7 @@ async def run_bot() -> None:
         await publication_reconciler.start()
 
         publication_autodelete = await _start_publication_autodelete_worker_if_enabled()
-        continuation_available = bool(scheduler.repeat_continuation_available)
+        continuation_available = canonical_repeat_continuation is not None
         canonical_repeat_time_autodelete = (
             await _start_canonical_repeat_time_autodelete_worker_if_enabled(
                 repeat_continuation_available=continuation_available,
@@ -693,6 +724,11 @@ async def run_bot() -> None:
             await _safe_stop("canonical publication autodelete", publication_autodelete.stop)
         if publication_reconciler is not None:
             await _safe_stop("publication reconciler", publication_reconciler.stop)
+        if canonical_repeat_continuation is not None:
+            await _safe_stop(
+                "canonical repeat continuation",
+                canonical_repeat_continuation.stop,
+            )
         if scheduler_recovery is not None:
             await _safe_stop("scheduler recovery", scheduler_recovery.stop)
         if scheduler is not None:

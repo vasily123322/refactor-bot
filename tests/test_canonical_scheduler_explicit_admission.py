@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import MethodType, SimpleNamespace
 
 import pytest
@@ -12,8 +13,15 @@ from app.services.canonical_scheduler_admission import (
     CanonicalSchedulerAdmissionKind,
     CanonicalSchedulerAdmissionService,
 )
-from app.services.publication_execution_mode import execution_mode_from_legacy_payload
+from app.services.publication_execution_mode import (
+    CANONICAL_EXECUTION_MODE,
+    canonical_repeat_runtime_options_supported,
+    execution_mode_from_legacy_payload,
+)
 from app.workers.canonical_recovery_scheduler import Scheduler as RecoveryScheduler
+
+
+DISPATCHER_SOURCE = Path("app/bot/dispatcher.py").read_text(encoding="utf-8")
 
 
 class _Scalars:
@@ -295,3 +303,80 @@ async def test_historical_unlinked_claim_reaches_legacy_parent(monkeypatch):
     items = [post]
     await scheduler._mark_processing(session, items)
     assert parent_items == [post]
+
+
+@pytest.mark.asyncio
+async def test_canonical_linked_mixed_fails_closed_before_legacy_claim(monkeypatch):
+    publication, task, schedule = _linked(
+        options={"autodelete_seconds": 60, "autodelete_views": 100},
+        repeat_rule={"enabled": True, "seconds": 3600},
+    )
+    publication.execution_mode = CANONICAL_EXECUTION_MODE
+    result = await CanonicalSchedulerAdmissionService(
+        _Session(publications=[publication], task=task, schedule=schedule)
+    ).classify(task_id=1)
+    assert result.kind is CanonicalSchedulerAdmissionKind.FAIL_CLOSED
+    assert result.legacy_allowed is False
+
+
+def test_repeat_mixed_is_not_admitted_by_canonical_continuation():
+    assert canonical_repeat_runtime_options_supported(
+        {"autodelete_seconds": 60, "autodelete_views": 100}
+    ) is False
+    assert canonical_repeat_runtime_options_supported(
+        {"autodelete_seconds": 60, "autodelete_report": True}
+    ) is True
+
+
+def test_dispatcher_starts_canonical_repeat_continuation_outside_legacy_scheduler():
+    assert "CanonicalRepeatContinuationWorker" in DISPATCHER_SOURCE
+    assert "repeat_continuation_enabled=False" in DISPATCHER_SOURCE
+    assert "continuation_available = canonical_repeat_continuation is not None" in (
+        DISPATCHER_SOURCE
+    )
+    assert (
+        'await _safe_stop(\n                "canonical repeat continuation",'
+        in DISPATCHER_SOURCE
+    )
+
+
+@pytest.mark.asyncio
+async def test_canonical_repeat_proof_conflict_never_falls_back_to_legacy(monkeypatch):
+    admission = CanonicalSchedulerAdmission(
+        CanonicalSchedulerAdmissionKind.CANONICAL_PROOF_REQUIRED,
+        publication_id=10,
+        profile="plain",
+        repeat=True,
+    )
+    parent_items = []
+
+    class _AdmissionService:
+        def __init__(self, _session):
+            pass
+
+        async def classify(self, *, task_id):
+            assert task_id == 1
+            return admission
+
+    async def _parent_mark(_self, _session, items):
+        parent_items.extend(items)
+
+    async def _proof_false(_self, _session, *, task_id):
+        assert task_id == 1
+        return False
+
+    monkeypatch.setattr(
+        scheduler_module,
+        "CanonicalSchedulerAdmissionService",
+        _AdmissionService,
+    )
+    monkeypatch.setattr(RecoveryScheduler, "_mark_processing", _parent_mark)
+    scheduler = object.__new__(scheduler_module.Scheduler)
+    scheduler._yield_proven_repeat_to_canonical_primary = MethodType(
+        _proof_false,
+        scheduler,
+    )
+    items = [SimpleNamespace(id=1)]
+    await scheduler._mark_processing(_Session(), items)
+    assert items == []
+    assert parent_items == []

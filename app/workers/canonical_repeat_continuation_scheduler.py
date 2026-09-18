@@ -663,17 +663,11 @@ class Scheduler(RecoveryScheduler):
 
             try:
                 if admission.repeat is True:
-                    protected = await self._legacy_repeat_boot_mutation_protected(
+                    yielded = await self._yield_proven_repeat_to_canonical_primary(
                         session,
                         task_id=task_id,
                     )
-                    if protected:
-                        continue
-                    post = await session.get(PostTask, task_id, populate_existing=True)
-                    if post is not None and str(post.status) == "pending":
-                        legacy_candidates.append(post)
-                    continue
-                if admission.repeat is False:
+                elif admission.repeat is False:
                     yielded = await self._yield_proven_nonrepeat_to_canonical_primary(
                         session,
                         task_id=task_id,

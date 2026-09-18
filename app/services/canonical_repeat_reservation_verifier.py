@@ -17,7 +17,7 @@ from app.services.canonical_repeat_plan_reservation import (
 )
 from app.services.publication_execution_mode import (
     CANONICAL_EXECUTION_MODE,
-    execution_mode_from_runtime_options,
+    canonical_repeat_runtime_options_supported,
 )
 from app.services.scheduling import as_utc
 
@@ -161,8 +161,7 @@ class CanonicalRepeatReservationVerifier:
             or content_revision != int(publication.content_revision)
             or repeat_seconds != int(authority.repeat_seconds)
             or reserved_options != authority.runtime_options
-            or execution_mode_from_runtime_options(reserved_options)
-            != CANONICAL_EXECUTION_MODE
+            or not canonical_repeat_runtime_options_supported(reserved_options)
         ):
             return CanonicalRepeatReservationVerification(safe_source_id, "conflict")
 
