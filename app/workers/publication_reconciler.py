@@ -4,6 +4,7 @@ from loguru import logger
 
 from app.core.db import AsyncSessionLocal
 from app.core.runner import PollingLoop
+from app.services.legacy_runtime_drain import LegacyRuntimeDrainService
 from app.services.legacy_terminal_content_mirror import (
     mirror_unlinked_terminal_legacy_tasks,
 )
@@ -31,6 +32,7 @@ class PublicationReconcilerWorker:
         self._runtime_backfill_done = False
         self._views_backfill_cursor = 0
         self._views_backfill_done = False
+        self._legacy_drain_cursor = 0
         self._loop = PollingLoop(
             interval_seconds=max(1, int(interval_seconds)),
             on_tick=self._tick,
@@ -59,6 +61,10 @@ class PublicationReconcilerWorker:
         views_backfill_synced = 0
         views_backfill_cleared = 0
         views_backfill_invalid = 0
+        legacy_drain_scanned = 0
+        legacy_drain_archived = 0
+        legacy_drain_unlinked = 0
+        legacy_drain_retained_active = 0
         async with AsyncSessionLocal() as session:
             mirrored, skipped = await mirror_unlinked_terminal_legacy_tasks(
                 session, limit=self.batch_size
@@ -121,6 +127,16 @@ class PublicationReconcilerWorker:
                 self._runtime_backfill_cursor = batch.next_cursor
                 self._runtime_backfill_done = batch.done
 
+            drain_batch = await LegacyRuntimeDrainService(session).drain_batch(
+                after_task_id=self._legacy_drain_cursor,
+                limit=self.batch_size,
+            )
+            legacy_drain_scanned = drain_batch.scanned
+            legacy_drain_archived = drain_batch.archived
+            legacy_drain_unlinked = drain_batch.unlinked
+            legacy_drain_retained_active = drain_batch.retained_active
+            self._legacy_drain_cursor = drain_batch.next_cursor
+
         if (
             mirrored
             or skipped
@@ -140,6 +156,10 @@ class PublicationReconcilerWorker:
             or views_backfill_synced
             or views_backfill_cleared
             or views_backfill_invalid
+            or legacy_drain_scanned
+            or legacy_drain_archived
+            or legacy_drain_unlinked
+            or legacy_drain_retained_active
         ):
             logger.debug(
                 "Publication reconciler: mirrored={} skipped={} reconciled={} "
@@ -150,7 +170,9 @@ class PublicationReconcilerWorker:
                 "view_sync_scanned={} view_sync_synced={} view_sync_cleared={} "
                 "view_sync_invalid={} views_backfill_scanned={} "
                 "views_backfill_synced={} views_backfill_cleared={} "
-                "views_backfill_invalid={} views_backfill_done={}",
+                "views_backfill_invalid={} views_backfill_done={} "
+                "legacy_drain_scanned={} legacy_drain_archived={} "
+                "legacy_drain_unlinked={} legacy_drain_retained_active={}",
                 mirrored,
                 skipped,
                 reconciled,
@@ -172,4 +194,8 @@ class PublicationReconcilerWorker:
                 views_backfill_cleared,
                 views_backfill_invalid,
                 self._views_backfill_done,
+                legacy_drain_scanned,
+                legacy_drain_archived,
+                legacy_drain_unlinked,
+                legacy_drain_retained_active,
             )
