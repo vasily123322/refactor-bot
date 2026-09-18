@@ -375,7 +375,13 @@ export default function App() {
   }, [dirty, document, persistDraft, selected?.id, selectedChannelId]);
 
   const openContentById = async (contentId: number) => {
-    if (channelIdRef.current === null) return;
+    if (
+      channelIdRef.current === null
+      || activeOperations.has('telegram-preview')
+      || activeOperations.has('publish')
+      || activeOperations.has('create-draft')
+      || activeOperations.has('open-content')
+    ) return;
     if (dirtyRef.current) {
       const saved = await persistDraft(false);
       if (!saved && dirtyRef.current) return;
@@ -400,7 +406,13 @@ export default function App() {
   const openItem = async (item: ContentSummary) => openContentById(item.id);
 
   const selectChannel = (channelId: number) => {
-    if (channelId === channelIdRef.current) return;
+    if (
+      channelId === channelIdRef.current
+      || activeOperations.has('telegram-preview')
+      || activeOperations.has('publish')
+      || activeOperations.has('create-draft')
+      || activeOperations.has('open-content')
+    ) return;
     void (async () => {
       if (dirtyRef.current) {
         const saved = await persistDraft(false);
@@ -415,6 +427,12 @@ export default function App() {
   };
 
   const createDraft = async (mode: 'classic' | 'rich') => {
+    if (
+      activeOperations.has('telegram-preview')
+      || activeOperations.has('publish')
+      || activeOperations.has('create-draft')
+      || activeOperations.has('open-content')
+    ) return;
     if (dirtyRef.current) {
       const saved = await persistDraft(false);
       if (!saved && dirtyRef.current) return;
@@ -543,7 +561,7 @@ export default function App() {
           onView={setView}
           onChannelsChanged={refreshChannels}
           loading={initialLoading}
-          channelSelectionDisabled={editorTransitionBusy || publishing}
+          channelSelectionDisabled={editorTransitionBusy || previewing || publishing}
         />
 
         {view === 'planner' ? (
@@ -570,10 +588,10 @@ export default function App() {
                 <h1>{selected ? selected.title || `Пост #${selected.id}` : 'Контент'}</h1>
               </div>
               <div className="top-actions">
-                <button className="button secondary" onClick={() => void createDraft('classic')} disabled={editorTransitionBusy || publishing || !channel}>
+                <button className="button secondary" onClick={() => void createDraft('classic')} disabled={editorTransitionBusy || previewing || publishing || !channel}>
                   + Classic
                 </button>
-                <button className="button secondary" onClick={() => void createDraft('rich')} disabled={editorTransitionBusy || publishing || !channel}>
+                <button className="button secondary" onClick={() => void createDraft('rich')} disabled={editorTransitionBusy || previewing || publishing || !channel}>
                   + Rich
                 </button>
                 <button className="button secondary" onClick={exactPreview} disabled={previewing || editorTransitionBusy || publishing}>
@@ -636,7 +654,7 @@ export default function App() {
                       key={item.id}
                       className={selected?.id === item.id ? 'content-row selected' : 'content-row'}
                       onClick={() => void openItem(item)}
-                      disabled={editorTransitionBusy || publishing}
+                      disabled={editorTransitionBusy || previewing || publishing}
                     >
                       <span>
                         <strong>{item.title || `Пост #${item.id}`}</strong>
@@ -659,7 +677,7 @@ export default function App() {
                   <button
                     className="button primary compact"
                     onClick={save}
-                    disabled={!selected || !dirty || saveState === 'saving'}
+                    disabled={editorTransitionBusy || publishing || !selected || !dirty || saveState === 'saving'}
                   >
                     {saveButtonLabel}
                   </button>
