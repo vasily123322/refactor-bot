@@ -16,7 +16,6 @@ from app.services.canonical_repeat_planner import (
     CanonicalRepeatPlanner,
 )
 from app.services.publication_execution_mode import (
-    CANONICAL_EXECUTION_MODE,
     canonical_repeat_runtime_options_supported,
 )
 from app.services.scheduling import as_utc
