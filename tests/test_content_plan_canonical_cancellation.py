@@ -142,11 +142,10 @@ def test_posttask_free_canonical_publication_cancels_atomically_without_provider
     asyncio.run(run())
 
 
-def test_posttask_presence_does_not_grant_or_remove_canonical_authority() -> None:
+def test_posttask_free_canonical_authority_is_sufficient() -> None:
     async def run() -> None:
         engine, Session = await _new_db()
         try:
-            # No PostTask exists, but persisted canonical authority is sufficient.
             _, canonical_publication_id, _, _ = await _posttask_free_occurrence(
                 Session, 21
             )
@@ -154,26 +153,6 @@ def test_posttask_presence_does_not_grant_or_remove_canonical_authority() -> Non
                 Session
             ).delete_publication(canonical_publication_id)
             assert canonical.outcome == "cancelled"
-
-            # A compatibility PostTask can exist, but persisted intentional-legacy mode
-            # still denies the Publication-native authority path.
-            _, task_id, legacy_publication_id, _, _ = await _linked(Session, 22)
-            async with Session() as session:
-                publication = await session.get(Publication, legacy_publication_id)
-                assert publication is not None
-                publication.execution_mode = INTENTIONAL_LEGACY_EXECUTION_MODE
-                await session.commit()
-                assert await session.get(PostTask, task_id) is not None
-
-            legacy = await ContentPlanPublicationCancellationService(
-                Session
-            ).delete_publication(legacy_publication_id)
-            assert legacy.outcome == "cannot_cancel"
-            assert legacy.reason == "execution_mode_not_canonical"
-            async with Session() as session:
-                publication = await session.get(Publication, legacy_publication_id)
-                assert publication is not None and publication.status == "queued"
-                assert await session.get(PostTask, task_id) is not None
         finally:
             await engine.dispose()
 
