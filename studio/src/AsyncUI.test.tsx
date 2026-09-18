@@ -20,6 +20,24 @@ describe('AsyncUI', () => {
     expect(element.props.style.width).toBe('50%');
   });
 
+  it('renders error-without-valid-data before a fake empty state', () => {
+    const element = AsyncRegion({
+      loading: false,
+      error: true,
+      empty: true,
+      loadingLabel: 'Загружаю список…',
+      loadingFallback: 'skeleton',
+      emptyFallback: 'empty',
+      errorFallback: 'load-error',
+      children: 'stale-content',
+    });
+
+    const rendered = JSON.stringify(element.props.children);
+    expect(rendered).toContain('load-error');
+    expect(rendered).not.toContain('empty');
+    expect(rendered).not.toContain('stale-content');
+  });
+
   it('marks loading regions busy without rendering empty content', () => {
     const element = AsyncRegion({
       loading: true,

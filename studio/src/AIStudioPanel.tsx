@@ -1,7 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
 import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
+import {
+  ChannelRequestOwnership,
+  resolveChannelDataView,
+  type ChannelLoadState,
+} from './asyncControl';
 import type { AIActivityRunView, AIActivityView } from './api';
 import type { Channel } from './types';
 
@@ -42,25 +47,54 @@ function runTitle(run: AIActivityRunView): string {
 export function AIStudioPanel({ channel }: { channel: Channel | null }) {
   const [activity, setActivity] = useState<AIActivityView | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [loadedChannelId, setLoadedChannelId] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadState, setLoadState] = useState<ChannelLoadState | null>(null);
+  const [error, setError] = useState<{ channelId: number; message: string } | null>(null);
+  const requestOwnershipRef = useRef(new ChannelRequestOwnership());
+  const validDataChannelRef = useRef<number | null>(null);
+  const channelIdRef = useRef<number | null>(channel?.id ?? null);
+  channelIdRef.current = channel?.id ?? null;
 
   const load = useCallback(async () => {
-    if (!channel) {
+    const channelId = channelIdRef.current;
+    if (channelId === null) {
+      requestOwnershipRef.current.invalidate();
+      validDataChannelRef.current = null;
       setActivity(null);
+      setLoadState(null);
+      setRefreshing(false);
+      setError(null);
       return;
     }
+
+    const token = requestOwnershipRef.current.begin(channelId);
+    const hasValidData = validDataChannelRef.current === channelId;
+    const isCurrent = () => requestOwnershipRef.current.isCurrent(token, channelIdRef.current);
+
     setRefreshing(true);
     setError(null);
-    try {
-      setActivity(await studioApi.aiActivity(channel.id, 100));
-    } catch (reason) {
-      setError(errorMessage(reason));
-    } finally {
-      setLoadedChannelId(channel.id);
-      setRefreshing(false);
+    if (!hasValidData) {
+      validDataChannelRef.current = null;
+      setActivity(null);
+      setLoadState({ channelId, phase: 'loading' });
     }
-  }, [channel]);
+
+    try {
+      const nextActivity = await studioApi.aiActivity(channelId, 100);
+      if (!isCurrent()) return;
+      validDataChannelRef.current = channelId;
+      setActivity(nextActivity);
+      setLoadState({ channelId, phase: 'loaded' });
+    } catch (reason) {
+      if (!isCurrent()) return;
+      if (validDataChannelRef.current !== channelId) {
+        setActivity(null);
+        setLoadState({ channelId, phase: 'error-without-valid-data' });
+      }
+      setError({ channelId, message: errorMessage(reason) });
+    } finally {
+      if (isCurrent()) setRefreshing(false);
+    }
+  }, [channel?.id]);
 
   useEffect(() => {
     void load();
@@ -71,7 +105,10 @@ export function AIStudioPanel({ channel }: { channel: Channel | null }) {
   }
 
   const usage = activity?.usage;
-  const initialLoading = loadedChannelId !== channel.id;
+  const aiDataView = resolveChannelDataView(loadState, channel.id, activity ? 1 : 0);
+  const initialLoading = aiDataView === 'loading';
+  const loadFailedWithoutValidData = aiDataView === 'error-without-valid-data';
+  const hasValidData = aiDataView === 'loaded-data';
 
   return (
     <div className="ai-studio-page">
@@ -85,13 +122,13 @@ export function AIStudioPanel({ channel }: { channel: Channel | null }) {
           <button className="button secondary" onClick={() => void load()} disabled={refreshing}>
             ↻ Обновить
           </button>
-          {refreshing && !initialLoading && <InlineStatus>Обновляю AI Studio…</InlineStatus>}
+          {refreshing && hasValidData && <InlineStatus>Обновляю AI Studio…</InlineStatus>}
         </div>
       </header>
 
-      {error && (
+      {error?.channelId === channel.id && (
         <div className="banner error" role="alert">
-          {error}
+          {error.message}
           <button onClick={() => setError(null)}>×</button>
         </div>
       )}
@@ -105,6 +142,8 @@ export function AIStudioPanel({ channel }: { channel: Channel | null }) {
               <SkeletonBlock height={10} width="72%" />
             </article>
           ))
+        ) : loadFailedWithoutValidData ? (
+          <div className="empty-state">Данные AI Studio не загружены. Повторите попытку.</div>
         ) : (
           <>
             <article className="ai-stat-card">
@@ -139,6 +178,8 @@ export function AIStudioPanel({ channel }: { channel: Channel | null }) {
               <SkeletonBlock height={10} width="68%" />
             </article>
           ))
+        ) : loadFailedWithoutValidData ? (
+          <div className="empty-state">AI activity недоступна до успешной загрузки.</div>
         ) : (
           <>
             <article className="ai-status-card">
@@ -165,7 +206,8 @@ export function AIStudioPanel({ channel }: { channel: Channel | null }) {
         <AsyncRegion
           className="ai-run-list"
           loading={initialLoading}
-          empty={!activity?.runs.length}
+          error={loadFailedWithoutValidData}
+          empty={hasValidData && !activity?.runs.length}
           loadingLabel="Загружаю AI Studio…"
           loadingFallback={
             <>
@@ -178,6 +220,7 @@ export function AIStudioPanel({ channel }: { channel: Channel | null }) {
             </>
           }
           emptyFallback={<div className="empty-state">AI provenance пока пуст.</div>}
+          errorFallback={<div className="empty-state">AI provenance не загружен.</div>}
         >
           {activity?.runs.map((run) => (
             <article className="ai-run-row" key={`${run.kind}:${run.id}`}>

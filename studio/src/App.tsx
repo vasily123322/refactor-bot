@@ -3,6 +3,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AIStudioPanel } from './AIStudioPanel';
 import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
+import {
+  ExclusiveOperationLock,
+  resolveChannelDataView,
+  runExclusiveOperation,
+  type ChannelLoadState,
+} from './asyncControl';
 import { StudioApiError, studioApi } from './api';
 import { ChannelOnboardingControl } from './ChannelOnboardingControl';
 import { runComposerPreviewOnce } from './composerPreviewAction';
@@ -158,6 +164,7 @@ export default function App() {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState<number | null>(null);
   const [items, setItems] = useState<ContentSummary[]>([]);
+  const [itemsLoadState, setItemsLoadState] = useState<ChannelLoadState | null>(null);
   const [selected, setSelected] = useState<ContentDetail | null>(null);
   const [document, setDocument] = useState<PostDocument>(emptyTextDocument());
   const [previewMessageIds, setPreviewMessageIds] = useState<number[]>([]);
@@ -177,6 +184,7 @@ export default function App() {
   const inFlightSaveRef = useRef<Promise<boolean> | null>(null);
   const inFlightPreviewRef = useRef<Promise<void> | null>(null);
   const loadedItemsChannelRef = useRef<number | null>(null);
+  const operationLockRef = useRef(new ExclusiveOperationLock());
 
   useTelegramDirtyClosingProtection(dirty);
   useTelegramStudioBackButton(view, setView);
@@ -192,30 +200,36 @@ export default function App() {
   );
 
   const loadItems = useCallback(async (channelId: number) => {
-    const rows = await studioApi.content(channelId);
-    if (channelIdRef.current !== channelId) return;
-    loadedItemsChannelRef.current = channelId;
-    setItems(rows);
+    const hasValidData = loadedItemsChannelRef.current === channelId;
+    if (channelIdRef.current === channelId && !hasValidData) {
+      setItemsLoadState({ channelId, phase: 'loading' });
+    }
+    try {
+      const rows = await studioApi.content(channelId);
+      if (channelIdRef.current !== channelId) return;
+      loadedItemsChannelRef.current = channelId;
+      setItems(rows);
+      setItemsLoadState({ channelId, phase: 'loaded' });
+    } catch (reason) {
+      if (channelIdRef.current === channelId && loadedItemsChannelRef.current !== channelId) {
+        setItems([]);
+        setItemsLoadState({ channelId, phase: 'error-without-valid-data' });
+      }
+      throw reason;
+    }
   }, []);
 
   const runOperation = useCallback(async <T,>(
     key: string,
     operation: () => Promise<T>,
-  ): Promise<T> => {
-    setActiveOperations((current) => {
-      const next = new Set(current);
-      next.add(key);
-      return next;
-    });
-    try {
-      return await operation();
-    } finally {
-      setActiveOperations((current) => {
-        const next = new Set(current);
-        next.delete(key);
-        return next;
-      });
-    }
+  ): Promise<T | undefined> => {
+    const result = await runExclusiveOperation(
+      operationLockRef.current,
+      key,
+      operation,
+      (activeKey) => setActiveOperations(activeKey ? new Set([activeKey]) : new Set()),
+    );
+    return result.started ? result.value : undefined;
   }, []);
 
   const refreshChannels = useCallback(async () => {
@@ -352,15 +366,19 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (selectedChannelId === null) return;
+    if (selectedChannelId === null) {
+      loadedItemsChannelRef.current = null;
+      setItems([]);
+      setItemsLoadState(null);
+      return;
+    }
     installEditorDocument(null, emptyTextDocument());
     setPreviewMessageIds([]);
     loadedItemsChannelRef.current = null;
     setItems([]);
+    setItemsLoadState({ channelId: selectedChannelId, phase: 'loading' });
     void loadItems(selectedChannelId).catch((reason) => {
       if (channelIdRef.current === selectedChannelId) {
-        loadedItemsChannelRef.current = selectedChannelId;
-        setItems([]);
         setError(errorMessage(reason));
       }
     });
@@ -375,22 +393,16 @@ export default function App() {
   }, [dirty, document, persistDraft, selected?.id, selectedChannelId]);
 
   const openContentById = async (contentId: number) => {
-    if (
-      channelIdRef.current === null
-      || activeOperations.has('telegram-preview')
-      || activeOperations.has('publish')
-      || activeOperations.has('create-draft')
-      || activeOperations.has('open-content')
-    ) return;
-    if (dirtyRef.current) {
-      const saved = await persistDraft(false);
-      if (!saved && dirtyRef.current) return;
-    }
-    const channelId = channelIdRef.current;
-    if (channelId === null) return;
-    setView('content');
-    setError(null);
     await runOperation('open-content', async () => {
+      const channelId = channelIdRef.current;
+      if (channelId === null) return;
+      if (dirtyRef.current) {
+        const saved = await persistDraft(false);
+        if (!saved && dirtyRef.current) return;
+      }
+      if (channelIdRef.current !== channelId) return;
+      setView('content');
+      setError(null);
       try {
         const detail = await studioApi.contentItem(channelId, contentId);
         if (channelIdRef.current !== channelId) return;
@@ -398,7 +410,7 @@ export default function App() {
         setPreviewMessageIds([]);
         await loadItems(channelId);
       } catch (reason) {
-        setError(errorMessage(reason));
+        if (channelIdRef.current === channelId) setError(errorMessage(reason));
       }
     });
   };
@@ -406,14 +418,9 @@ export default function App() {
   const openItem = async (item: ContentSummary) => openContentById(item.id);
 
   const selectChannel = (channelId: number) => {
-    if (
-      channelId === channelIdRef.current
-      || activeOperations.has('telegram-preview')
-      || activeOperations.has('publish')
-      || activeOperations.has('create-draft')
-      || activeOperations.has('open-content')
-    ) return;
-    void (async () => {
+    if (channelId === channelIdRef.current) return;
+    void runOperation('select-channel', async () => {
+      if (channelId === channelIdRef.current) return;
       if (dirtyRef.current) {
         const saved = await persistDraft(false);
         if (!saved && dirtyRef.current) return;
@@ -423,24 +430,18 @@ export default function App() {
       loadedItemsChannelRef.current = null;
       setItems([]);
       setSelectedChannelId(channelId);
-    })();
+    });
   };
 
   const createDraft = async (mode: 'classic' | 'rich') => {
-    if (
-      activeOperations.has('telegram-preview')
-      || activeOperations.has('publish')
-      || activeOperations.has('create-draft')
-      || activeOperations.has('open-content')
-    ) return;
-    if (dirtyRef.current) {
-      const saved = await persistDraft(false);
-      if (!saved && dirtyRef.current) return;
-    }
-    const channelId = channelIdRef.current;
-    if (channelId === null) return;
-    setError(null);
     await runOperation('create-draft', async () => {
+      if (dirtyRef.current) {
+        const saved = await persistDraft(false);
+        if (!saved && dirtyRef.current) return;
+      }
+      const channelId = channelIdRef.current;
+      if (channelId === null) return;
+      setError(null);
       try {
         const initial = mode === 'rich' ? emptyRichDocument() : emptyTextDocument();
         const detail = await studioApi.createContent(
@@ -453,7 +454,7 @@ export default function App() {
         setPreviewMessageIds([]);
         await loadItems(channelId);
       } catch (reason) {
-        setError(errorMessage(reason));
+        if (channelIdRef.current === channelId) setError(errorMessage(reason));
       }
     });
   };
@@ -464,36 +465,38 @@ export default function App() {
 
   const exactPreview = useCallback((): Promise<void> => runComposerPreviewOnce(
     inFlightPreviewRef,
-    async () => runOperation('telegram-preview', async () => {
-      setError(null);
-      try {
-        const result = await studioApi.telegramPreview(
-          documentRef.current,
-          previewMessageIds,
-          channelIdRef.current,
-        );
-        setPreviewMessageIds(result.message_ids);
-        setNotice('Настоящий preview отправлен в Telegram');
-      } catch (reason) {
-        setError(errorMessage(reason));
-      }
-    }),
+    async () => {
+      await runOperation('telegram-preview', async () => {
+        setError(null);
+        try {
+          const result = await studioApi.telegramPreview(
+            documentRef.current,
+            previewMessageIds,
+            channelIdRef.current,
+          );
+          setPreviewMessageIds(result.message_ids);
+          setNotice('Настоящий preview отправлен в Telegram');
+        } catch (reason) {
+          setError(errorMessage(reason));
+        }
+      });
+    },
   ), [previewMessageIds, runOperation]);
 
   const publishNow = async () => {
-    if (dirtyRef.current) {
-      const saved = await persistDraft(false);
-      if (!saved && dirtyRef.current) {
-        emitStudioHaptic('publish-error');
-        setError('Не удалось сохранить последние изменения перед публикацией.');
-        return;
-      }
-    }
-    const currentSelected = selectedRef.current;
-    const channelId = channelIdRef.current;
-    if (!currentSelected || channelId === null) return;
-    setError(null);
     await runOperation('publish', async () => {
+      if (dirtyRef.current) {
+        const saved = await persistDraft(false);
+        if (!saved && dirtyRef.current) {
+          emitStudioHaptic('publish-error');
+          setError('Не удалось сохранить последние изменения перед публикацией.');
+          return;
+        }
+      }
+      const currentSelected = selectedRef.current;
+      const channelId = channelIdRef.current;
+      if (!currentSelected || channelId === null) return;
+      setError(null);
       try {
         const publication = await studioApi.publishNow(channelId, currentSelected.id);
         setNotice(`Публикация #${publication.id} поставлена в очередь`);
@@ -535,11 +538,19 @@ export default function App() {
   const telegramPreviewActionLabel = '👁 В Telegram';
   const openingContent = activeOperations.has('open-content');
   const creatingDraft = activeOperations.has('create-draft');
+  const switchingChannel = activeOperations.has('select-channel');
   const previewing = activeOperations.has('telegram-preview');
   const publishing = activeOperations.has('publish');
-  const editorTransitionBusy = openingContent || creatingDraft;
+  const editorTransitionBusy = openingContent || creatingDraft || switchingChannel;
+  const contentDataView = selectedChannelId === null
+    ? 'loaded-empty'
+    : resolveChannelDataView(itemsLoadState, selectedChannelId, items.length);
   const contentInitialLoading = initialLoading
-    || (selectedChannelId !== null && loadedItemsChannelRef.current !== selectedChannelId);
+    || (selectedChannelId !== null && contentDataView === 'loading');
+  const contentLoadFailed = selectedChannelId !== null
+    && contentDataView === 'error-without-valid-data';
+  const contentEmpty = !initialLoading
+    && (selectedChannelId === null || contentDataView === 'loaded-empty');
 
   useTelegramComposerMainButton({
     active: view === 'content',
@@ -602,6 +613,7 @@ export default function App() {
                 </button>
                 {creatingDraft && <InlineStatus>Создаю новый черновик…</InlineStatus>}
                 {openingContent && <InlineStatus>Открываю публикацию…</InlineStatus>}
+                {switchingChannel && <InlineStatus>Сохраняю и переключаю канал…</InlineStatus>}
                 {previewing && <InlineStatus>Отправляю preview в Telegram…</InlineStatus>}
                 {publishing && <InlineStatus>Ставлю публикацию в очередь…</InlineStatus>}
               </div>
@@ -625,13 +637,14 @@ export default function App() {
                 <div className="panel-heading">
                   <div>
                     <h2>Публикации</h2>
-                    <small>{contentInitialLoading ? 'Загружаю Content domain…' : `${items.length} объектов в Content domain`}</small>
+                    <small>{contentInitialLoading ? 'Загружаю Content domain…' : contentLoadFailed ? 'Content domain не загружен' : `${items.length} объектов в Content domain`}</small>
                   </div>
                 </div>
                 <AsyncRegion
                   className="content-list"
                   loading={contentInitialLoading}
-                  empty={items.length === 0}
+                  error={contentLoadFailed}
+                  empty={contentEmpty}
                   loadingLabel="Загружаю публикации…"
                   loadingFallback={
                     <div className="content-list-skeleton">
@@ -647,6 +660,9 @@ export default function App() {
                     <div className="empty-state">
                       {channel ? 'Создайте первый пост.' : 'Подключите или выберите канал.'}
                     </div>
+                  }
+                  errorFallback={
+                    <div className="empty-state">Публикации не загружены. Повторите попытку.</div>
                   }
                 >
                   {items.map((item) => (

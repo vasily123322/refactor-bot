@@ -39,17 +39,21 @@ export function SkeletonBlock({
 export function AsyncRegion({
   loading,
   empty,
+  error = false,
   loadingLabel,
   loadingFallback,
   emptyFallback,
+  errorFallback = null,
   children,
   className,
 }: {
   loading: boolean;
   empty: boolean;
+  error?: boolean;
   loadingLabel: string;
   loadingFallback: ReactNode;
   emptyFallback: ReactNode;
+  errorFallback?: ReactNode;
   children: ReactNode;
   className?: string;
 }) {
@@ -62,6 +66,8 @@ export function AsyncRegion({
             {loadingFallback}
           </div>
         </>
+      ) : error ? (
+        errorFallback
       ) : empty ? (
         emptyFallback
       ) : (

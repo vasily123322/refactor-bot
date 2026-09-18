@@ -1,7 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
 import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
+import {
+  ChannelRequestOwnership,
+  resolveChannelDataView,
+  type ChannelLoadState,
+} from './asyncControl';
 import { ChannelDMProvenance } from './ChannelDMProvenance';
 import { channelDMEnrichmentSummary } from './channelDMPresentation';
 import { promptCandidateStructuredRewrite } from './candidatePromptRewrite';
@@ -86,40 +91,77 @@ export function InboxPanel({
   const [rewritePreviews, setRewritePreviews] = useState<Record<number, RewritePreview>>({});
   const [rewriteInstructions, setRewriteInstructions] = useState<Record<number, string>>({});
   const [busyKeys, setBusyKeys] = useState<Set<string>>(() => new Set());
-  const [loadedChannelId, setLoadedChannelId] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadState, setLoadState] = useState<ChannelLoadState | null>(null);
+  const [error, setError] = useState<{ channelId: number; message: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const requestOwnershipRef = useRef(new ChannelRequestOwnership());
+  const validDataChannelRef = useRef<number | null>(null);
+  const channelIdRef = useRef<number | null>(channel?.id ?? null);
+  channelIdRef.current = channel?.id ?? null;
 
-  const load = useCallback(async () => {
-    if (!channel) {
+  const load = useCallback(async (): Promise<boolean> => {
+    const channelId = channelIdRef.current;
+    if (channelId === null) {
+      requestOwnershipRef.current.invalidate();
+      validDataChannelRef.current = null;
       setCandidates([]);
       setCandidateMedia({});
       setRewritePreviews({});
       setRewriteInstructions({});
-      return;
+      setLoadState(null);
+      return false;
     }
-    const [rows, mediaRows] = await Promise.all([
-      studioApi.candidates(channel.id),
-      loadCandidateMedia(channel.id),
-    ]);
-    setCandidates(rows);
-    setCandidateMedia(mediaMap(mediaRows));
-    setRewritePreviews(await loadCurrentStructuredRewritePreviews(channel.id, rows));
-    setLoadedChannelId(channel.id);
-  }, [channel]);
+
+    const token = requestOwnershipRef.current.begin(channelId);
+    const hasValidData = validDataChannelRef.current === channelId;
+    const isCurrent = () => requestOwnershipRef.current.isCurrent(token, channelIdRef.current);
+
+    setError(null);
+    if (!hasValidData) {
+      validDataChannelRef.current = null;
+      setCandidates([]);
+      setCandidateMedia({});
+      setRewritePreviews({});
+      setRewriteInstructions({});
+      setLoadState({ channelId, phase: 'loading' });
+    }
+
+    try {
+      const [rows, mediaRows] = await Promise.all([
+        studioApi.candidates(channelId),
+        loadCandidateMedia(channelId),
+      ]);
+      if (!isCurrent()) return false;
+      const previews = await loadCurrentStructuredRewritePreviews(channelId, rows);
+      if (!isCurrent()) return false;
+
+      setCandidates(rows);
+      setCandidateMedia(mediaMap(mediaRows));
+      setRewritePreviews(previews);
+      validDataChannelRef.current = channelId;
+      setLoadState({ channelId, phase: 'loaded' });
+      return true;
+    } catch (reason) {
+      if (!isCurrent()) return false;
+      if (validDataChannelRef.current !== channelId) {
+        setCandidates([]);
+        setCandidateMedia({});
+        setRewritePreviews({});
+        setLoadState({ channelId, phase: 'error-without-valid-data' });
+      }
+      setError({ channelId, message: errorMessage(reason) });
+      return false;
+    }
+  }, [channel?.id]);
 
   useEffect(() => {
     setError(null);
     setNotice(null);
-    setRewritePreviews({});
-    setRewriteInstructions({});
-    void load().catch((reason) => {
-      setLoadedChannelId(channel?.id ?? null);
-      setError(errorMessage(reason));
-    });
+    void load();
   }, [channel?.id, load]);
 
-  const run = async (key: string, action: () => Promise<void>) => {
+  const run = async (key: string, action: () => Promise<unknown>) => {
+    const operationChannelId = channelIdRef.current;
     setBusyKeys((current) => {
       const next = new Set(current);
       next.add(key);
@@ -129,7 +171,9 @@ export function InboxPanel({
     try {
       await action();
     } catch (reason) {
-      setError(errorMessage(reason));
+      if (operationChannelId !== null && channelIdRef.current === operationChannelId) {
+        setError({ channelId: operationChannelId, message: errorMessage(reason) });
+      }
     } finally {
       setBusyKeys((current) => {
         const next = new Set(current);
@@ -400,6 +444,11 @@ export function InboxPanel({
     return <div className="sources-empty-page">Выберите канал, чтобы открыть Inbox.</div>;
   }
 
+  const inboxDataView = resolveChannelDataView(loadState, channel.id, candidates.length);
+  const inboxLoading = inboxDataView === 'loading';
+  const inboxLoadFailed = inboxDataView === 'error-without-valid-data';
+  const inboxEmpty = inboxDataView === 'loaded-empty';
+
   return (
     <div className="sources-page inbox-page">
       <header className="sources-topbar">
@@ -411,7 +460,7 @@ export function InboxPanel({
         <div className="top-actions">
           <button
             className="button secondary"
-            onClick={() => void run('refresh', load)}
+            onClick={() => void run('refresh', async () => { await load(); })}
             disabled={busyKeys.size > 0}
           >
             ↻ Обновить
@@ -429,7 +478,7 @@ export function InboxPanel({
         </div>
       </header>
 
-      {error && <div className="banner error" role="alert">{error}<button onClick={() => setError(null)}>×</button></div>}
+      {error?.channelId === channel.id && <div className="banner error" role="alert">{error.message}<button onClick={() => setError(null)}>×</button></div>}
       {notice && <InlineStatus className="banner success">{notice}<button onClick={() => setNotice(null)}>×</button></InlineStatus>}
 
       <section className="sources-inbox-card inbox-standalone-card">
@@ -437,14 +486,15 @@ export function InboxPanel({
           <div>
             <h2>Новые кандидаты</h2>
             <small>
-              {loadedChannelId === channel.id ? `${candidates.length} в очереди редактора` : 'Загружаю Inbox…'}
+              {inboxLoading ? 'Загружаю Inbox…' : inboxLoadFailed ? 'Inbox не загружен' : `${candidates.length} в очереди редактора`}
             </small>
           </div>
         </div>
         <AsyncRegion
           className="candidate-list"
-          loading={loadedChannelId !== channel.id}
-          empty={candidates.length === 0}
+          loading={inboxLoading}
+          error={inboxLoadFailed}
+          empty={inboxEmpty}
           loadingLabel="Загружаю Inbox…"
           loadingFallback={
             <div className="candidate-list-skeleton">
@@ -461,6 +511,9 @@ export function InboxPanel({
           }
           emptyFallback={
             <div className="empty-state">Inbox пуст. Источники и ingestion worker добавят новые материалы сюда.</div>
+          }
+          errorFallback={
+            <div className="empty-state">Inbox не загружен. Повторите попытку обновления.</div>
           }
         >
           {candidates.map((candidate) => {
