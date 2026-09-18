@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
+import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
 import type { AIActivityRunView, AIActivityView } from './api';
 import type { Channel } from './types';
 
@@ -40,7 +41,8 @@ function runTitle(run: AIActivityRunView): string {
 
 export function AIStudioPanel({ channel }: { channel: Channel | null }) {
   const [activity, setActivity] = useState<AIActivityView | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadedChannelId, setLoadedChannelId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -48,14 +50,15 @@ export function AIStudioPanel({ channel }: { channel: Channel | null }) {
       setActivity(null);
       return;
     }
-    setBusy(true);
+    setRefreshing(true);
     setError(null);
     try {
       setActivity(await studioApi.aiActivity(channel.id, 100));
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
-      setBusy(false);
+      setLoadedChannelId(channel.id);
+      setRefreshing(false);
     }
   }, [channel]);
 
@@ -68,6 +71,7 @@ export function AIStudioPanel({ channel }: { channel: Channel | null }) {
   }
 
   const usage = activity?.usage;
+  const initialLoading = loadedChannelId !== channel.id;
 
   return (
     <div className="ai-studio-page">
@@ -78,9 +82,10 @@ export function AIStudioPanel({ channel }: { channel: Channel | null }) {
           <p>Read-only usage и provenance. Эта страница не запускает генерацию и не расходует AI-токены.</p>
         </div>
         <div className="top-actions">
-          <button className="button secondary" onClick={() => void load()} disabled={busy}>
-            {busy ? 'Обновляю…' : '↻ Обновить'}
+          <button className="button secondary" onClick={() => void load()} disabled={refreshing}>
+            ↻ Обновить
           </button>
+          {refreshing && !initialLoading && <InlineStatus>Обновляю AI Studio…</InlineStatus>}
         </div>
       </header>
 
@@ -91,49 +96,89 @@ export function AIStudioPanel({ channel }: { channel: Channel | null }) {
         </div>
       )}
 
-      <section className="ai-usage-grid">
-        <article className="ai-stat-card">
-          <small>Channel AI</small>
-          <strong>{usage?.configured ? (usage.enabled ? 'Включён' : 'Выключен') : 'Не настроен'}</strong>
-          <span>{usage?.model || '—'}</span>
-        </article>
-        <article className="ai-stat-card">
-          <small>Сегодня</small>
-          <strong>{usage ? usage.tokens_used_day.toLocaleString('ru-RU') : '—'}</strong>
-          <span>{usage ? usageLabel(usage.tokens_used_day, usage.tokens_limit_day) : '—'}</span>
-        </article>
-        <article className="ai-stat-card">
-          <small>Месяц</small>
-          <strong>{usage ? usage.tokens_used_month.toLocaleString('ru-RU') : '—'}</strong>
-          <span>{usage ? usageLabel(usage.tokens_used_month, usage.tokens_limit_month) : '—'}</span>
-        </article>
-        <article className="ai-stat-card">
-          <small>Request settings</small>
-          <strong>{usage?.max_tokens ? `${usage.max_tokens} max tokens` : '—'}</strong>
-          <span>{usage?.temperature !== null && usage?.temperature !== undefined ? `temperature ${usage.temperature}` : '—'}</span>
-        </article>
+      <section className="ai-usage-grid" aria-busy={initialLoading || undefined}>
+        {initialLoading ? (
+          [0, 1, 2, 3].map((index) => (
+            <article className="ai-stat-card ai-card-skeleton" key={index}>
+              <SkeletonBlock height={10} width="38%" />
+              <SkeletonBlock height={21} width={index % 2 ? '52%' : '66%'} />
+              <SkeletonBlock height={10} width="72%" />
+            </article>
+          ))
+        ) : (
+          <>
+            <article className="ai-stat-card">
+              <small>Channel AI</small>
+              <strong>{usage?.configured ? (usage.enabled ? 'Включён' : 'Выключен') : 'Не настроен'}</strong>
+              <span>{usage?.model || '—'}</span>
+            </article>
+            <article className="ai-stat-card">
+              <small>Сегодня</small>
+              <strong>{usage ? usage.tokens_used_day.toLocaleString('ru-RU') : '—'}</strong>
+              <span>{usage ? usageLabel(usage.tokens_used_day, usage.tokens_limit_day) : '—'}</span>
+            </article>
+            <article className="ai-stat-card">
+              <small>Месяц</small>
+              <strong>{usage ? usage.tokens_used_month.toLocaleString('ru-RU') : '—'}</strong>
+              <span>{usage ? usageLabel(usage.tokens_used_month, usage.tokens_limit_month) : '—'}</span>
+            </article>
+            <article className="ai-stat-card">
+              <small>Request settings</small>
+              <strong>{usage?.max_tokens ? `${usage.max_tokens} max tokens` : '—'}</strong>
+              <span>{usage?.temperature !== null && usage?.temperature !== undefined ? `temperature ${usage.temperature}` : '—'}</span>
+            </article>
+          </>
+        )}
       </section>
 
-      <section className="ai-status-grid">
-        <article className="ai-status-card">
-          <strong>Enrichment runs</strong>
-          <span>{activity ? countLabel(activity.enrichment_counts) : '—'}</span>
-        </article>
-        <article className="ai-status-card">
-          <strong>Rewrite runs</strong>
-          <span>{activity ? countLabel(activity.rewrite_counts) : '—'}</span>
-        </article>
+      <section className="ai-status-grid" aria-busy={initialLoading || undefined}>
+        {initialLoading ? (
+          [0, 1].map((index) => (
+            <article className="ai-status-card ai-card-skeleton" key={index}>
+              <SkeletonBlock height={12} width="34%" />
+              <SkeletonBlock height={10} width="68%" />
+            </article>
+          ))
+        ) : (
+          <>
+            <article className="ai-status-card">
+              <strong>Enrichment runs</strong>
+              <span>{activity ? countLabel(activity.enrichment_counts) : 'нет запусков'}</span>
+            </article>
+            <article className="ai-status-card">
+              <strong>Rewrite runs</strong>
+              <span>{activity ? countLabel(activity.rewrite_counts) : 'нет запусков'}</span>
+            </article>
+          </>
+        )}
       </section>
 
       <section className="ai-runs-card">
         <div className="panel-heading">
           <div>
             <h2>Последние AI runs</h2>
-            <small>{activity?.runs.length || 0} записей · без source/generated content</small>
+            <small>
+              {initialLoading ? 'Загружаю AI provenance…' : `${activity?.runs.length ?? 0} записей · без source/generated content`}
+            </small>
           </div>
         </div>
-        <div className="ai-run-list">
-          {!activity?.runs.length && <div className="empty-state">AI provenance пока пуст.</div>}
+        <AsyncRegion
+          className="ai-run-list"
+          loading={initialLoading}
+          empty={!activity?.runs.length}
+          loadingLabel="Загружаю AI Studio…"
+          loadingFallback={
+            <>
+              {[0, 1, 2].map((index) => (
+                <article className="ai-run-row ai-card-skeleton" key={index}>
+                  <SkeletonBlock height={18} width="44%" radius={999} />
+                  <SkeletonBlock height={10} width="78%" />
+                </article>
+              ))}
+            </>
+          }
+          emptyFallback={<div className="empty-state">AI provenance пока пуст.</div>}
+        >
           {activity?.runs.map((run) => (
             <article className="ai-run-row" key={`${run.kind}:${run.id}`}>
               <div className="ai-run-main">
@@ -151,7 +196,7 @@ export function AIStudioPanel({ channel }: { channel: Channel | null }) {
               </div>
             </article>
           ))}
-        </div>
+        </AsyncRegion>
       </section>
     </div>
   );
