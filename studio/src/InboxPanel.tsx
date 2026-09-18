@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
+import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
 import { ChannelDMProvenance } from './ChannelDMProvenance';
 import { channelDMEnrichmentSummary } from './channelDMPresentation';
 import { promptCandidateStructuredRewrite } from './candidatePromptRewrite';
@@ -84,7 +85,8 @@ export function InboxPanel({
   const [candidateMedia, setCandidateMedia] = useState<Record<number, CandidateMediaView>>({});
   const [rewritePreviews, setRewritePreviews] = useState<Record<number, RewritePreview>>({});
   const [rewriteInstructions, setRewriteInstructions] = useState<Record<number, string>>({});
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [busyKeys, setBusyKeys] = useState<Set<string>>(() => new Set());
+  const [loadedChannelId, setLoadedChannelId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -103,6 +105,7 @@ export function InboxPanel({
     setCandidates(rows);
     setCandidateMedia(mediaMap(mediaRows));
     setRewritePreviews(await loadCurrentStructuredRewritePreviews(channel.id, rows));
+    setLoadedChannelId(channel.id);
   }, [channel]);
 
   useEffect(() => {
@@ -110,19 +113,50 @@ export function InboxPanel({
     setNotice(null);
     setRewritePreviews({});
     setRewriteInstructions({});
-    void load().catch((reason) => setError(errorMessage(reason)));
-  }, [load]);
+    void load().catch((reason) => {
+      setLoadedChannelId(channel?.id ?? null);
+      setError(errorMessage(reason));
+    });
+  }, [channel?.id, load]);
 
   const run = async (key: string, action: () => Promise<void>) => {
-    setBusyId(key);
+    setBusyKeys((current) => {
+      const next = new Set(current);
+      next.add(key);
+      return next;
+    });
     setError(null);
     try {
       await action();
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
-      setBusyId(null);
+      setBusyKeys((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
     }
+  };
+
+  const isBusy = (key: string) => busyKeys.has(key);
+  const globalBusy = isBusy('refresh') || isBusy('batch-local');
+  const candidateBusy = (candidateId: number) => Array.from(busyKeys).some(
+    (key) => key.split(':')[1] === String(candidateId),
+  );
+  const candidateOperationLabel = (candidateId: number): string | null => {
+    const key = Array.from(busyKeys).find((value) => value.split(':')[1] === String(candidateId));
+    if (!key) return null;
+    if (key.startsWith('enrich-local:')) return 'Анализирую локально…';
+    if (key.startsWith('enrich-ai:')) return 'Запускаю AI enrichment…';
+    if (key.startsWith('rewrite-ai-prompt:')) return 'Готовлю Rich proposal по промпту…';
+    if (key.startsWith('rewrite-ai-edit:')) return 'Редактирую Rich proposal…';
+    if (key.startsWith('rewrite-ai-structured:')) return 'Готовлю Rich rewrite…';
+    if (key.startsWith('rewrite-ai:')) return 'Готовлю AI rewrite…';
+    if (key.startsWith('promote-media:')) return 'Сохраняю media в медиатеку…';
+    if (key.startsWith('draft:')) return 'Создаю черновик…';
+    if (key.startsWith('dismiss:')) return 'Скрываю материал…';
+    return 'Выполняю действие…';
   };
 
   const markStructuredPreviewStale = (candidateId: number, runId: number) => {
@@ -375,29 +409,60 @@ export function InboxPanel({
           <p>Нормализованные кандидаты из Telegram/RSS/Web: анализ → enrichment → policy-safe draft.</p>
         </div>
         <div className="top-actions">
-          <button className="button secondary" onClick={() => void load()} disabled={busyId !== null}>↻ Обновить</button>
+          <button
+            className="button secondary"
+            onClick={() => void run('refresh', load)}
+            disabled={busyKeys.size > 0}
+          >
+            ↻ Обновить
+          </button>
           <button
             className="button secondary"
             onClick={() => void enrichBatch()}
-            disabled={busyId !== null || candidates.length === 0}
+            disabled={busyKeys.size > 0 || candidates.length === 0}
             title="Deterministic local enrichment, без AI-токенов"
           >
-            {busyId === 'batch-local' ? 'Анализ…' : 'Local batch'}
+            Local batch
           </button>
+          {isBusy('refresh') && <InlineStatus>Обновляю Inbox…</InlineStatus>}
+          {isBusy('batch-local') && <InlineStatus>Анализирую Inbox batch…</InlineStatus>}
         </div>
       </header>
 
       {error && <div className="banner error" role="alert">{error}<button onClick={() => setError(null)}>×</button></div>}
-      {notice && <div className="banner success">{notice}<button onClick={() => setNotice(null)}>×</button></div>}
+      {notice && <InlineStatus className="banner success">{notice}<button onClick={() => setNotice(null)}>×</button></InlineStatus>}
 
       <section className="sources-inbox-card inbox-standalone-card">
         <div className="panel-heading">
-          <div><h2>Новые кандидаты</h2><small>{candidates.length} в очереди редактора</small></div>
+          <div>
+            <h2>Новые кандидаты</h2>
+            <small>
+              {loadedChannelId === channel.id ? `${candidates.length} в очереди редактора` : 'Загружаю Inbox…'}
+            </small>
+          </div>
         </div>
-        <div className="candidate-list">
-          {candidates.length === 0 && (
+        <AsyncRegion
+          className="candidate-list"
+          loading={loadedChannelId !== channel.id}
+          empty={candidates.length === 0}
+          loadingLabel="Загружаю Inbox…"
+          loadingFallback={
+            <div className="candidate-list-skeleton">
+              {[0, 1, 2].map((index) => (
+                <div className="candidate-card-skeleton" key={index}>
+                  <SkeletonBlock height={20} width="34%" radius={999} />
+                  <SkeletonBlock height={14} width={index % 2 ? '62%' : '78%'} />
+                  <SkeletonBlock height={10} />
+                  <SkeletonBlock height={10} width="86%" />
+                  <SkeletonBlock height={30} width="58%" />
+                </div>
+              ))}
+            </div>
+          }
+          emptyFallback={
             <div className="empty-state">Inbox пуст. Источники и ingestion worker добавят новые материалы сюда.</div>
-          )}
+          }
+        >
           {candidates.map((candidate) => {
             const score = scoreLabel(candidate.score);
             const rewritePreview = rewritePreviews[candidate.id];
@@ -457,10 +522,10 @@ export function InboxPanel({
                             <button
                               key={operation}
                               className="button secondary compact"
-                              disabled={busyId !== null}
+                              disabled={globalBusy || candidateBusy(candidate.id)}
                               onClick={() => editStructuredAI(candidate, operation)}
                             >
-                              {busyId === `rewrite-ai-edit:${candidate.id}:${operation}` ? 'AI…' : label}
+                              {label}
                             </button>
                           ))}
                         </div>
@@ -482,14 +547,15 @@ export function InboxPanel({
                         ...current,
                         [candidate.id]: event.target.value,
                       }))}
+                      disabled={globalBusy || candidateBusy(candidate.id)}
                       style={{ width: '100%', boxSizing: 'border-box', marginTop: 8 }}
                     />
                     <button
                       className="button secondary compact"
-                      disabled={busyId !== null || !prompt.trim()}
+                      disabled={globalBusy || candidateBusy(candidate.id) || !prompt.trim()}
                       onClick={() => rewritePromptStructuredAI(candidate)}
                     >
-                      {busyId === `rewrite-ai-prompt:${candidate.id}` ? 'По промпту…' : '✨ Rich по промпту'}
+                      ✨ Rich по промпту
                     </button>
                   </div>
                 )}
@@ -502,72 +568,71 @@ export function InboxPanel({
                     {canPromoteMedia && (
                       <button
                         className="button secondary compact"
-                        disabled={busyId !== null}
+                        disabled={globalBusy || candidateBusy(candidate.id)}
                         title="Сохранить исходное Telegram media как reusable MediaAsset текущего канала"
                         onClick={() => void promoteMedia(candidate)}
                       >
-                        {busyId === `promote-media:${candidate.id}` ? 'Сохраняю media…' : '▣ В медиатеку'}
+                        ▣ В медиатеку
                       </button>
                     )}
                     <button
                       className="button secondary compact"
-                      disabled={busyId !== null}
+                      disabled={globalBusy || candidateBusy(candidate.id)}
                       onClick={() => void enrichLocal(candidate)}
                     >
-                      {busyId === `enrich-local:${candidate.id}` ? 'Анализ…' : 'Local'}
+                      Local
                     </button>
                     <button
                       className="button secondary compact"
-                      disabled={busyId !== null}
+                      disabled={globalBusy || candidateBusy(candidate.id)}
                       title="Использует AI-настройки и лимиты выбранного канала"
                       onClick={() => void enrichAI(candidate)}
                     >
-                      {busyId === `enrich-ai:${candidate.id}` ? 'AI…' : '✨ AI'}
+                      ✨ AI
                     </button>
                     {canRewrite && (
                       <button
                         className="button secondary compact"
-                        disabled={busyId !== null}
+                        disabled={globalBusy || candidateBusy(candidate.id)}
                         title="Создать независимый AI rewrite; attribution добавит приложение"
                         onClick={() => void rewriteAI(candidate)}
                       >
-                        {busyId === `rewrite-ai:${candidate.id}` ? 'Rewrite…' : '✨ Rewrite'}
+                        ✨ Rewrite
                       </button>
                     )}
                     {canRewrite && (
                       <button
                         className="button secondary compact"
-                        disabled={busyId !== null}
+                        disabled={globalBusy || candidateBusy(candidate.id)}
                         title="Сгенерировать validated Rich PostDocument без автоматического применения"
                         onClick={() => void rewriteStructuredAI(candidate)}
                       >
-                        {busyId === `rewrite-ai-structured:${candidate.id}` ? 'Rich…' : '✨ Rich'}
+                        ✨ Rich
                       </button>
                     )}
                     <button
                       className="button primary compact"
-                      disabled={busyId !== null}
+                      disabled={globalBusy || candidateBusy(candidate.id)}
                       onClick={() => void acceptDraft(candidate)}
                     >
-                      {busyId === `draft:${candidate.id}`
-                        ? 'Создаю…'
-                        : rewritePreview?.kind === 'structured'
-                          ? 'В Rich черновик'
-                          : 'В черновик'}
+                      {rewritePreview?.kind === 'structured' ? 'В Rich черновик' : 'В черновик'}
                     </button>
                     <button
                       className="button secondary compact"
-                      disabled={busyId !== null}
+                      disabled={globalBusy || candidateBusy(candidate.id)}
                       onClick={() => void dismiss(candidate)}
                     >
                       Скрыть
                     </button>
                   </div>
                 </div>
+                <InlineStatus className="candidate-operation-status">
+                  {candidateOperationLabel(candidate.id)}
+                </InlineStatus>
               </article>
             );
           })}
-        </div>
+        </AsyncRegion>
       </section>
     </div>
   );
