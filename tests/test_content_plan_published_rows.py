@@ -7,12 +7,11 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
-from app.domain.content import PostDocument
 from app.domain.models import Channel, Client, PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
-from app.repositories.content import ContentRepo
 from app.services.content_plan_published_rows import list_published_content_plan_rows
-from app.services.publication_bridge import LegacyPublicationBridge
+from app.services.legacy_content_mirror import mirror_legacy_post_task
+from app.services.publication_execution_mode import INTENTIONAL_LEGACY_EXECUTION_MODE
 from app.services.publication_runtime import AUTODELETE_RUNTIME_META_KEY
 
 
@@ -36,37 +35,32 @@ async def _seed_published(Session) -> tuple[int, int, int, int]:
         session.add(channel)
         await session.commit()
 
-        item = await ContentRepo(session).create(
+        task = PostTask(
             channel_id=int(channel.id),
-            document=PostDocument(
-                blocks=[
-                    {
-                        "id": "b1",
-                        "type": "text",
-                        "text": "Canonical row survives transport retirement",
-                    }
-                ]
-            ),
-            created_by_tg_user_id=75001,
-        )
-        publication = await LegacyPublicationBridge(session).queue(
-            content_item_id=int(item.id),
+            status="done",
             scheduled_at=scheduled,
-            runtime_options={
+            payload={
+                "type": "text",
+                "text": "Canonical row survives transport retirement",
                 "autodelete_seconds": 7200,
                 "autodelete_views": 1500,
             },
         )
-        task_id = int(publication.legacy_post_task_id or 0)
+        session.add(task)
+        await session.flush()
+        publication = await mirror_legacy_post_task(session, task, commit=False)
+        assert publication is not None
+        assert publication.execution_mode == INTENTIONAL_LEGACY_EXECUTION_MODE
+        task_id = int(task.id)
         schedule_id = int(publication.schedule_entry_id or 0)
-        task = await session.get(PostTask, task_id)
         schedule = await session.get(ScheduleEntry, schedule_id)
-        assert task is not None and schedule is not None
-        task.status = "done"
-        publication.status = "published"
-        schedule.status = "completed"
+        assert schedule is not None
         publication.meta = {
             **dict(publication.meta or {}),
+            "runtime_options": {
+                "autodelete_seconds": 7200,
+                "autodelete_views": 1500,
+            },
             AUTODELETE_RUNTIME_META_KEY: {
                 "deleted": True,
                 "effective_seconds": 3600,

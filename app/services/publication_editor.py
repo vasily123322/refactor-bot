@@ -57,6 +57,7 @@ class PublicationEditorView:
     document: dict[str, Any]
     telegram_message_ids: tuple[int, ...]
     result_link: str | None
+    schedule_entry_id: int | None = None
 
     @property
     def primary_message_id(self) -> int | None:
@@ -162,6 +163,7 @@ async def load_owned_publication_editor_view(
     ids = normalize_telegram_message_ids(publication.telegram_message_ids)
     return PublicationEditorView(
         publication_id=int(publication.id),
+        schedule_entry_id=int(schedule.id),
         content_item_id=int(publication.content_item_id),
         content_revision=int(publication.content_revision),
         channel_id=int(publication.channel_id),

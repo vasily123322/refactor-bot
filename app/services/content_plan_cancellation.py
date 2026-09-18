@@ -10,6 +10,9 @@ from app.domain.models import PostTask
 from app.domain.publication_delivery import PublicationDeliveryLease
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.domain.scheduler import SchedulerTaskLease
+from app.services.content_plan_publication_controls import (
+    content_plan_schedule_state_token,
+)
 from app.services.publication_execution_mode import (
     CANONICAL_EXECUTION_MODE,
     has_canonical_execution_authority,
@@ -76,7 +79,10 @@ class ContentPlanCancellationService:
         self.session_factory = session_factory
 
     async def delete_canonical_publication(
-        self, publication_id: int
+        self,
+        publication_id: int,
+        *,
+        expected_schedule_token: str | None = None,
     ) -> ContentPlanDeleteResult:
         """Cancel one explicitly canonical occurrence without consulting PostTask.
 
@@ -125,6 +131,25 @@ class ContentPlanCancellationService:
                 return ContentPlanDeleteResult(
                     outcome="cannot_cancel", reason="missing_schedule_entry"
                 )
+
+            expected_scheduled_at = schedule.scheduled_at
+            expected_repeat_rule = dict(schedule.repeat_rule or {})
+            if expected_schedule_token is not None:
+                actual_schedule_token = content_plan_schedule_state_token(
+                    schedule_entry_id=int(schedule.id),
+                    scheduled_at=schedule.scheduled_at,
+                    repeat_rule=expected_repeat_rule,
+                )
+                if (
+                    not str(expected_schedule_token).strip()
+                    or str(expected_schedule_token).strip().lower()
+                    != actual_schedule_token
+                ):
+                    await session.rollback()
+                    return ContentPlanDeleteResult(
+                        outcome="cannot_cancel",
+                        reason="stale_schedule_state",
+                    )
 
             reason = await self._canonical_execution_barrier_reason(
                 session,
@@ -183,6 +208,7 @@ class ContentPlanCancellationService:
                 .where(
                     ScheduleEntry.id == int(schedule.id),
                     ScheduleEntry.status == "pending",
+                    ScheduleEntry.scheduled_at == expected_scheduled_at,
                 )
                 .values(status="cancelled")
                 .execution_options(synchronize_session=False)

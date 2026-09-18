@@ -67,6 +67,7 @@ jobs:
             tests/test_canonical_mixed_autodelete.py \
             tests/test_publication_autodelete.py \
             tests/test_publication_autodelete_worker.py \
+            tests/test_content_plan_p3_cutover.py \
             tests/test_channel_dm_replies.py \
             tests/test_channel_dm_reply_global_idempotency.py \
             tests/test_channel_dm_reply_intents.py \

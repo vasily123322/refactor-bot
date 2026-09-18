@@ -107,6 +107,8 @@ def test_queued_publication_card_exposes_publication_id_delete_callback():
     open_source = inspect.getsource(publication_router.cb_cp_open_publication)
     delete_source = inspect.getsource(publication_router.cb_cp_delete_publication)
     assert 'view.status == "queued"' in open_source
-    assert 'callback_data=f"cp_delete_pub:{view.publication_id}:{date_iso}"' in open_source
+    assert '"cp_delete_pub"' in open_source
+    assert "schedule_token=schedule_token" in open_source
     assert 'ContentPlanPublicationCancellationService' in delete_source
     assert 'load_owned_publication_editor_view' in delete_source
+    assert "expected_schedule_token=schedule_token" in delete_source

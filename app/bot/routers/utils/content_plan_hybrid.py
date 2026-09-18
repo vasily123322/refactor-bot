@@ -9,6 +9,8 @@ from aiogram.types import InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.routers.shared import offset_minutes_from_tz
+from app.services.content_plan_pending_rows import PendingContentPlanRow
+from app.services.content_plan_publication_links import legacy_content_plan_open_callback
 from app.services.content_plan_published_rows import (
     PublishedContentPlanRow,
     list_published_content_plan_rows,
@@ -62,7 +64,7 @@ def canonical_published_button_row(
     badges: list[str] = []
     if row.autodelete_views:
         badges.append(f"👁 {_views_label(row.autodelete_views)}")
-    elif row.autodelete_seconds:
+    if row.autodelete_seconds:
         badges.append(f"🗑️ {_humanize_seconds(row.autodelete_seconds)}")
     if row.repeat_enabled and row.repeat_seconds:
         badges.append(f"🔁 {_humanize_seconds(row.repeat_seconds)}")
@@ -80,6 +82,58 @@ def canonical_published_button_row(
             )
         ],
         canonical_presentation_identity=callback_identity,
+    )
+
+
+def pending_content_plan_button_row(
+    row: PendingContentPlanRow,
+    *,
+    date_iso: str,
+    tz_code: str | None,
+) -> TimedContentPlanButtonRow:
+    """Render one already-deduplicated pending authority row."""
+
+    badges: list[str] = []
+    try:
+        views = int(row.runtime_options.get("autodelete_views") or 0)
+    except (TypeError, ValueError, OverflowError):
+        views = 0
+    try:
+        seconds = int(row.runtime_options.get("autodelete_seconds") or 0)
+    except (TypeError, ValueError, OverflowError):
+        seconds = 0
+    if views > 0:
+        badges.append(f"👁 {_views_label(views)}")
+    if seconds > 0:
+        badges.append(f"🗑️ {_humanize_seconds(seconds)}")
+    if row.repeat_enabled and row.repeat_seconds:
+        badges.append(f"🔁 {_humanize_seconds(row.repeat_seconds)}")
+
+    suffix = "".join(f"  {badge}" for badge in badges)
+    text = f"{_local_hm(row.scheduled_at, tz_code)} ⏳ {row.title[:40]}{suffix}"
+    if row.authority == "canonical":
+        if row.publication_id is None:
+            raise ValueError("canonical pending row has no Publication identity")
+        callback_identity = publication_open_callback(row.publication_id, date_iso)
+        canonical_identity = callback_identity
+    else:
+        if row.legacy_post_task_id is None:
+            raise ValueError("legacy pending row has no PostTask compatibility identity")
+        callback_identity = legacy_content_plan_open_callback(
+            post_task_id=row.legacy_post_task_id,
+            date_iso=date_iso,
+        )
+        canonical_identity = None
+
+    return TimedContentPlanButtonRow(
+        scheduled_at=row.scheduled_at,
+        buttons=[
+            InlineKeyboardButton(
+                text=text,
+                callback_data=callback_identity,
+            )
+        ],
+        canonical_presentation_identity=canonical_identity,
     )
 
 

@@ -19,7 +19,12 @@ class ContentPlanPublicationCancellationService:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self.session_factory = session_factory
 
-    async def delete(self, publication_id: int) -> ContentPlanDeleteResult:
+    async def delete(
+        self,
+        publication_id: int,
+        *,
+        expected_schedule_token: str | None = None,
+    ) -> ContentPlanDeleteResult:
         try:
             safe_publication_id = int(publication_id)
         except (TypeError, ValueError, OverflowError):
@@ -35,4 +40,7 @@ class ContentPlanPublicationCancellationService:
 
         return await ContentPlanCancellationService(
             self.session_factory
-        ).delete_canonical_publication(safe_publication_id)
+        ).delete_canonical_publication(
+            safe_publication_id,
+            expected_schedule_token=expected_schedule_token,
+        )

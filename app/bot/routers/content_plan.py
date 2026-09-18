@@ -11,7 +11,7 @@ from contextlib import suppress
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import html
-from sqlalchemy import select, func
+from sqlalchemy import select
 from app.core.db import AsyncSessionLocal
 from app.repositories.clients import ClientsRepo
 from app.repositories.channels import ChannelsRepo
@@ -143,7 +143,7 @@ async def _render_content_plan(
 ) -> None:
     # Заголовок и количество постов на выбранную дату
     # Подсчёт запланированных постов
-    from app.domain.models import Channel, Client, PostTask
+    from app.domain.models import Channel, Client
 
     async with AsyncSessionLocal() as session:
         owner_match = (
@@ -238,18 +238,23 @@ async def _render_content_plan(
                 999999,
                 tzinfo=timezone.utc,
             )
-        # Простой подсчёт: фильтруем pending в этот локальный день (в UTC) по channel_id
-        res = await session.execute(
-            select(func.count())
-            .select_from(PostTask)
-            .where(
-                (PostTask.channel_id == channel_id)
-                & (PostTask.status == "pending")
-                & (PostTask.scheduled_at >= start)
-                & (PostTask.scheduled_at <= end)
-            )
+        try:
+            data_state = await state.get_data()
+            show_repeats = bool(data_state.get("cp_show_repeats", False))
+        except Exception:
+            show_repeats = False
+
+        from app.services.content_plan_pending_rows import list_pending_content_plan_rows
+
+        pending_rows = await list_pending_content_plan_rows(
+            session,
+            channel_id=int(channel_id),
+            tg_user_id=int(callback.from_user.id),
+            start_at=start,
+            end_at=end,
+            show_repeats=show_repeats,
         )
-        count = int(res.scalar() or 0)
+        count = len(pending_rows)
         ch = await session.get(Channel, channel_id)
         ch_title = ch.title or str(ch.tg_chat_id)
     # Текст с кликабельным названием канала (username или пригласительная ссылка)
@@ -290,170 +295,25 @@ async def _render_content_plan(
         "декабря",
     ]
     text = f"На {center_date.day} {months[center_date.month - 1]} {center_date.year} в канале {title_link} запланировано {count} постов."
-    # Кнопки постов за выбранную дату (и pending, и done)
+    # Pending authority has already been deduplicated before this presentation step.
     post_rows = []
     try:
         from app.bot.routers.utils.content_plan_hybrid import (
-            TimedContentPlanButtonRow,
             canonical_only_published_button_rows,
             merge_timed_content_plan_rows,
+            pending_content_plan_button_row,
         )
-        from app.services.scheduling import as_utc
 
-        timed_post_rows: list[TimedContentPlanButtonRow] = []
-        from app.domain.models import PostTask
-
+        pending_timed_rows = [
+            pending_content_plan_button_row(
+                row,
+                date_iso=center_date.date().isoformat(),
+                tz_code=tz_code,
+            )
+            for row in pending_rows
+        ]
         async with AsyncSessionLocal() as session:
-            # Используем те же границы суток (локальные, переведённые в UTC)
-            res = await session.execute(
-                select(PostTask)
-                .where(
-                    (PostTask.channel_id == channel_id)
-                    & (PostTask.scheduled_at >= start)
-                    & (PostTask.scheduled_at <= end)
-                )
-                .order_by(PostTask.scheduled_at.asc())
-            )
-            items = list(res.scalars().all())
-            # Схлопнём повторы: оставим последнюю запись каждой серии, чтобы видеть свежие посты
-            try:
-                data_state = await state.get_data()
-                show_repeats = bool(data_state.get("cp_show_repeats", False))
-            except Exception:
-                show_repeats = False
-            if not show_repeats and items:
-                group_latest: dict[int, PostTask] = {}
-                non_repeat: list[PostTask] = []
-                for pp in items:
-                    plp = pp.payload or {}
-                    gid = int(plp.get("repeat_group_id") or 0)
-                    is_rep = (gid > 0) or (
-                        bool(plp.get("repeat_on"))
-                        and int(plp.get("repeat_seconds") or 0) > 0
-                    )
-                    if is_rep and gid > 0:
-                        prev = group_latest.get(gid)
-                        if (prev is None) or (
-                            (pp.scheduled_at or datetime.min)
-                            > (prev.scheduled_at or datetime.min)
-                        ):
-                            group_latest[gid] = pp
-                    else:
-                        non_repeat.append(pp)
-                items = sorted(
-                    non_repeat + list(group_latest.values()),
-                    key=lambda x: (x.scheduled_at or datetime.min),
-                )
-            # Определим часовой пояс канала для локализации времени
-            from app.repositories.settings import ChannelSettingsRepo as _CPSettingsRepo
-
-            tz_code = None
-            try:
-                repo_tz = _CPSettingsRepo(session)
-                st = await repo_tz.get_by_channel_id(channel_id)
-                if st and st.filters:
-                    tz_code = st.filters.get("tz")
-            except Exception:
-                pass
-            from app.services.content_plan_publication_links import (
-                legacy_content_plan_open_callback,
-                list_linked_content_plan_publications,
-            )
-            from app.services.publication_editor import publication_open_callback
-
-            linked_publications = await list_linked_content_plan_publications(
-                session,
-                channel_id=int(channel_id),
-                start_at=start,
-                end_at=end,
-            )
-            canonical_link_by_transport_id = {
-                row.legacy_post_task_id: row for row in linked_publications
-            }
-            for p in items:
-                when = p.scheduled_at
-                if when:
-                    try:
-                        local_when = (
-                            when.astimezone(ZoneInfo(tz_code)) if tz_code else when
-                        )
-                    except Exception:
-                        local_when = when + timedelta(
-                            minutes=_offset_minutes_from_tz(tz_code)
-                        )
-                    hm = local_when.strftime("%H:%M")
-                else:
-                    hm = "--:--"
-                pl = p.payload or {}
-                if pl.get("type") == "text":
-                    first = (pl.get("text") or "").strip().splitlines()[
-                        0
-                    ] or "Без названия"
-                else:
-                    cap = pl.get("caption") or pl.get("text") or ""
-                    first = cap.strip().splitlines()[0] or "Медиа"
-                # Статус: удалён → корзина, опубликован → галка, отложен → часы
-                is_deleted = bool(pl.get("autodeleted"))
-                if is_deleted:
-                    status_emoji = "🗑️"
-                elif (p.status or "").lower() == "done":
-                    status_emoji = "✅"
-                else:
-                    status_emoji = "⏳"
-                badge = _autodel_badge(pl)
-                # Бейдж автоповтора: если включён, добавим 🔁 и интервал
-                rep = None
-                try:
-                    if pl.get("repeat_on") and int(pl.get("repeat_seconds") or 0) > 0:
-                        rs = int(pl.get("repeat_seconds"))
-                        # Человекочитаемая метка (reuse из пост-редактора)
-                        from app.bot.routers.post_editor import (
-                            _format_duration_label as _lab,
-                        )
-
-                        rep = f"🔁 {_lab(rs)}"
-                except Exception:
-                    rep = None
-                suffix = (f"  {badge}" if badge else "") + (f"  {rep}" if rep else "")
-                btn_text = f"{hm} {status_emoji} {first[:40]}{suffix}"
-                canonical_link = canonical_link_by_transport_id.get(int(p.id))
-                callback_data = (
-                    publication_open_callback(
-                        canonical_link.publication_id,
-                        center_date.date().isoformat(),
-                    )
-                    if canonical_link is not None
-                    else legacy_content_plan_open_callback(
-                        post_task_id=int(p.id),
-                        date_iso=center_date.date().isoformat(),
-                    )
-                )
-                row_btns = [
-                    InlineKeyboardButton(
-                        text=btn_text,
-                        callback_data=callback_data,
-                    )
-                ]
-                # Быстрая кнопка отключить автоповтор для серии
-                try:
-                    if pl.get("repeat_on") and int(pl.get("repeat_seconds") or 0) > 0:
-                        rg = pl.get("repeat_group_id") or p.id
-                        row_btns.append(
-                            InlineKeyboardButton(
-                                text="⏹ Повтор выкл",
-                                callback_data=f"{CB.CP_REPEAT_OFF}:{rg}",
-                            )
-                        )
-                except Exception:
-                    pass
-                timed_post_rows.append(
-                    TimedContentPlanButtonRow(
-                        scheduled_at=as_utc(p.scheduled_at),
-                        buttons=row_btns,
-                    )
-                )
-
-            canonical_timed_rows = await canonical_only_published_button_rows(
+            canonical_published_rows = await canonical_only_published_button_rows(
                 session,
                 channel_id=int(channel_id),
                 start_at=start,
@@ -461,11 +321,10 @@ async def _render_content_plan(
                 date_iso=center_date.date().isoformat(),
                 tz_code=tz_code,
             )
-
-            post_rows = merge_timed_content_plan_rows(
-                timed_post_rows,
-                canonical_timed_rows,
-            )
+        post_rows = merge_timed_content_plan_rows(
+            pending_timed_rows,
+            canonical_published_rows,
+        )
     except Exception:
         pass
     # Compact mobile browser: keep a bounded keyboard and page through the day.
