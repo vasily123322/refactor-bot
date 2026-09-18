@@ -62,7 +62,6 @@ class Publication(Base):
     __table_args__ = (
         Index("ix_publications_channel_status", "channel_id", "status"),
         Index("ix_publications_content", "content_item_id", "content_revision"),
-        UniqueConstraint("legacy_post_task_id", name="uq_publication_legacy_task"),
         UniqueConstraint(
             "repeat_source_publication_id",
             name="uq_publication_repeat_source",
@@ -92,9 +91,6 @@ class Publication(Base):
     execution_mode: Mapped[str | None] = mapped_column(String(32))
     repeat_source_publication_id: Mapped[int | None] = mapped_column(Integer)
     posting_dedupe_key: Mapped[str | None] = mapped_column(String(255))
-    legacy_post_task_id: Mapped[int | None] = mapped_column(
-        ForeignKey("post_tasks.id", ondelete="SET NULL"), index=True
-    )
     telegram_message_ids: Mapped[list[int] | None] = mapped_column(JSON)
     result_link: Mapped[str | None] = mapped_column(String(2048))
     last_error: Mapped[str | None] = mapped_column(Text)
