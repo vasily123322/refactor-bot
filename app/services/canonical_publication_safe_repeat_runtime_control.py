@@ -10,9 +10,6 @@ from app.core.db import AsyncSessionLocal
 from app.services.canonical_publication_delivery_authority import (
     set_canonical_publication_delivery_primary_worker,
 )
-from app.services.canonical_publication_repeat_handoff_executor import (
-    CanonicalPublicationRepeatHandoffExecutor,
-)
 from app.services.canonical_publication_safe_repeat_runtime import (
     build_canonical_publication_safe_repeat_runtime,
 )
@@ -98,12 +95,8 @@ async def start_canonical_publication_safe_repeat_primary_if_enabled(
         allow_repeat_views_pin_forward=repeat_views_pin_forward_available,
         repeat_owner_policy_enforced=bool(repeat_owner_policy_enforced),
     )
-    handoff_executor = CanonicalPublicationRepeatHandoffExecutor(
-        executor=runtime.executor,
-        session_factory=session_factory,
-    )
     worker = CanonicalPublicationDeliveryWorker(
-        executor=handoff_executor,
+        executor=runtime.executor,
         session_factory=session_factory,
         interval_seconds=config.interval_seconds,
         batch_size=config.batch_size,

@@ -38,11 +38,9 @@ from app.services.canonical_publication_delivery_claim import (
     CanonicalPublicationDeliveryClaimService,
 )
 from app.services.content_plan_published_rows import list_published_content_plan_rows
-from app.services.legacy_content_mirror import mirror_legacy_post_task
 from app.services.posting import PostingService
 from app.services.publication_execution_mode import (
     CANONICAL_EXECUTION_MODE,
-    INTENTIONAL_LEGACY_EXECUTION_MODE,
     UnsupportedSchedulingProfileError,
 )
 from app.services.scheduling import as_utc
@@ -246,7 +244,7 @@ def test_canonical_mixed_pending_is_posttask_free_and_publication_keyed() -> Non
     asyncio.run(run())
 
 
-def test_dedupe_happens_before_count_and_pagination_and_legacy_mixed_stays_once() -> None:
+def test_dedupe_happens_before_count_and_pagination_and_historical_legacy_stays_once() -> None:
     async def run() -> None:
         engine, Session = await _new_db()
         try:
@@ -284,19 +282,8 @@ def test_dedupe_happens_before_count_and_pagination_and_legacy_mixed_stays_once(
                     },
                 )
                 session.add(historical_task)
-                await session.flush()
-                historical_publication = await mirror_legacy_post_task(
-                    session,
-                    historical_task,
-                    commit=False,
-                )
-                assert historical_publication is not None
                 await session.commit()
-                await session.refresh(historical_publication)
-                assert (
-                    historical_publication.execution_mode
-                    == INTENTIONAL_LEGACY_EXECUTION_MODE
-                )
+                await session.refresh(historical_task)
 
             async with Session() as session:
                 rows = await list_pending_content_plan_rows(

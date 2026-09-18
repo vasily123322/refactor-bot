@@ -14,7 +14,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content.models import ContentItem
-from app.domain.models import Channel, Client, PostTask
+from app.domain.models import Channel, Client
 from app.domain.publication_autodelete import (
     PublicationAutodeleteLease,
     PublicationAutodeleteViewState,
@@ -255,24 +255,6 @@ class PublicationAutodeleteViewsService:
         *,
         telegram_message_ids: tuple[int, ...],
     ) -> tuple[bool, int | None, bool]:
-        raw_legacy_id = publication.legacy_post_task_id
-        if raw_legacy_id is not None:
-            try:
-                legacy_id = int(raw_legacy_id)
-            except (TypeError, ValueError, OverflowError):
-                return False, None, False
-            task = await self.session.get(PostTask, legacy_id)
-            if task is None:
-                return False, None, False
-            if int(task.channel_id) != int(publication.channel_id) or str(task.status) != "done":
-                return False, None, False
-            payload = _mapping(task.payload)
-            if payload is None:
-                return False, None, False
-            if tuple(normalize_telegram_message_ids(payload.get("result_ids"))) != telegram_message_ids:
-                return False, None, False
-            return _view_intent(payload, allow_report=self.allow_report)
-
         meta = _mapping(publication.meta)
         if meta is None:
             return False, None, False

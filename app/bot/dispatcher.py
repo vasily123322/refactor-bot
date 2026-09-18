@@ -26,10 +26,7 @@ from app.core.db import (
 from app.core.errors import ErrorsMiddleware
 from app.core.fsm_storage import build_fsm_storage
 from app.core.logging import setup_logging
-from app.core.runtime_configuration import (
-    validate_retention_executor_availability,
-    validate_runtime_configuration,
-)
+from app.core.runtime_configuration import validate_runtime_configuration
 from app.core.schema import bootstrap_database_schema
 from app.services.canonical_publication_delivery_runtime_control import (
     stop_canonical_publication_delivery_workers,
@@ -37,7 +34,6 @@ from app.services.canonical_publication_delivery_runtime_control import (
 from app.services.canonical_publication_safe_repeat_runtime_control import (
     start_canonical_publication_safe_repeat_primary_if_enabled,
 )
-from app.services.document_posting import DocumentPostingService as PostingService
 from app.services.external_bots import ExternalBotsManager
 from app.services.llm.openrouter_client import OpenRouterClient
 from app.userbot.client import app as userbot
@@ -47,7 +43,6 @@ from app.workers.canonical_publication_delivery_recovery import (
     CanonicalPublicationDeliveryRecoveryWorker,
 )
 from app.workers.canonical_repeat_continuation import CanonicalRepeatContinuationWorker
-from app.workers.canonical_repeat_continuation_scheduler import Scheduler
 from app.workers.canonical_repeat_time_autodelete import (
     CanonicalRepeatTimeAutodeleteWorker,
 )
@@ -61,13 +56,10 @@ from app.workers.canonical_repeat_time_pin_forward_autodelete import (
     CanonicalRepeatTimePinForwardAutodeleteWorker,
 )
 from app.workers.grab_poll import GrabPoller
-from app.workers.post_task_retention import PostTaskRetentionWorker
 from app.workers.publication_autodelete import PublicationAutodeleteWorker
 from app.workers.publication_autodelete_views_pin_forward import (
     PublicationAutodeleteViewsPinForwardWorker,
 )
-from app.workers.publication_reconciler import PublicationReconcilerWorker
-from app.workers.scheduler_recovery import SchedulerRecoveryWorker
 from app.workers.source_ingestion import SourceIngestionWorker
 
 try:
@@ -459,19 +451,15 @@ async def run_bot() -> None:
     ext_mgr = ExternalBotsManager()
     studio_server = StudioServer()
     userbot_started = False
-    scheduler = None
-    scheduler_recovery = None
     canonical_repeat_continuation = None
     canonical_publication_delivery = None
     canonical_publication_delivery_recovery = None
-    publication_reconciler = None
     publication_autodelete = None
     canonical_repeat_time_autodelete = None
     canonical_repeat_time_pin_autodelete = None
     canonical_repeat_time_forward_autodelete = None
     canonical_repeat_time_pin_forward_autodelete = None
     publication_autodelete_views = None
-    post_task_retention = None
     source_ingestion = None
     poller = None
     ai_auto_worker = None
@@ -499,29 +487,9 @@ async def run_bot() -> None:
         if config_models is not None:
             logger.info("Boot: AI models config loaded: {} entries", len(config_models))
 
-        posting = PostingService(bot, AsyncSessionLocal)
-        # Historical PostTask runtime remains temporarily for intentional legacy drain,
-        # but canonical repeat continuation has an independent lifecycle from P5 onward.
-        scheduler = Scheduler(
-            AsyncSessionLocal,
-            posting,
-            repeat_continuation_enabled=False,
-        )
-        await scheduler.start()
-
         canonical_repeat_continuation = (
             await _start_canonical_repeat_continuation_worker_if_enabled()
         )
-
-        scheduler_recovery = SchedulerRecoveryWorker(
-            session_factory=AsyncSessionLocal,
-            interval_seconds=60,
-            batch_size=100,
-        )
-        await scheduler_recovery.start()
-
-        publication_reconciler = PublicationReconcilerWorker(interval_seconds=5)
-        await publication_reconciler.start()
 
         publication_autodelete = await _start_publication_autodelete_worker_if_enabled()
         continuation_available = canonical_repeat_continuation is not None
@@ -566,14 +534,6 @@ async def run_bot() -> None:
                 userbot_available=userbot_started,
                 repeat_continuation_available=continuation_available,
             )
-        )
-
-        validate_retention_executor_availability(
-            settings,
-            publication_autodelete_worker_started=publication_autodelete is not None,
-            publication_autodelete_views_worker_started=(
-                publication_autodelete_views is not None
-            ),
         )
 
         repeat_time_pin_forward_started = bool(
@@ -624,24 +584,6 @@ async def run_bot() -> None:
             ),
         )
 
-        if settings.post_task_retention_enabled:
-            post_task_retention = PostTaskRetentionWorker(
-                session_factory=AsyncSessionLocal,
-                interval_seconds=settings.post_task_retention_interval_seconds,
-                retention_days=settings.post_task_retention_days,
-                batch_size=settings.post_task_retention_batch_size,
-                retire_successful=settings.post_task_retention_successful_enabled,
-                retire_successful_pending_autodelete=(
-                    settings.post_task_retention_successful_pending_autodelete_enabled
-                ),
-                retire_successful_repeat_occurrences=(
-                    settings.post_task_retention_successful_repeat_occurrences_enabled
-                ),
-            )
-            await post_task_retention.start()
-        else:
-            logger.info("Boot: PostTask retention worker disabled")
-
         source_ingestion = SourceIngestionWorker(
             interval_seconds=60,
             session_factory=AsyncSessionLocal,
@@ -688,9 +630,6 @@ async def run_bot() -> None:
             await _safe_stop("local enrichment worker", local_enrichment_worker.stop)
         if source_ingestion is not None:
             await _safe_stop("source ingestion", source_ingestion.stop)
-        if post_task_retention is not None:
-            await _safe_stop("PostTask retention", post_task_retention.stop)
-
         await stop_canonical_publication_delivery_workers(
             primary_worker=canonical_publication_delivery,
             recovery_worker=canonical_publication_delivery_recovery,
@@ -722,18 +661,11 @@ async def run_bot() -> None:
             )
         if publication_autodelete is not None:
             await _safe_stop("canonical publication autodelete", publication_autodelete.stop)
-        if publication_reconciler is not None:
-            await _safe_stop("publication reconciler", publication_reconciler.stop)
         if canonical_repeat_continuation is not None:
             await _safe_stop(
                 "canonical repeat continuation",
                 canonical_repeat_continuation.stop,
             )
-        if scheduler_recovery is not None:
-            await _safe_stop("scheduler recovery", scheduler_recovery.stop)
-        if scheduler is not None:
-            await _safe_stop("scheduler", scheduler.stop)
-
         await _safe_stop("background tasks", cancel_bg_tasks)
         await _safe_stop("external bots", ext_mgr.stop_all)
         await _safe_stop("OpenRouter HTTP pool", OpenRouterClient.close_shared_http_clients)

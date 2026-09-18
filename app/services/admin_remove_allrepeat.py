@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from typing import Any, Mapping
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.models import PostTask
-from app.services.canonical_scheduler_admission import CanonicalSchedulerAdmissionService
+from app.domain.publishing.models import Publication, ScheduleEntry
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,80 +18,96 @@ class AdminRemoveAllRepeatResult:
     protected_canonical: int = 0
 
 
-def _apply_legacy_remove_allrepeat_mutations(
-    task: PostTask,
-    *,
-    now: datetime,
-) -> tuple[int, int, int]:
-    """Apply the historical admin cleanup semantics to one proven legacy-owned row."""
+def _runtime_options(meta: Mapping[str, Any] | None) -> tuple[dict[str, Any], dict[str, Any]]:
+    copied = deepcopy(dict(meta or {}))
+    raw = copied.get("runtime_options")
+    options = deepcopy(dict(raw)) if isinstance(raw, Mapping) else {}
+    return copied, options
 
-    payload = dict(task.payload or {})
-    removed_pending = 0
-    disabled_flags = 0
-    cleared_autodelete = 0
 
-    if task.status == "pending" and (
-        bool(payload.get("repeat_on", False))
-        or payload.get("repeat_group_id") is not None
-    ):
-        task.status = "skipped"
-        removed_pending = 1
-
-    if bool(payload.get("repeat_on", False)) or "repeat_seconds" in payload:
-        payload["repeat_on"] = False
-        payload.pop("repeat_seconds", None)
-        task.payload = payload
-        disabled_flags = 1
-
-    if (
-        "autodelete_at" in payload
-        or "autodelete_effective_seconds" in payload
-        or "autodelete_seconds" in payload
-    ):
-        payload.pop("autodelete_at", None)
-        payload.pop("autodelete_effective_seconds", None)
-        payload.pop("autodelete_seconds", None)
-        payload.pop("autodelete_views", None)
-        payload["autodeleted"] = True
-        payload["autodeleted_at"] = now.isoformat()
-        task.payload = payload
-        cleared_autodelete = 1
-
-    return removed_pending, disabled_flags, cleared_autodelete
+def _clear_pending_autodelete(meta: Mapping[str, Any] | None) -> tuple[dict[str, Any], bool]:
+    copied, options = _runtime_options(meta)
+    changed = False
+    for key in ("autodelete_seconds", "autodelete_views", "autodelete_report"):
+        if key in options:
+            options.pop(key, None)
+            changed = True
+    if changed:
+        if options:
+            copied["runtime_options"] = options
+        else:
+            copied.pop("runtime_options", None)
+    return copied, changed
 
 
 class AdminRemoveAllRepeatService:
-    """Run the legacy bulk cleanup only for rows explicitly admitted to legacy ownership."""
+    """Bulk-clean only mutable canonical plans; historical PostTask rows are evidence."""
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
     async def execute(self) -> AdminRemoveAllRepeatResult:
-        tasks = list(
+        rows = list(
             (
-                await self.session.execute(select(PostTask))
-            ).scalars().all()
+                await self.session.execute(
+                    select(ScheduleEntry, Publication).outerjoin(
+                        Publication,
+                        Publication.schedule_entry_id == ScheduleEntry.id,
+                    )
+                )
+            ).all()
         )
-        admission_service = CanonicalSchedulerAdmissionService(self.session)
 
         removed_pending = 0
         disabled_flags = 0
         cleared_autodelete = 0
         protected_canonical = 0
 
-        for task in tasks:
-            admission = await admission_service.classify(task_id=int(task.id))
-            if not admission.legacy_allowed:
-                protected_canonical += 1
+        for schedule, publication in rows:
+            rule = deepcopy(dict(schedule.repeat_rule or {}))
+            schedule_meta = dict(schedule.meta or {})
+            publication_meta = dict(publication.meta or {}) if publication is not None else {}
+            repeat_related = bool(rule.get("enabled")) or (
+                "repeat_group_id" in schedule_meta
+                or "repeat_group_id" in publication_meta
+            )
+
+            mutable = str(schedule.status or "") == "pending" and (
+                publication is None or str(publication.status or "") == "queued"
+            )
+            if not mutable:
+                if repeat_related:
+                    protected_canonical += 1
                 continue
 
-            removed, disabled, cleared = _apply_legacy_remove_allrepeat_mutations(
-                task,
-                now=datetime.now(timezone.utc),
+            if repeat_related:
+                schedule.status = "cancelled"
+                if publication is not None:
+                    publication.status = "cancelled"
+                    publication.last_error = None
+                removed_pending += 1
+
+            if bool(rule.get("enabled")) or "seconds" in rule:
+                rule["enabled"] = False
+                rule.pop("seconds", None)
+                schedule.repeat_rule = rule
+                disabled_flags += 1
+
+            next_schedule_meta, schedule_cleared = _clear_pending_autodelete(
+                schedule.meta
             )
-            removed_pending += removed
-            disabled_flags += disabled
-            cleared_autodelete += cleared
+            publication_cleared = False
+            next_publication_meta: dict[str, Any] | None = None
+            if publication is not None:
+                next_publication_meta, publication_cleared = _clear_pending_autodelete(
+                    publication.meta
+                )
+            if schedule_cleared:
+                schedule.meta = next_schedule_meta
+            if publication is not None and publication_cleared:
+                publication.meta = next_publication_meta
+            if schedule_cleared or publication_cleared:
+                cleared_autodelete += 1
 
         await self.session.commit()
         return AdminRemoveAllRepeatResult(

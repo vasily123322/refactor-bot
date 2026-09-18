@@ -28,7 +28,6 @@ class CanonicalRepeatReservationVerification:
     outcome: Literal["matched", "pending", "ineligible", "conflict"]
     successor_publication_id: int | None = None
     successor_schedule_entry_id: int | None = None
-    successor_legacy_post_task_id: int | None = None
 
 
 def _mapping(value: Any) -> dict[str, Any] | None:
@@ -72,11 +71,8 @@ def _runtime_options(meta: Mapping[str, Any]) -> dict[str, Any] | None:
 class CanonicalRepeatReservationVerifier:
     """Prove reservation/successor state only while canonical source authority is live.
 
-    New successors are matched by canonical Publication/Schedule state, persisted
-    execution mode and a unique durable source lineage key. Historical adapter-created
-    successors may still be recognized in their exact old shape so a restart does not
-    create a duplicate; recognizing that shape does not backfill or grant it new
-    execution authority.
+    Successors are matched only by canonical Publication/Schedule state, persisted
+    execution mode and a unique durable source lineage key.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -222,24 +218,14 @@ class CanonicalRepeatReservationVerifier:
         ):
             return CanonicalRepeatReservationVerification(safe_source_id, "conflict")
 
-        legacy_task_id = _positive_int(successor.legacy_post_task_id)
-        new_canonical_shape = (
+        canonical_shape = (
             successor.execution_mode == CANONICAL_EXECUTION_MODE
             and successor.repeat_source_publication_id == safe_source_id
             and successor.legacy_post_task_id is None
             and successor_meta.get("canonical_repeat_posttask_free") is True
             and successor_schedule_meta.get("canonical_repeat_posttask_free") is True
         )
-        historical_transport_shape = (
-            successor.execution_mode is None
-            and successor.repeat_source_publication_id is None
-            and legacy_task_id is not None
-            and successor_meta.get("canonical_repeat_transport_adapter") is True
-            and successor_meta.get("canonical_repeat_posttask_free") is not True
-            and successor_schedule_meta.get("canonical_repeat_transport_adapter") is True
-            and successor_schedule_meta.get("canonical_repeat_posttask_free") is not True
-        )
-        if not new_canonical_shape and not historical_transport_shape:
+        if not canonical_shape:
             return CanonicalRepeatReservationVerification(safe_source_id, "conflict")
 
         return CanonicalRepeatReservationVerification(
@@ -247,7 +233,4 @@ class CanonicalRepeatReservationVerifier:
             outcome="matched",
             successor_publication_id=int(successor.id),
             successor_schedule_entry_id=int(successor_schedule.id),
-            successor_legacy_post_task_id=(
-                legacy_task_id if historical_transport_shape else None
-            ),
         )
