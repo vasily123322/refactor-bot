@@ -304,6 +304,26 @@ def scheduling_boundary_from_legacy_payload(
     return _boundary_from_normalized_options(options)
 
 
+def canonical_repeat_runtime_options_supported(
+    runtime_options: Mapping[str, Any] | None,
+) -> bool:
+    """Return whether canonical repeat continuation may own this runtime intent.
+
+    Fresh non-repeat mixed time+views is canonical, but repeat+mixed remains an explicit
+    unsupported composition until its destructive continuation semantics are proven.
+    """
+
+    options = _normalize_runtime_options(
+        runtime_options,
+        allow_unrelated_keys=False,
+    )
+    return (
+        options is not None
+        and not _is_mixed_time_views(options)
+        and _fresh_mode_from_normalized_options(options) == CANONICAL_EXECUTION_MODE
+    )
+
+
 def execution_mode_from_runtime_options(
     runtime_options: Mapping[str, Any] | None,
 ) -> str | None:
