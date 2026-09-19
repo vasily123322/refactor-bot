@@ -70,7 +70,6 @@ class PublicationAutodeleteCandidateSelector:
                 )
                 .where(
                     Publication.id > cursor,
-                    Publication.legacy_post_task_id.is_(None),
                     Publication.status == "published",
                 )
                 .order_by(Publication.id.asc())
