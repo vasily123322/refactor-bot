@@ -38,7 +38,7 @@ function runView(summary: string): AssistantRunView {
         },
       ],
       timezone: 'Europe/Berlin',
-      generated_by: 'llm',
+      generated_by: 'llm_priority',
       tool_names: ['schedule_attention'],
       execution_limits: {
         max_steps: 5,
