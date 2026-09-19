@@ -23,6 +23,7 @@ function attentionRunView(summary: string): AssistantRunView {
     channel_id: 7,
     scenario: 'attention_today',
     request_id: null,
+    operator_input: null,
     skill_id: 'attention_today',
     skill_version: '1',
     workflow_phase: 'completed',
@@ -70,6 +71,7 @@ function draftRunView(): AssistantRunView {
     channel_id: 7,
     scenario: 'drafts_tomorrow',
     request_id: 'draft-request-22',
+    operator_input: null,
     skill_id: 'drafts_tomorrow',
     skill_version: '1',
     workflow_phase: 'completed',
@@ -187,8 +189,99 @@ function skillViews(): AssistantSkillView[] {
         max_items_per_tool: 0,
       },
     },
+    {
+      skill_id: 'prepare_content_series',
+      version: '1',
+      scenario: 'prepare_content_series',
+      display_title: 'Подготовить серию постов',
+      description: 'Создаёт bounded series plan и ordinary Content drafts.',
+      category: 'editorial',
+      operator_input_schema: {
+        type: 'object',
+        properties: {
+          brief: { type: 'string', minLength: 20, maxLength: 2000 },
+          post_count: { type: 'integer', minimum: 2, maximum: 8 },
+        },
+        required: ['brief', 'post_count'],
+        additionalProperties: false,
+      },
+      result_kind: 'content_series',
+      capability_classes: ['draft_write'],
+      capability_summary: 'Draft-write: scheduling/publishing не выполняются.',
+      context_profile: 'editorial_v1',
+      context_requirements: 'Existing channel memory/profile + bounded Content context.',
+      resume_policy: 'explicit',
+      resumable: true,
+      approval_requirement: 'none',
+      execution_limits: {
+        max_steps: 4,
+        max_tool_calls: 0,
+        max_llm_calls: 1,
+        max_seconds: 30,
+        max_items_per_tool: 0,
+      },
+    },
   ];
 }
+
+function seriesRunView(count = 8): AssistantRunView {
+  const longAngle = 'Очень длинный русский редакционный угол для проверки переноса '.repeat(4);
+  return {
+    id: 33,
+    channel_id: 7,
+    scenario: 'prepare_content_series',
+    request_id: 'series-request-33',
+    operator_input: {
+      brief: 'Подготовь bounded evergreen серию с самостоятельными углами.',
+      post_count: count,
+    },
+    skill_id: 'prepare_content_series',
+    skill_version: '1',
+    workflow_phase: 'completed',
+    resumable: false,
+    resume_state: 'completed',
+    status: 'completed',
+    model: 'provider/model',
+    tokens_used: 88,
+    error: null,
+    started_at: '2026-09-19T00:00:00Z',
+    finished_at: '2026-09-19T00:00:03Z',
+    created_at: '2026-09-19T00:00:00Z',
+    events: [],
+    result: {
+      scenario: 'prepare_content_series',
+      series_title: 'Очень длинное название серии для редакционного плана',
+      series_summary: 'Bounded evergreen summary для всей серии.',
+      requested_post_count: count,
+      plan_fingerprint: 'd'.repeat(64),
+      posts: Array.from({ length: count }, (_, index) => ({
+        ordinal: index + 1,
+        title: `Пост ${index + 1}: самостоятельный заголовок`,
+        angle: `${longAngle}${index + 1}`,
+        objective: `Самостоятельная цель ${index + 1}`,
+        content_item_id: 200 + index,
+        content_revision: 1,
+        status: 'draft',
+      })),
+      write_capability: 'draft_write',
+      editorial_context: {
+        recent_count: 5,
+        scheduled_count: 3,
+        item_count: 8,
+        total_excerpt_chars: 1800,
+        fingerprint: 'e'.repeat(64),
+        refs: [],
+      },
+      execution_limits: {
+        max_steps: 4,
+        max_tool_calls: 0,
+        max_llm_calls: 1,
+        max_seconds: 30,
+      },
+    },
+  };
+}
+
 
 function approvalView(
   state: AssistantApprovalView['state'] = 'pending_review',
@@ -314,6 +407,12 @@ describe('Assistant skill catalog rendering', () => {
     );
     expect(html).toContain('attention_today@1');
     expect(html).toContain('drafts_tomorrow@1');
+    expect(html).toContain('prepare_content_series@1');
+    expect(html).toContain('Brief серии');
+    expect(html).toContain('Количество постов');
+    expect(html).toContain('Подготовить серию');
+    expect(html).toContain('minlength="20"');
+    expect(html).toContain('maxlength="2000"');
     expect(html).toContain('read-only');
     expect(html).toContain('draft-write');
     expect(html).toContain('explicit');
@@ -383,6 +482,20 @@ describe('Assistant scenario rendering', () => {
     expect(html).toContain('ScheduleEntry #4');
     expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
     expect(html).not.toContain('<img src=x onerror=alert(1)>');
+  });
+
+  it('renders an eight-item content series with plan metadata and editor-only actions', () => {
+    const html = renderToStaticMarkup(<AssistantBrief run={seriesRunView()} />);
+    expect(html).toContain('Очень длинное название серии');
+    expect(html).toContain('Bounded evergreen summary');
+    expect(html.match(/Открыть в редакторе/g)).toHaveLength(8);
+    expect(html.match(/Content #20/g)?.length ?? 0).toBeGreaterThan(0);
+    expect(html).toContain('Угол:');
+    expect(html).toContain('Цель:');
+    expect(html).not.toContain('Создать предложение');
+    expect(html).not.toContain('Подтвердить постановку в план');
+    expect(html).not.toContain('type="time"');
+    expect(html).not.toContain('Telegram сейчас не отправляется');
   });
 
   it('renders exactly three draft references with existing editor action and long Russian title', () => {
