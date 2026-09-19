@@ -19,12 +19,11 @@ from app.bot.bot_instance import bot as tg_bot
 from app.core.callbacks import CB
 from app.bot.fsm.states import PostFSM
 from app.bot.routers.shared_plan import (
-    build_calendar_kb as _build_calendar_kb,
-    render_calendar as _render_calendar,
+    build_calendar_kb as _build_calendar_kb_local,
+    render_calendar as _render_calendar_local,
 )
 from app.bot.keyboards.posting import settings_menu_kb
 from app.bot.keyboards.pagination import paginate, page_nav_row
-from app.bot.routers.shared import escape_markdown_label as _escape_markdown_label
 from app.bot.routers.shared import offset_minutes_from_tz as _offset_minutes_from_tz
 
 
