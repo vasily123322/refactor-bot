@@ -8,6 +8,7 @@ import {
   resolveChannelDataView,
   runScopedExclusiveOperation,
   type ChannelLoadState,
+  type ChannelRequestToken,
 } from './asyncControl';
 import { ChannelDMProvenance } from './ChannelDMProvenance';
 import { channelDMEnrichmentSummary } from './channelDMPresentation';
@@ -97,10 +98,25 @@ export function InboxPanel({
   const [error, setError] = useState<{ channelId: number; message: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const requestOwnershipRef = useRef(new ChannelRequestOwnership());
+  const operationContextOwnershipRef = useRef(new ChannelRequestOwnership());
+  const operationContextRef = useRef<{
+    channelId: number | null;
+    token: ChannelRequestToken | null;
+  }>({ channelId: null, token: null });
   const operationLocksRef = useRef(new Map<number, ScopedExclusiveOperationLock>());
   const validDataChannelRef = useRef<number | null>(null);
   const channelIdRef = useRef<number | null>(channel?.id ?? null);
-  channelIdRef.current = channel?.id ?? null;
+  const currentChannelId = channel?.id ?? null;
+  if (operationContextRef.current.channelId !== currentChannelId) {
+    operationContextRef.current.channelId = currentChannelId;
+    if (currentChannelId === null) {
+      operationContextOwnershipRef.current.invalidate();
+      operationContextRef.current.token = null;
+    } else {
+      operationContextRef.current.token = operationContextOwnershipRef.current.begin(currentChannelId);
+    }
+  }
+  channelIdRef.current = currentChannelId;
 
   const load = useCallback(async (): Promise<boolean> => {
     const channelId = channelIdRef.current;
@@ -168,7 +184,8 @@ export function InboxPanel({
     action: (isCurrent: () => boolean) => Promise<unknown>,
   ): Promise<boolean> => {
     const operationChannelId = channelIdRef.current;
-    if (operationChannelId === null) return false;
+    const operationContextToken = operationContextRef.current.token;
+    if (operationChannelId === null || operationContextToken === null) return false;
 
     let lock = operationLocksRef.current.get(operationChannelId);
     if (!lock) {
@@ -187,7 +204,10 @@ export function InboxPanel({
       scope,
       busyKey,
       async () => {
-        const isCurrent = () => channelIdRef.current === operationChannelId;
+        const isCurrent = () => operationContextOwnershipRef.current.isCurrent(
+          operationContextToken,
+          channelIdRef.current,
+        );
         if (isCurrent()) setError(null);
         try {
           await action(isCurrent);
