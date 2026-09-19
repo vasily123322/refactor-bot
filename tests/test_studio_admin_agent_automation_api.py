@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
@@ -379,7 +379,7 @@ def test_studio_automation_e5_history_and_unsafe_enable_are_fail_closed(monkeypa
                                 skill_id="drafts_tomorrow",
                                 skill_version="1",
                                 automation_id=automation_id,
-                                scheduled_for=now.replace(second=1),
+                                scheduled_for=now + timedelta(seconds=1),
                                 workflow_phase="completed",
                                 checkpoint={"foreign": True},
                                 status="completed",
