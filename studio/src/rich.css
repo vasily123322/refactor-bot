@@ -13,15 +13,19 @@
 .rich-block-header code { color: var(--tg-theme-hint-color, #94a3b8); font-size: 8px; }
 .rich-block-grip { color: var(--tg-theme-hint-color, #94a3b8); cursor: grab; }
 .rich-block-spacer { flex: 1; }
-.rich-block-header button { width: 24px; height: 23px; border: 0; border-radius: 6px; background: transparent; color: var(--tg-theme-hint-color, #94a3b8); }
+.rich-block-header button { width: 32px; height: 32px; border: 0; border-radius: 6px; background: transparent; color: var(--tg-theme-hint-color, #94a3b8); }
 .rich-block-header button:hover:not(:disabled) { background: color-mix(in srgb, var(--tg-theme-button-color, #2aabee) 13%, transparent); color: inherit; }
 .rich-block-body { display: grid; gap: 8px; padding: 9px; }
 .rich-inline-field { overflow: hidden; border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 18%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--tg-theme-secondary-bg-color, #111827) 65%, transparent); }
 .rich-inline-field.compact .rich-inline-editor .ProseMirror { min-height: 30px; }
 .rich-inline-toolbar { display: flex; gap: 2px; padding: 4px; border-bottom: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 12%, transparent); }
-.rich-inline-toolbar button { width: 25px; height: 23px; border: 0; border-radius: 5px; background: transparent; color: var(--tg-theme-hint-color, #94a3b8); font-size: 9px; }
+.rich-inline-toolbar button { width: 32px; height: 32px; border: 0; border-radius: 5px; background: transparent; color: var(--tg-theme-hint-color, #94a3b8); font-size: 9px; }
 .rich-inline-toolbar button.active { background: var(--tg-theme-button-color, #2aabee); color: var(--tg-theme-button-text-color, white); }
 .rich-inline-editor .ProseMirror { min-height: 56px; padding: 8px 9px; outline: 0; font-size: 12px; line-height: 1.45; }
+.rich-inline-editor .ProseMirror:focus-visible {
+  outline: 2px solid var(--tg-theme-button-color, #2aabee);
+  outline-offset: -2px;
+}
 .rich-inline-editor .ProseMirror p { margin: 0; }
 .rich-inline-editor .is-editor-empty:first-child::before { content: attr(data-placeholder); float: left; height: 0; pointer-events: none; color: color-mix(in srgb, var(--tg-theme-hint-color, #94a3b8) 72%, transparent); }
 .rich-control-row, .rich-check-row, .rich-field-label { display: flex; gap: 8px; align-items: center; color: var(--tg-theme-hint-color, #94a3b8); font-size: 9px; }
@@ -62,4 +66,9 @@
   .rich-block-list { min-height: 420px; }
   .rich-block-header code { display: none; }
   .rich-inline-toolbar { overflow-x: auto; }
+  .rich-block-header button,
+  .rich-inline-toolbar button {
+    width: 44px;
+    height: 44px;
+  }
 }
