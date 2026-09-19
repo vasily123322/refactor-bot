@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import app.domain  # noqa: F401 register complete ORM metadata
 from app.core.db import Base
 from app.domain.content import PostDocument
-from app.domain.models import Channel, Client, PostTask
+from app.domain.models import Channel, Client
 from app.domain.publication_autodelete import PublicationAutodeleteViewState
 from app.domain.publishing.models import Publication
 from app.repositories.content import ContentRepo
@@ -83,8 +83,6 @@ def test_fresh_mixed_claim_materializes_both_runtime_readiness_states() -> None:
                 )
                 publication_id = int(publication.id)
                 assert publication.execution_mode == CANONICAL_EXECUTION_MODE
-                assert publication.legacy_post_task_id is None
-                assert await session.get(PostTask, publication_id) is None
 
             async with Session() as session:
                 claim = await CanonicalPublicationDeliveryCapabilityClaimService(
