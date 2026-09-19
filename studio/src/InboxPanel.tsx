@@ -4,7 +4,9 @@ import { StudioApiError, studioApi } from './api';
 import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
 import {
   ChannelRequestOwnership,
+  ScopedExclusiveOperationLock,
   resolveChannelDataView,
+  runScopedExclusiveOperation,
   type ChannelLoadState,
 } from './asyncControl';
 import { ChannelDMProvenance } from './ChannelDMProvenance';
@@ -95,6 +97,7 @@ export function InboxPanel({
   const [error, setError] = useState<{ channelId: number; message: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const requestOwnershipRef = useRef(new ChannelRequestOwnership());
+  const operationLocksRef = useRef(new Map<number, ScopedExclusiveOperationLock>());
   const validDataChannelRef = useRef<number | null>(null);
   const channelIdRef = useRef<number | null>(channel?.id ?? null);
   channelIdRef.current = channel?.id ?? null;
@@ -160,36 +163,64 @@ export function InboxPanel({
     void load();
   }, [channel?.id, load]);
 
-  const run = async (key: string, action: () => Promise<unknown>) => {
+  const run = async (
+    key: string,
+    action: (isCurrent: () => boolean) => Promise<unknown>,
+  ): Promise<boolean> => {
     const operationChannelId = channelIdRef.current;
-    setBusyKeys((current) => {
-      const next = new Set(current);
-      next.add(key);
-      return next;
-    });
-    setError(null);
-    try {
-      await action();
-    } catch (reason) {
-      if (operationChannelId !== null && channelIdRef.current === operationChannelId) {
-        setError({ channelId: operationChannelId, message: errorMessage(reason) });
-      }
-    } finally {
-      setBusyKeys((current) => {
-        const next = new Set(current);
-        next.delete(key);
-        return next;
-      });
+    if (operationChannelId === null) return false;
+
+    let lock = operationLocksRef.current.get(operationChannelId);
+    if (!lock) {
+      lock = new ScopedExclusiveOperationLock();
+      operationLocksRef.current.set(operationChannelId, lock);
     }
+    const candidateId = key.split(':')[1] || null;
+    const scope = key === 'refresh' || key === 'batch-local'
+      ? null
+      : candidateId
+        ? `candidate:${candidateId}`
+        : null;
+    const busyKey = `${operationChannelId}:${key}`;
+    const result = await runScopedExclusiveOperation(
+      lock,
+      scope,
+      busyKey,
+      async () => {
+        const isCurrent = () => channelIdRef.current === operationChannelId;
+        if (isCurrent()) setError(null);
+        try {
+          await action(isCurrent);
+        } catch (reason) {
+          if (isCurrent()) {
+            setError({ channelId: operationChannelId, message: errorMessage(reason) });
+          }
+        }
+      },
+      (activeKey, active) => setBusyKeys((current) => {
+        const next = new Set(current);
+        if (active) next.add(activeKey);
+        else next.delete(activeKey);
+        return next;
+      }),
+    );
+    return result.started;
   };
 
-  const isBusy = (key: string) => busyKeys.has(key);
+  const currentBusyPrefix = channelIdRef.current === null ? null : `${channelIdRef.current}:`;
+  const currentBusyKeys = currentBusyPrefix === null
+    ? []
+    : Array.from(busyKeys)
+      .filter((key) => key.startsWith(currentBusyPrefix))
+      .map((key) => key.slice(currentBusyPrefix.length));
+  const isBusy = (key: string) => currentBusyKeys.includes(key);
+  const hasCurrentBusy = currentBusyKeys.length > 0;
   const globalBusy = isBusy('refresh') || isBusy('batch-local');
-  const candidateBusy = (candidateId: number) => Array.from(busyKeys).some(
+  const candidateBusy = (candidateId: number) => currentBusyKeys.some(
     (key) => key.split(':')[1] === String(candidateId),
   );
   const candidateOperationLabel = (candidateId: number): string | null => {
-    const key = Array.from(busyKeys).find((value) => value.split(':')[1] === String(candidateId));
+    const key = currentBusyKeys.find((value) => value.split(':')[1] === String(candidateId));
     if (!key) return null;
     if (key.startsWith('enrich-local:')) return 'Анализирую локально…';
     if (key.startsWith('enrich-ai:')) return 'Запускаю AI enrichment…';
@@ -215,17 +246,20 @@ export function InboxPanel({
   };
 
   const enrichBatch = () =>
-    run('batch-local', async () => {
+    run('batch-local', async (isCurrent) => {
       const result = await studioApi.enrichCandidatesLocalBatch(channel!.id, 50);
+      if (!isCurrent()) return;
       await load();
+      if (!isCurrent()) return;
       setNotice(
         `Local batch: выбрано ${result.selected}, новых ${result.completed}, reused ${result.reused}, failed ${result.failed}`,
       );
     });
 
   const enrichLocal = (candidate: ContentCandidateView) =>
-    run(`enrich-local:${candidate.id}`, async () => {
+    run(`enrich-local:${candidate.id}`, async (isCurrent) => {
       const result = await studioApi.enrichCandidateLocal(channel!.id, candidate.id);
+      if (!isCurrent()) return;
       setCandidates((current) =>
         current.map((row) =>
           row.id === candidate.id
@@ -241,8 +275,9 @@ export function InboxPanel({
     });
 
   const enrichAI = (candidate: ContentCandidateView) =>
-    run(`enrich-ai:${candidate.id}`, async () => {
+    run(`enrich-ai:${candidate.id}`, async (isCurrent) => {
       const result = await studioApi.enrichCandidateAI(channel!.id, candidate.id);
+      if (!isCurrent()) return;
       setCandidates((current) =>
         current.map((row) =>
           row.id === candidate.id
@@ -258,8 +293,9 @@ export function InboxPanel({
     });
 
   const rewriteAI = (candidate: ContentCandidateView) =>
-    run(`rewrite-ai:${candidate.id}`, async () => {
+    run(`rewrite-ai:${candidate.id}`, async (isCurrent) => {
       const result = await studioApi.rewriteCandidateAI(channel!.id, candidate.id);
+      if (!isCurrent()) return;
       setRewritePreviews((current) => ({
         ...current,
         [candidate.id]: {
@@ -280,8 +316,9 @@ export function InboxPanel({
     });
 
   const rewriteStructuredAI = (candidate: ContentCandidateView) =>
-    run(`rewrite-ai-structured:${candidate.id}`, async () => {
+    run(`rewrite-ai-structured:${candidate.id}`, async (isCurrent) => {
       const result = await studioApi.rewriteCandidateAIStructured(channel!.id, candidate.id);
+      if (!isCurrent()) return;
       setRewritePreviews((current) => ({
         ...current,
         [candidate.id]: {
@@ -304,12 +341,13 @@ export function InboxPanel({
   const rewritePromptStructuredAI = (candidate: ContentCandidateView) => {
     const instruction = (rewriteInstructions[candidate.id] || '').trim();
     if (!instruction) return;
-    void run(`rewrite-ai-prompt:${candidate.id}`, async () => {
+    void run(`rewrite-ai-prompt:${candidate.id}`, async (isCurrent) => {
       const result = await promptCandidateStructuredRewrite(
         channel!.id,
         candidate.id,
         instruction,
       );
+      if (!isCurrent()) return;
       setRewritePreviews((current) => ({
         ...current,
         [candidate.id]: {
@@ -336,7 +374,7 @@ export function InboxPanel({
   ) => {
     const preview = rewritePreviews[candidate.id];
     if (!preview || preview.kind !== 'structured') return;
-    void run(`rewrite-ai-edit:${candidate.id}:${operation}`, async () => {
+    void run(`rewrite-ai-edit:${candidate.id}:${operation}`, async (isCurrent) => {
       try {
         const result = await editCurrentStructuredRewrite(
           channel!.id,
@@ -344,6 +382,7 @@ export function InboxPanel({
           preview.runId,
           operation,
         );
+        if (!isCurrent()) return;
         setRewritePreviews((current) => ({
           ...current,
           [candidate.id]: {
@@ -362,7 +401,7 @@ export function InboxPanel({
             : `AI edit #${result.run_id}: ${operation} · validated PostDocument`,
         );
       } catch (reason) {
-        if (isRewriteAuthorityStaleError(reason)) {
+        if (isCurrent() && isRewriteAuthorityStaleError(reason)) {
           markStructuredPreviewStale(candidate.id, preview.runId);
         }
         throw reason;
@@ -371,8 +410,9 @@ export function InboxPanel({
   };
 
   const promoteMedia = (candidate: ContentCandidateView) =>
-    run(`promote-media:${candidate.id}`, async () => {
+    run(`promote-media:${candidate.id}`, async (isCurrent) => {
       const asset = await promoteCandidateMedia(channel!.id, candidate.id);
+      if (!isCurrent()) return;
       setCandidateMedia((current) => {
         const media = current[candidate.id];
         if (!media) return current;
@@ -385,8 +425,9 @@ export function InboxPanel({
     });
 
   const dismiss = (candidate: ContentCandidateView) =>
-    run(`dismiss:${candidate.id}`, async () => {
+    run(`dismiss:${candidate.id}`, async (isCurrent) => {
       await studioApi.dismissCandidate(channel!.id, candidate.id);
+      if (!isCurrent()) return;
       setCandidates((current) => current.filter((row) => row.id !== candidate.id));
       setCandidateMedia((current) => {
         const next = { ...current };
@@ -406,14 +447,14 @@ export function InboxPanel({
     });
 
   const acceptDraft = (candidate: ContentCandidateView) =>
-    run(`draft:${candidate.id}`, async () => {
+    run(`draft:${candidate.id}`, async (isCurrent) => {
       const preview = rewritePreviews[candidate.id];
       let draft;
       if (preview?.kind === 'structured') {
         try {
           draft = await applyCurrentStructuredRewrite(channel!.id, candidate.id, preview.runId);
         } catch (reason) {
-          if (isRewriteAuthorityStaleError(reason)) {
+          if (isCurrent() && isRewriteAuthorityStaleError(reason)) {
             markStructuredPreviewStale(candidate.id, preview.runId);
           }
           throw reason;
@@ -421,6 +462,7 @@ export function InboxPanel({
       } else {
         draft = await studioApi.candidateDraft(channel!.id, candidate.id);
       }
+      if (!isCurrent()) return;
       setCandidates((current) => current.filter((row) => row.id !== candidate.id));
       setCandidateMedia((current) => {
         const next = { ...current };
@@ -461,14 +503,14 @@ export function InboxPanel({
           <button
             className="button secondary"
             onClick={() => void run('refresh', async () => { await load(); })}
-            disabled={busyKeys.size > 0}
+            disabled={hasCurrentBusy}
           >
             ↻ Обновить
           </button>
           <button
             className="button secondary"
             onClick={() => void enrichBatch()}
-            disabled={busyKeys.size > 0 || candidates.length === 0}
+            disabled={hasCurrentBusy || candidates.length === 0}
             title="Deterministic local enrichment, без AI-токенов"
           >
             Local batch

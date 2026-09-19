@@ -106,6 +106,62 @@ export class ExclusiveOperationLock {
   }
 }
 
+export type ScopedExclusiveOperationToken = Readonly<{
+  scope: string | null;
+  key: string;
+  id: symbol;
+}>;
+
+export class ScopedExclusiveOperationLock {
+  private globalHolder: ScopedExclusiveOperationToken | null = null;
+  private scopedHolders = new Map<string, ScopedExclusiveOperationToken>();
+
+  tryAcquire(scope: string | null, key: string): ScopedExclusiveOperationToken | null {
+    if (scope === null) {
+      if (this.globalHolder || this.scopedHolders.size > 0) return null;
+      const token = { scope, key, id: Symbol(key) };
+      this.globalHolder = token;
+      return token;
+    }
+
+    if (this.globalHolder || this.scopedHolders.has(scope)) return null;
+    const token = { scope, key, id: Symbol(key) };
+    this.scopedHolders.set(scope, token);
+    return token;
+  }
+
+  release(token: ScopedExclusiveOperationToken): boolean {
+    if (token.scope === null) {
+      if (!this.globalHolder || this.globalHolder.id !== token.id) return false;
+      this.globalHolder = null;
+      return true;
+    }
+
+    const holder = this.scopedHolders.get(token.scope);
+    if (!holder || holder.id !== token.id) return false;
+    this.scopedHolders.delete(token.scope);
+    return true;
+  }
+}
+
+export async function runScopedExclusiveOperation<T>(
+  lock: ScopedExclusiveOperationLock,
+  scope: string | null,
+  key: string,
+  operation: () => Promise<T>,
+  onActiveChange?: (key: string, active: boolean) => void,
+): Promise<{ started: boolean; value?: T }> {
+  const token = lock.tryAcquire(scope, key);
+  if (!token) return { started: false };
+
+  onActiveChange?.(key, true);
+  try {
+    return { started: true, value: await operation() };
+  } finally {
+    if (lock.release(token)) onActiveChange?.(key, false);
+  }
+}
+
 export async function runExclusiveOperation<T>(
   lock: ExclusiveOperationLock,
   key: string,
