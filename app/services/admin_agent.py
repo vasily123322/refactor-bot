@@ -1256,7 +1256,7 @@ class AdminAgentRunner:
             if current.workflow_phase == PHASE_GENERATION_INFLIGHT:
                 return await self._fail_draft_run(
                     run_id=run_id,
-                    error="generation outcome is ambiguous; create a new request",
+                    error="admin agent wall-clock limit exceeded",
                     reason="generation_outcome_ambiguous",
                     force_phase=PHASE_RESTART_REQUIRED,
                     clear_checkpoint=True,
