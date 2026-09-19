@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.studio.admin_agent import router as admin_agent_router
 from app.api.studio.auth import StudioPrincipal, require_studio_principal
 from app.api.studio.candidate_actions import router as candidate_actions_router
 from app.api.studio.candidate_media import router as candidate_media_router
@@ -99,6 +100,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
         redoc_url=None,
     )
     app.include_router(planner_router)
+    app.include_router(admin_agent_router)
     app.include_router(sources_router)
     app.include_router(media_assets_router)
     app.include_router(candidate_actions_router)
@@ -147,6 +149,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
             "sources_v2": True,
             "source_kinds": ["telegram", "rss", "url", "telegram_channel_dms"],
             "candidate_to_draft": True,
+            "assistant_attention_today": True,
         }
 
     @app.get("/api/studio/me", response_model=StudioUserResponse)

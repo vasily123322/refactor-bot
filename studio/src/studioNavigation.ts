@@ -1,4 +1,4 @@
-export type StudioView = 'content' | 'planner' | 'sources' | 'inbox' | 'ai';
+export type StudioView = 'content' | 'planner' | 'sources' | 'inbox' | 'assistant' | 'ai';
 
 export const STUDIO_ROOT_VIEW: StudioView = 'content';
 

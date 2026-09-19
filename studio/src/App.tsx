@@ -2,6 +2,7 @@ import { AppRoot } from '@telegram-apps/telegram-ui';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AIStudioPanel } from './AIStudioPanel';
+import { AssistantPanel } from './AssistantPanel';
 import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
 import {
   ExclusiveOperationLock,
@@ -113,6 +114,12 @@ function Sidebar({
           onClick={() => onView('inbox')}
         >
           📥 Inbox
+        </button>
+        <button
+          className={activeView === 'assistant' ? 'nav-item nav-item-active' : 'nav-item'}
+          onClick={() => onView('assistant')}
+        >
+          🧭 Assistant
         </button>
         <button
           className={activeView === 'ai' ? 'nav-item nav-item-active' : 'nav-item'}
@@ -592,6 +599,17 @@ export default function App() {
         ) : view === 'inbox' ? (
           <main className="workspace sources-workspace">
             <InboxPanel channel={channel} onOpenContent={(id) => void openContentById(id)} />
+          </main>
+        ) : view === 'assistant' ? (
+          <main className="workspace sources-workspace">
+            <AssistantPanel
+              channel={channel}
+              onOpenPlanner={() => setView('planner')}
+              onOpenContent={(id) => {
+                setView('content');
+                void openContentById(id);
+              }}
+            />
           </main>
         ) : view === 'ai' ? (
           <main className="workspace sources-workspace">
