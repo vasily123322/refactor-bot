@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.timezone import to_user_tz
 from app.domain.admin_agent import AdminAgentEvent, AdminAgentRun, AdminAgentRunArtifact
 from app.domain.content import PostDocument
-from app.domain.content.models import ContentItem
+from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.domain.sources.models import SourceConnector
 from app.repositories.content import ContentRepo
@@ -869,12 +869,26 @@ class AdminAgentRunner:
         by_id = {int(item.id): item for item in items}
         if len(by_id) != _DRAFT_COUNT:
             raise AgentResumeError("artifact content is missing")
+        revision_rows = (
+            await self.session.execute(
+                select(ContentRevision.content_item_id, ContentRevision.revision).where(
+                    ContentRevision.content_item_id.in_(content_ids)
+                )
+            )
+        ).all()
+        revision_keys = {
+            (int(content_item_id), int(revision))
+            for content_item_id, revision in revision_rows
+        }
 
         drafts: list[dict] = []
         for artifact in artifacts:
             item = by_id.get(int(artifact.content_item_id))
             if item is None or int(item.channel_id) != int(run.channel_id):
                 raise AgentResumeError("artifact content ownership conflict")
+            artifact_key = (int(artifact.content_item_id), int(artifact.content_revision))
+            if artifact_key not in revision_keys:
+                raise AgentResumeError("artifact revision is missing")
             if int(item.current_revision or 0) < int(artifact.content_revision):
                 raise AgentResumeError("artifact revision conflict")
             drafts.append(
@@ -1199,6 +1213,7 @@ class AdminAgentRunner:
                 execution_claim_token=str(token),
                 execution_claimed_at=self.now_utc,
             )
+            .execution_options(synchronize_session=False)
         )
         if int(result.rowcount or 0) != 1:
             await self.session.rollback()
@@ -1387,17 +1402,18 @@ class AdminAgentRunner:
             raise
         run = await self.session.get(AdminAgentRun, int(run.id))
         assert run is not None
-        await self._event(
-            run,
-            "resume_started",
-            payload={
-                "skill_id": skill.skill_id,
-                "skill_version": skill.version,
-                "workflow_phase": run.workflow_phase,
-            },
-        )
+        await self.session.refresh(run)
 
         try:
+            await self._event(
+                run,
+                "resume_started",
+                payload={
+                    "skill_id": skill.skill_id,
+                    "skill_version": skill.version,
+                    "workflow_phase": run.workflow_phase,
+                },
+            )
             phase = str(run.workflow_phase or "")
             if phase == PHASE_GENERATION_INFLIGHT:
                 return await self._fail_draft_run(
