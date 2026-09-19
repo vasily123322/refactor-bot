@@ -568,14 +568,14 @@ def test_simultaneous_approve_has_one_atomic_execution_winner(
                     review_arrivals += 1
                     if review_arrivals == 2:
                         review_barrier.set()
-                    await review_barrier.wait()
+                    await asyncio.wait_for(review_barrier.wait(), timeout=5)
                 return await original_stale_reason(self, approval)
 
             async def blocked_queue(self, **kwargs):
                 nonlocal queue_calls
                 queue_calls += 1
                 queue_entered.set()
-                await release_queue.wait()
+                await asyncio.wait_for(release_queue.wait(), timeout=5)
                 return await original_queue(self, **kwargs)
 
             monkeypatch.setattr(
@@ -612,13 +612,13 @@ def test_simultaneous_approve_has_one_atomic_execution_winner(
                         )
                     )
 
-                    await queue_entered.wait()
+                    await asyncio.wait_for(queue_entered.wait(), timeout=5)
                     assert review_arrivals == 2
                     assert queue_calls == 1
                     release_queue.set()
-                    first_result, second_result = await asyncio.gather(
-                        first_task,
-                        second_task,
+                    first_result, second_result = await asyncio.wait_for(
+                        asyncio.gather(first_task, second_task),
+                        timeout=5,
                     )
                     assert first_result is not None
                     assert second_result is not None
