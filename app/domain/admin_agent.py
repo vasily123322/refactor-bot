@@ -13,6 +13,14 @@ class AdminAgentRun(Base):
     __table_args__ = (
         Index("ix_admin_agent_runs_channel_created", "channel_id", "created_at"),
         Index("ix_admin_agent_runs_owner_created", "owner_tg_user_id", "created_at"),
+        Index(
+            "uq_admin_agent_run_idempotency",
+            "owner_tg_user_id",
+            "channel_id",
+            "scenario",
+            "request_id",
+            unique=True,
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -21,6 +29,7 @@ class AdminAgentRun(Base):
         ForeignKey("channels.id", ondelete="CASCADE"), index=True
     )
     scenario: Mapped[str] = mapped_column(String(64), index=True)
+    request_id: Mapped[str | None] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(32), index=True)
     model: Mapped[str | None] = mapped_column(String(128))
     tokens_used: Mapped[int] = mapped_column(Integer, default=0)

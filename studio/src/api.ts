@@ -218,6 +218,8 @@ export type SourceWorkerHealthView = {
   totals: SourceWorkerTotalsView;
 };
 
+export type AssistantScenario = 'attention_today' | 'drafts_tomorrow';
+
 export type AssistantAttentionItem = {
   fact_id: string;
   category: string;
@@ -233,20 +235,41 @@ export type AssistantAttentionItem = {
   suggested_action: string;
 };
 
-export type AssistantRunResult = {
+export type AssistantExecutionLimits = {
+  max_steps: number;
+  max_tool_calls: number;
+  max_llm_calls: number;
+  max_seconds: number;
+};
+
+export type AssistantAttentionRunResult = {
   scenario: 'attention_today';
   summary: string;
   attention_items: AssistantAttentionItem[];
   timezone: string;
   generated_by: 'llm_priority' | 'deterministic';
   tool_names: string[];
-  execution_limits: {
-    max_steps: number;
-    max_tool_calls: number;
-    max_llm_calls: number;
-    max_seconds: number;
-  };
+  execution_limits: AssistantExecutionLimits;
 };
+
+export type AssistantDraftReference = {
+  content_item_id: number;
+  content_revision: number;
+  title: string;
+  status: 'draft' | string;
+};
+
+export type AssistantDraftRunResult = {
+  scenario: 'drafts_tomorrow';
+  target_local_date: string;
+  timezone: string;
+  draft_count: number;
+  drafts: AssistantDraftReference[];
+  write_capability: 'draft_write';
+  execution_limits: AssistantExecutionLimits;
+};
+
+export type AssistantRunResult = AssistantAttentionRunResult | AssistantDraftRunResult;
 
 export type AssistantEventView = {
   id: number;
@@ -260,7 +283,8 @@ export type AssistantEventView = {
 export type AssistantRunView = {
   id: number;
   channel_id: number;
-  scenario: string;
+  scenario: AssistantScenario;
+  request_id: string | null;
   status: string;
   model: string | null;
   tokens_used: number;
@@ -437,10 +461,17 @@ export const studioApi = {
     request<AssistantRunView[]>(
       `/api/studio/channels/${channelId}/assistant/runs?limit=${encodeURIComponent(String(limit))}`,
     ),
-  createAssistantRun: (channelId: number, scenario: 'attention_today') =>
+  createAssistantRun: (
+    channelId: number,
+    scenario: AssistantScenario,
+    requestId: string | null = null,
+  ) =>
     request<AssistantRunView>(`/api/studio/channels/${channelId}/assistant/runs`, {
       method: 'POST',
-      body: JSON.stringify({ scenario }),
+      body: JSON.stringify({
+        scenario,
+        ...(requestId ? { request_id: requestId } : {}),
+      }),
     }),
   assistantRun: (channelId: number, runId: number) =>
     request<AssistantRunView>(

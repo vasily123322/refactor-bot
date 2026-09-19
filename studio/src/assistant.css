@@ -146,3 +146,24 @@
     white-space: normal;
   }
 }
+
+
+.assistant-drafts {
+  display: grid;
+  gap: 10px;
+}
+
+.assistant-draft-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--border, rgba(15, 23, 42, 0.1));
+  border-radius: 12px;
+  min-width: 0;
+}
+
+.assistant-draft-card strong,
+.assistant-draft-card small {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
