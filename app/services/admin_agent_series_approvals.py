@@ -337,7 +337,11 @@ class AdminAgentSeriesApprovalService:
             or str(run.skill_version or "") != SUPPORTED_SKILL_VERSION
         ):
             raise SeriesApprovalInputError("source run skill/version is unsupported")
-        if str(run.status) != RUN_COMPLETED:
+        if (
+            str(run.status) != RUN_COMPLETED
+            or str(run.workflow_phase or "") != "completed"
+            or run.checkpoint is not None
+        ):
             raise SeriesApprovalInputError("source run is not completed")
 
         operator_input = run.operator_input
@@ -435,8 +439,33 @@ class AdminAgentSeriesApprovalService:
                 content_item_id=int(item.id),
                 content_revision=int(artifact.content_revision),
             )
-            if original_revision is None:
-                raise SeriesApprovalInputError("source series artifact revision is missing")
+            expected_provenance = {
+                "admin_agent_run_id": int(run.id),
+                "admin_agent_scenario": SCENARIO_PREPARE_CONTENT_SERIES,
+                "skill_id": SUPPORTED_SKILL_ID,
+                "skill_version": SUPPORTED_SKILL_VERSION,
+                "series_ordinal": ordinal,
+                "plan_fingerprint": str(source_plan_fingerprint),
+            }
+            original_document = (
+                original_revision.document
+                if original_revision is not None
+                and isinstance(original_revision.document, dict)
+                else {}
+            )
+            if (
+                original_revision is None
+                or str(original_revision.source) != "admin_agent"
+                or dict(original_revision.meta or {}) != expected_provenance
+                or dict(original_document.get("metadata") or {}) != expected_provenance
+                or not isinstance(result_post, dict)
+                or int(result_post.get("content_item_id") or 0) != int(item.id)
+                or int(result_post.get("content_revision") or 0)
+                != int(artifact.content_revision)
+            ):
+                raise SeriesApprovalInputError(
+                    "source series artifact revision provenance is invalid"
+                )
 
             captured_revision = int(item.current_revision)
             await self._validate_document(
@@ -566,6 +595,46 @@ class AdminAgentSeriesApprovalService:
             )
         return rows
 
+    async def _existing_request_matches(
+        self,
+        existing: AdminAgentApprovalBatch,
+        *,
+        source_run_id: int,
+        slots: list[dict[str, object]],
+    ) -> bool:
+        if int(existing.source_run_id) != int(source_run_id):
+            return False
+        existing_items = await self.items_for_batch(int(existing.id))
+        if len(slots) != len(existing_items):
+            return False
+        normalized: dict[int, tuple[str, str]] = {}
+        try:
+            for raw_slot in slots:
+                if not isinstance(raw_slot, dict) or set(raw_slot) != {
+                    "ordinal",
+                    "local_date",
+                    "local_time",
+                }:
+                    return False
+                raw_ordinal = raw_slot.get("ordinal")
+                if isinstance(raw_ordinal, bool):
+                    return False
+                ordinal = int(raw_ordinal)
+                if ordinal != raw_ordinal or ordinal in normalized:
+                    return False
+                local_date_value = _strict_date(raw_slot.get("local_date"))
+                local_time_value = _strict_time(raw_slot.get("local_time")).strftime("%H:%M")
+                normalized[ordinal] = (
+                    local_date_value.isoformat(),
+                    local_time_value,
+                )
+        except (SeriesApprovalInputError, TypeError, ValueError):
+            return False
+        return normalized == {
+            int(item.ordinal): (item.local_date.isoformat(), str(item.local_time))
+            for item in existing_items
+        }
+
     async def create(
         self,
         *,
@@ -575,6 +644,29 @@ class AdminAgentSeriesApprovalService:
         request_id: str,
         slots: list[dict[str, object]],
     ) -> AdminAgentApprovalBatch:
+        existing = (
+            await self.session.execute(
+                select(AdminAgentApprovalBatch).where(
+                    AdminAgentApprovalBatch.owner_tg_user_id
+                    == int(owner_tg_user_id),
+                    AdminAgentApprovalBatch.channel_id == int(channel_id),
+                    AdminAgentApprovalBatch.action_type
+                    == ACTION_SCHEDULE_CONTENT_SERIES,
+                    AdminAgentApprovalBatch.request_id == str(request_id),
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            if await self._existing_request_matches(
+                existing,
+                source_run_id=source_run_id,
+                slots=slots,
+            ):
+                return existing
+            raise SeriesApprovalIdempotencyConflict(
+                "request_id already exists with different series schedule intent"
+            )
+
         snapshot = await self._source_snapshot(
             source_run_id=source_run_id,
             owner_tg_user_id=owner_tg_user_id,
@@ -601,28 +693,6 @@ class AdminAgentSeriesApprovalService:
             request_id=request_id,
             action_fingerprint=action_fingerprint,
         )
-
-        existing = (
-            await self.session.execute(
-                select(AdminAgentApprovalBatch).where(
-                    AdminAgentApprovalBatch.owner_tg_user_id
-                    == int(owner_tg_user_id),
-                    AdminAgentApprovalBatch.channel_id == int(channel_id),
-                    AdminAgentApprovalBatch.action_type
-                    == ACTION_SCHEDULE_CONTENT_SERIES,
-                    AdminAgentApprovalBatch.request_id == str(request_id),
-                )
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
-            if (
-                str(existing.action_fingerprint) == action_fingerprint
-                and int(existing.source_run_id) == int(source_run_id)
-            ):
-                return existing
-            raise SeriesApprovalIdempotencyConflict(
-                "request_id already exists with different series schedule intent"
-            )
 
         batch = AdminAgentApprovalBatch(
             owner_tg_user_id=int(owner_tg_user_id),
@@ -862,6 +932,13 @@ class AdminAgentSeriesApprovalService:
             )
         except SeriesApprovalInputError:
             return "captured content revision is no longer valid"
+
+        timezone_name = await _resolve_channel_timezone(
+            self.session,
+            int(batch.channel_id),
+        )
+        if str(timezone_name) != str(batch.timezone):
+            return "channel timezone changed"
 
         parsed_time = _strict_time(str(item.local_time))
         recomputed = localize_dt(
@@ -1127,8 +1204,27 @@ class AdminAgentSeriesApprovalService:
         claim_token: str,
     ) -> AdminAgentApprovalBatch:
         items = await self.items_for_batch(int(batch.id))
+        preexisting_executed = sum(
+            1 for row in items if str(row.state) == ITEM_EXECUTED
+        )
+        source_contract_reason = await self._source_contract_reason(batch, items)
+        if source_contract_reason is not None:
+            return await self._terminal_failure(
+                batch,
+                completed_count=preexisting_executed,
+                reason=source_contract_reason,
+                stale=True,
+            )
         completed_count = 0
         for item in items:
+            source_contract_reason = await self._source_contract_reason(batch, items)
+            if source_contract_reason is not None:
+                return await self._terminal_failure(
+                    batch,
+                    completed_count=completed_count,
+                    reason=source_contract_reason,
+                    stale=True,
+                )
             if not await self._claim_still_owned(
                 batch_id=int(batch.id),
                 claim_token=claim_token,
