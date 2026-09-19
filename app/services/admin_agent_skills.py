@@ -18,6 +18,9 @@ CONTEXT_EDITORIAL_V1 = "editorial_v1"
 APPROVAL_NONE = "none"
 APPROVAL_EXPLICIT = "explicit"
 
+AUTOMATION_DISABLED = "disabled"
+AUTOMATION_BOUNDED = "bounded"
+
 
 def _freeze_json(value: Any) -> Any:
     if isinstance(value, MappingABC):
@@ -46,6 +49,7 @@ class AdminAgentSkillSpec:
     approval_requirement: str
     capability_summary: str
     context_requirements: str
+    automation_policy: str = AUTOMATION_DISABLED
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -72,6 +76,7 @@ class AdminAgentSkillRegistry:
         allowed_profiles = {CONTEXT_NONE, CONTEXT_EDITORIAL_V1}
         allowed_resume = {RESUME_NONE, RESUME_EXPLICIT}
         allowed_approval = {APPROVAL_NONE, APPROVAL_EXPLICIT}
+        allowed_automation = {AUTOMATION_DISABLED, AUTOMATION_BOUNDED}
 
         for spec in specs:
             key = (spec.skill_id, str(spec.version))
@@ -92,6 +97,20 @@ class AdminAgentSkillRegistry:
                 raise ValueError(
                     f"unsupported admin-agent approval requirement: {spec.approval_requirement}"
                 )
+            if spec.automation_policy not in allowed_automation:
+                raise ValueError(
+                    f"unsupported admin-agent automation policy: {spec.automation_policy}"
+                )
+            if spec.automation_policy == AUTOMATION_BOUNDED:
+                if spec.approval_requirement != APPROVAL_NONE:
+                    raise ValueError("automation-enabled skill may not require approval")
+                if not capabilities or not capabilities <= {
+                    CAPABILITY_READ_ONLY,
+                    CAPABILITY_DRAFT_WRITE,
+                }:
+                    raise ValueError(
+                        "automation-enabled skill has unsupported capability classes"
+                    )
             if spec.scenario == "attention_today" and spec.resume_policy != RESUME_NONE:
                 raise ValueError("attention_today must remain non-resumable")
             if (
@@ -147,6 +166,14 @@ class AdminAgentSkillRegistry:
     def current_specs(self) -> tuple[AdminAgentSkillSpec, ...]:
         return tuple(self._current_by_scenario.values())
 
+    @property
+    def automation_specs(self) -> tuple[AdminAgentSkillSpec, ...]:
+        return tuple(
+            spec
+            for spec in self._by_version.values()
+            if spec.automation_policy == AUTOMATION_BOUNDED
+        )
+
 
 _EMPTY_OPERATOR_SCHEMA = {
     "type": "object",
@@ -190,6 +217,7 @@ SKILL_REGISTRY = AdminAgentSkillRegistry(
             approval_requirement=APPROVAL_NONE,
             capability_summary="Read-only: состояние канала без Content или scheduling writes.",
             context_requirements="Channel-scoped operational state; editorial context не требуется.",
+            automation_policy=AUTOMATION_BOUNDED,
         ),
         AdminAgentSkillSpec(
             skill_id="drafts_tomorrow",
@@ -217,6 +245,7 @@ SKILL_REGISTRY = AdminAgentSkillRegistry(
             context_requirements=(
                 "Existing channel memory/profile + bounded recent and scheduled Content context."
             ),
+            automation_policy=AUTOMATION_BOUNDED,
         ),
         AdminAgentSkillSpec(
             skill_id="prepare_content_series",
@@ -246,6 +275,7 @@ SKILL_REGISTRY = AdminAgentSkillRegistry(
             context_requirements=(
                 "Existing channel memory/profile + bounded recent and scheduled Content context."
             ),
+            automation_policy=AUTOMATION_BOUNDED,
         ),
     )
 )
