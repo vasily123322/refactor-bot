@@ -414,3 +414,83 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+
+.assistant-automation-card {
+  display: grid;
+  gap: 16px;
+}
+
+.assistant-automation-form {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.assistant-automation-form label {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.assistant-automation-form select,
+.assistant-automation-form input,
+.assistant-automation-form textarea {
+  width: 100%;
+}
+
+.assistant-automation-series-input,
+.assistant-automation-cadence {
+  display: grid;
+  gap: 8px;
+}
+
+.assistant-automation-cadence {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+}
+
+.assistant-automation-create-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.assistant-automation-list {
+  display: grid;
+  gap: 10px;
+}
+
+.assistant-automation-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.assistant-automation-row > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.assistant-automation-row small {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .assistant-automation-cadence {
+    grid-template-columns: 1fr;
+  }
+
+  .assistant-automation-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
