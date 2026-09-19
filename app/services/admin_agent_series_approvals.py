@@ -9,7 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.timezone import localize_dt
+from app.core.timezone import localize_wall_clock_strict
 from app.domain.admin_agent import (
     AdminAgentApprovalBatch,
     AdminAgentApprovalBatchItem,
@@ -546,10 +546,13 @@ class AdminAgentSeriesApprovalService:
             local_date_value = _strict_date(raw_slot.get("local_date"))
             parsed_time = _strict_time(raw_slot.get("local_time"))
             local_time_value = parsed_time.strftime("%H:%M")
-            scheduled_at = localize_dt(
-                datetime.combine(local_date_value, parsed_time),
-                timezone_name,
-            ).astimezone(timezone.utc)
+            try:
+                scheduled_at = localize_wall_clock_strict(
+                    datetime.combine(local_date_value, parsed_time),
+                    timezone_name,
+                ).astimezone(timezone.utc)
+            except ValueError as exc:
+                raise SeriesApprovalInputError(str(exc)) from exc
             scheduled_at = as_utc(scheduled_at)
             if scheduled_at <= self.now_utc:
                 raise SeriesApprovalInputError("all schedule slots must be in the future")
@@ -989,10 +992,13 @@ class AdminAgentSeriesApprovalService:
             return "channel timezone changed"
 
         parsed_time = _strict_time(str(item.local_time))
-        recomputed = localize_dt(
-            datetime.combine(item.local_date, parsed_time),
-            str(batch.timezone),
-        ).astimezone(timezone.utc)
+        try:
+            recomputed = localize_wall_clock_strict(
+                datetime.combine(item.local_date, parsed_time),
+                str(batch.timezone),
+            ).astimezone(timezone.utc)
+        except ValueError as exc:
+            return str(exc)
         if recomputed <= self.now_utc:
             return "schedule slot is no longer in the future"
         if as_utc(recomputed) != as_utc(item.resolved_scheduled_at):
