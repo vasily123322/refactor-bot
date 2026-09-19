@@ -12,7 +12,10 @@ afterEach(() => {
 
 describe('Assistant series scheduling API', () => {
   it('sends only source run, request id and ordinal/date/time slots for proposal creation', async () => {
-    const fetchMock = vi.fn(async () => ({
+    const fetchMock = vi.fn(async (
+      _input: RequestInfo | URL,
+      _init?: RequestInit,
+    ) => ({
       ok: true,
       json: async () => ({}),
     } as Response));
@@ -42,7 +45,10 @@ describe('Assistant series scheduling API', () => {
   });
 
   it('approve and reject send no execution plan', async () => {
-    const fetchMock = vi.fn(async () => ({
+    const fetchMock = vi.fn(async (
+      _input: RequestInfo | URL,
+      _init?: RequestInit,
+    ) => ({
       ok: true,
       json: async () => ({}),
     } as Response));
