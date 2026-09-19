@@ -101,6 +101,27 @@ def localize_dt(dt_naive: datetime, tz_code: str | None) -> datetime:
     return dt_naive.replace(tzinfo=_tzinfo_from_code(tz_code))
 
 
+def localize_wall_clock_strict(dt_naive: datetime, tz_code: str | None) -> datetime:
+    """Resolve one local wall clock only when it maps to exactly one real instant."""
+    if dt_naive.tzinfo is not None:
+        raise ValueError("local wall clock must be naive")
+
+    tzi = _tzinfo_from_code(tz_code)
+    candidates: dict[datetime, datetime] = {}
+    for fold in (0, 1):
+        aware = dt_naive.replace(tzinfo=tzi, fold=fold)
+        utc_value = aware.astimezone(timezone.utc)
+        round_trip = utc_value.astimezone(tzi).replace(tzinfo=None)
+        if round_trip == dt_naive:
+            candidates[utc_value] = aware
+
+    if not candidates:
+        raise ValueError("local time does not exist in timezone")
+    if len(candidates) > 1:
+        raise ValueError("local time is ambiguous in timezone")
+    return next(iter(candidates.values()))
+
+
 def now_tz(tz_code: str | None) -> datetime:
     """Текущее время в указанном часовом поясе."""
     return to_user_tz(datetime.now(timezone.utc), tz_code)
