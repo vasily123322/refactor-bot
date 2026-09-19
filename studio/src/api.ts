@@ -676,10 +676,29 @@ export const studioApi = {
       `/api/studio/channels/${channelId}/sources/${connectorId}/ingest`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
-  candidates: (channelId: number, status: 'new' | 'dismissed' = 'new') =>
-    request<ContentCandidateView[]>(
-      `/api/studio/channels/${channelId}/candidates?status_filter=${encodeURIComponent(status)}&limit=100`,
-    ),
+  candidates: (
+    channelId: number,
+    status: 'new' | 'dismissed' = 'new',
+    options: {
+      limit?: number;
+      beforePublishedAt?: string | null;
+      beforeId?: number;
+    } = {},
+  ) => {
+    const query = new URLSearchParams({
+      status_filter: status,
+      limit: String(options.limit ?? 100),
+    });
+    if (options.beforeId !== undefined) {
+      query.set('before_id', String(options.beforeId));
+      if (options.beforePublishedAt !== undefined && options.beforePublishedAt !== null) {
+        query.set('before_published_at', options.beforePublishedAt);
+      }
+    }
+    return request<ContentCandidateView[]>(
+      `/api/studio/channels/${channelId}/candidates?${query}`,
+    );
+  },
   dismissCandidate: (channelId: number, candidateId: number) =>
     request<ContentCandidateView>(
       `/api/studio/channels/${channelId}/candidates/${candidateId}/dismiss`,

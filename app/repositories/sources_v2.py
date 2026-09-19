@@ -4,7 +4,7 @@ import hashlib
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.sources.models import ContentCandidate, SourceConnector, SourceDocument
@@ -258,6 +258,8 @@ class SourcesRepo:
         *,
         status: str | None = "new",
         limit: int = 100,
+        before_published_at: datetime | None = None,
+        before_id: int | None = None,
     ) -> list[tuple[ContentCandidate, SourceDocument]]:
         statement = (
             select(ContentCandidate, SourceDocument)
@@ -269,6 +271,23 @@ class SourcesRepo:
         )
         if status is not None:
             statement = statement.where(ContentCandidate.status == str(status))
+        if before_id is not None:
+            if before_published_at is None:
+                statement = statement.where(
+                    SourceDocument.published_at.is_(None),
+                    ContentCandidate.id < int(before_id),
+                )
+            else:
+                statement = statement.where(
+                    or_(
+                        SourceDocument.published_at < before_published_at,
+                        SourceDocument.published_at.is_(None),
+                        and_(
+                            SourceDocument.published_at == before_published_at,
+                            ContentCandidate.id < int(before_id),
+                        ),
+                    )
+                )
         statement = statement.order_by(
             SourceDocument.published_at.desc().nullslast(),
             ContentCandidate.id.desc(),

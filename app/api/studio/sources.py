@@ -454,12 +454,21 @@ async def list_candidates(
     session: SessionDep,
     status_filter: Literal["new", "dismissed"] | None = "new",
     limit: int = 100,
+    before_published_at: datetime | None = None,
+    before_id: int | None = None,
 ) -> list[CandidateResponse]:
     await _require_owned_channel(session, principal, channel_id)
+    if before_published_at is not None and before_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="before_id is required when before_published_at is provided",
+        )
     rows = await SourcesRepo(session).list_candidate_rows(
         channel_id,
         status=status_filter,
         limit=limit,
+        before_published_at=before_published_at,
+        before_id=before_id,
     )
     return [_candidate_response(candidate, document) for candidate, document in rows]
 
