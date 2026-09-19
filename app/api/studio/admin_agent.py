@@ -14,7 +14,6 @@ from app.core.db import AsyncSessionLocal
 from app.domain.admin_agent import (
     AdminAgentApproval,
     AdminAgentApprovalBatch,
-    AdminAgentApprovalBatchItem,
     AdminAgentEvent,
     AdminAgentRun,
     AdminAgentRunArtifact,
