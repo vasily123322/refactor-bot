@@ -1,7 +1,12 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-import {\n  AssistantBrief,\n  AssistantPanel,\n  mergeAssistantApproval,\n  mergeAssistantRun,\n} from './AssistantPanel';
+import {
+  AssistantBrief,
+  AssistantPanel,
+  mergeAssistantApproval,
+  mergeAssistantRun,
+} from './AssistantPanel';
 import {
   ChannelRequestOwnership,
   ExclusiveOperationLock,
