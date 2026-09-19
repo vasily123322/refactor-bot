@@ -772,65 +772,77 @@ export function InboxPanel({
                     {candidate.source_url && (
                       <a className="button secondary compact" href={candidate.source_url} target="_blank" rel="noreferrer">Источник ↗</a>
                     )}
-                    {canPromoteMedia && (
+                    {presentation.showActiveActions ? (
+                      <>
+                        {canPromoteMedia && (
+                          <button
+                            className="button secondary compact"
+                            disabled={globalBusy || candidateBusy(candidate.id)}
+                            title="Сохранить исходное Telegram media как reusable MediaAsset текущего канала"
+                            onClick={() => void promoteMedia(candidate)}
+                          >
+                            ▣ В медиатеку
+                          </button>
+                        )}
+                        <button
+                          className="button secondary compact"
+                          disabled={globalBusy || candidateBusy(candidate.id)}
+                          onClick={() => void enrichLocal(candidate)}
+                        >
+                          Local
+                        </button>
+                        <button
+                          className="button secondary compact"
+                          disabled={globalBusy || candidateBusy(candidate.id)}
+                          title="Использует AI-настройки и лимиты выбранного канала"
+                          onClick={() => void enrichAI(candidate)}
+                        >
+                          ✨ AI
+                        </button>
+                        {canRewrite && (
+                          <button
+                            className="button secondary compact"
+                            disabled={globalBusy || candidateBusy(candidate.id)}
+                            title="Создать независимый AI rewrite; attribution добавит приложение"
+                            onClick={() => void rewriteAI(candidate)}
+                          >
+                            ✨ Rewrite
+                          </button>
+                        )}
+                        {canRewrite && (
+                          <button
+                            className="button secondary compact"
+                            disabled={globalBusy || candidateBusy(candidate.id)}
+                            title="Сгенерировать validated Rich PostDocument без автоматического применения"
+                            onClick={() => void rewriteStructuredAI(candidate)}
+                          >
+                            ✨ Rich
+                          </button>
+                        )}
+                        <button
+                          className="button primary compact"
+                          disabled={globalBusy || candidateBusy(candidate.id)}
+                          onClick={() => void acceptDraft(candidate)}
+                        >
+                          {rewritePreview?.kind === 'structured' ? 'В Rich черновик' : 'В черновик'}
+                        </button>
+                        <button
+                          className="button secondary compact"
+                          disabled={globalBusy || candidateBusy(candidate.id)}
+                          onClick={() => void dismiss(candidate)}
+                        >
+                          Скрыть
+                        </button>
+                      </>
+                    ) : (
                       <button
-                        className="button secondary compact"
+                        className="button primary compact"
                         disabled={globalBusy || candidateBusy(candidate.id)}
-                        title="Сохранить исходное Telegram media как reusable MediaAsset текущего канала"
-                        onClick={() => void promoteMedia(candidate)}
+                        onClick={() => void restore(candidate)}
                       >
-                        ▣ В медиатеку
+                        Восстановить
                       </button>
                     )}
-                    <button
-                      className="button secondary compact"
-                      disabled={globalBusy || candidateBusy(candidate.id)}
-                      onClick={() => void enrichLocal(candidate)}
-                    >
-                      Local
-                    </button>
-                    <button
-                      className="button secondary compact"
-                      disabled={globalBusy || candidateBusy(candidate.id)}
-                      title="Использует AI-настройки и лимиты выбранного канала"
-                      onClick={() => void enrichAI(candidate)}
-                    >
-                      ✨ AI
-                    </button>
-                    {canRewrite && (
-                      <button
-                        className="button secondary compact"
-                        disabled={globalBusy || candidateBusy(candidate.id)}
-                        title="Создать независимый AI rewrite; attribution добавит приложение"
-                        onClick={() => void rewriteAI(candidate)}
-                      >
-                        ✨ Rewrite
-                      </button>
-                    )}
-                    {canRewrite && (
-                      <button
-                        className="button secondary compact"
-                        disabled={globalBusy || candidateBusy(candidate.id)}
-                        title="Сгенерировать validated Rich PostDocument без автоматического применения"
-                        onClick={() => void rewriteStructuredAI(candidate)}
-                      >
-                        ✨ Rich
-                      </button>
-                    )}
-                    <button
-                      className="button primary compact"
-                      disabled={globalBusy || candidateBusy(candidate.id)}
-                      onClick={() => void acceptDraft(candidate)}
-                    >
-                      {rewritePreview?.kind === 'structured' ? 'В Rich черновик' : 'В черновик'}
-                    </button>
-                    <button
-                      className="button secondary compact"
-                      disabled={globalBusy || candidateBusy(candidate.id)}
-                      onClick={() => void dismiss(candidate)}
-                    >
-                      Скрыть
-                    </button>
                   </div>
                 </div>
                 <InlineStatus className="candidate-operation-status">
