@@ -104,6 +104,45 @@ def test_studio_assistant_runs_are_owner_scoped_bounded_and_draft_idempotent(mon
             app = create_studio_app(_config())
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://studio") as client:
+                catalog = await client.get(
+                    f"/api/studio/channels/{channel.id}/assistant/skills",
+                    headers=headers,
+                )
+                assert catalog.status_code == 200
+                skills = catalog.json()
+                assert [(row["skill_id"], row["version"]) for row in skills] == [
+                    ("attention_today", "1"),
+                    ("drafts_tomorrow", "1"),
+                ]
+                attention_skill, draft_skill = skills
+                assert attention_skill["capability_classes"] == ["read_only"]
+                assert attention_skill["resumable"] is False
+                assert attention_skill["approval_requirement"] == "none"
+                assert attention_skill["operator_input_schema"]["additionalProperties"] is False
+                assert draft_skill["capability_classes"] == ["draft_write"]
+                assert draft_skill["resumable"] is True
+                assert draft_skill["resume_policy"] == "explicit"
+                assert draft_skill["execution_limits"]["max_llm_calls"] == 1
+                assert draft_skill["execution_limits"]["max_seconds"] == 30.0
+                assert "memory/profile" in draft_skill["context_requirements"]
+
+                denied_catalog = await client.get(
+                    f"/api/studio/channels/{foreign.id}/assistant/skills",
+                    headers=headers,
+                )
+                assert denied_catalog.status_code == 404
+
+                forged_skill = await client.post(
+                    f"/api/studio/channels/{channel.id}/assistant/runs",
+                    json={
+                        "scenario": "attention_today",
+                        "skill_id": "unregistered",
+                        "skill_version": "999",
+                    },
+                    headers=headers,
+                )
+                assert forged_skill.status_code == 422
+
                 created = await client.post(
                     f"/api/studio/channels/{channel.id}/assistant/runs",
                     json={"scenario": "attention_today"},

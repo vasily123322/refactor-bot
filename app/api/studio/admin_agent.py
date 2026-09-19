@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -36,6 +36,11 @@ from app.services.admin_agent_approvals import (
     ApprovalStateConflict,
     AdminAgentApprovalService,
 )
+from app.services.admin_agent_skills import (
+    RESUME_NONE,
+    AdminAgentSkillSpec,
+    SKILL_REGISTRY,
+)
 
 
 router = APIRouter(prefix="/api/studio", tags=["assistant"])
@@ -60,6 +65,25 @@ class AssistantRunRequest(BaseModel):
         max_length=128,
         pattern=r"^[A-Za-z0-9._:-]+$",
     )
+
+
+class AssistantSkillResponse(BaseModel):
+    skill_id: str
+    version: str
+    scenario: Literal["attention_today", "drafts_tomorrow"]
+    display_title: str
+    description: str
+    category: str
+    operator_input_schema: dict[str, Any]
+    result_kind: str
+    capability_classes: list[str]
+    capability_summary: str
+    context_profile: str
+    context_requirements: str
+    resume_policy: str
+    resumable: bool
+    approval_requirement: str
+    execution_limits: dict[str, int | float]
 
 
 class AssistantResumeRequest(BaseModel):
@@ -149,6 +173,37 @@ async def _require_owned_channel(
     channel = await ChannelsRepo(session).get_by_id(int(channel_id))
     if channel is None or int(channel.owner_id) != int(client.id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel not found")
+
+
+def _plain_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _plain_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_plain_json(item) for item in value]
+    return value
+
+
+def _skill_response(spec: AdminAgentSkillSpec) -> AssistantSkillResponse:
+    return AssistantSkillResponse(
+        skill_id=spec.skill_id,
+        version=str(spec.version),
+        scenario=spec.scenario,
+        display_title=spec.display_title,
+        description=spec.description,
+        category=spec.category,
+        operator_input_schema=_plain_json(spec.operator_input_schema),
+        result_kind=spec.result_kind,
+        capability_classes=list(spec.allowed_capability_classes),
+        capability_summary=spec.capability_summary,
+        context_profile=spec.context_profile,
+        context_requirements=spec.context_requirements,
+        resume_policy=spec.resume_policy,
+        resumable=spec.resume_policy != RESUME_NONE,
+        approval_requirement=spec.approval_requirement,
+        execution_limits={
+            str(key): value for key, value in spec.execution_limits.items()
+        },
+    )
 
 
 def _event_response(row: AdminAgentEvent) -> AssistantEventResponse:
@@ -259,6 +314,19 @@ def _approval_response(row: AdminAgentApproval) -> AssistantApprovalResponse:
         executed_at=row.executed_at,
         created_at=row.created_at,
     )
+
+
+@router.get(
+    "/channels/{channel_id}/assistant/skills",
+    response_model=list[AssistantSkillResponse],
+)
+async def list_assistant_skills(
+    channel_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> list[AssistantSkillResponse]:
+    await _require_owned_channel(session, principal, channel_id)
+    return [_skill_response(spec) for spec in SKILL_REGISTRY.current_specs]
 
 
 @router.post(
