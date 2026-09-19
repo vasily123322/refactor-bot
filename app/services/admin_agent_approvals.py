@@ -657,10 +657,11 @@ class AdminAgentApprovalService:
 
         execution_key = approval.execution_key or _execution_key(approval)
         claim_token = _claim_token()
-        # Drop the read transaction before the compare-and-set. This matters on
-        # SQLite, where two concurrent readers upgrading to writers can otherwise
-        # contend even though the state predicate has a single logical winner.
-        await self.session.rollback()
+        # End the read-only transaction before the compare-and-set. This matters
+        # on SQLite, where two concurrent readers upgrading to writers can contend.
+        # There are no staged writes here, and project sessions use
+        # expire_on_commit=False, so request-scoped ORM identity remains usable.
+        await self.session.commit()
         transition = await self.session.execute(
             update(AdminAgentApproval)
             .where(
