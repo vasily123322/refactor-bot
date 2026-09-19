@@ -552,8 +552,25 @@ export const studioApi = {
       `/api/studio/channel-onboarding/${requestId}/cancel`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
-  content: (channelId: number) =>
-    request<ContentSummary[]>(`/api/studio/channels/${channelId}/content?limit=100`),
+  content: (
+    channelId: number,
+    options: {
+      limit?: number;
+      beforeUpdatedAt?: string;
+      beforeId?: number;
+    } = {},
+  ) => {
+    const query = new URLSearchParams({
+      limit: String(options.limit ?? 100),
+    });
+    if (options.beforeUpdatedAt !== undefined && options.beforeId !== undefined) {
+      query.set('before_updated_at', options.beforeUpdatedAt);
+      query.set('before_id', String(options.beforeId));
+    }
+    return request<ContentSummary[]>(
+      `/api/studio/channels/${channelId}/content?${query}`,
+    );
+  },
   contentItem: (channelId: number, contentId: number) =>
     request<ContentDetail>(`/api/studio/channels/${channelId}/content/${contentId}`),
   createContent: (channelId: number, document: PostDocument, title?: string) =>

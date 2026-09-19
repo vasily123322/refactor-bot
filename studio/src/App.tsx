@@ -13,6 +13,12 @@ import {
 } from './asyncControl';
 import { StudioApiError, studioApi } from './api';
 import { ChannelOnboardingControl } from './ChannelOnboardingControl';
+import {
+  CONTENT_HISTORY_PAGE_SIZE,
+  contentHistoryCursor,
+  mergeContentHistoryPage,
+  splitContentHistoryPage,
+} from './contentHistory';
 import { runComposerPreviewOnce } from './composerPreviewAction';
 import { DRAFT_AUTOSAVE_DELAY_MS, isCurrentDraftSave } from './draftAutosave';
 import {
@@ -173,6 +179,9 @@ export default function App() {
   const [selectedChannelId, setSelectedChannelId] = useState<number | null>(null);
   const [items, setItems] = useState<ContentSummary[]>([]);
   const [itemsLoadState, setItemsLoadState] = useState<ChannelLoadState | null>(null);
+  const [contentHasMore, setContentHasMore] = useState(false);
+  const [contentLoadingMore, setContentLoadingMore] = useState(false);
+  const [contentLoadMoreError, setContentLoadMoreError] = useState<string | null>(null);
   const [selected, setSelected] = useState<ContentDetail | null>(null);
   const [document, setDocument] = useState<PostDocument>(emptyTextDocument());
   const [previewMessageIds, setPreviewMessageIds] = useState<number[]>([]);
@@ -210,31 +219,79 @@ export default function App() {
   );
 
   const loadItems = useCallback(async (channelId: number): Promise<boolean> => {
-    const token = contentRequestOwnershipRef.current.begin(channelId);
+    const scopeKey = 'content-history:first';
+    const token = contentRequestOwnershipRef.current.begin(channelId, scopeKey);
     const isCurrent = () => contentRequestOwnershipRef.current.isCurrent(
       token,
       channelIdRef.current,
+      scopeKey,
     );
     const hasValidData = loadedItemsChannelRef.current === channelId;
+    if (isCurrent()) {
+      setContentLoadingMore(false);
+      setContentLoadMoreError(null);
+    }
     if (isCurrent() && !hasValidData) {
       setItemsLoadState({ channelId, phase: 'loading' });
     }
     try {
-      const rows = await studioApi.content(channelId);
+      const rows = await studioApi.content(channelId, {
+        limit: CONTENT_HISTORY_PAGE_SIZE + 1,
+      });
       if (!isCurrent()) return false;
+      const page = splitContentHistoryPage(rows);
       loadedItemsChannelRef.current = channelId;
-      setItems(rows);
+      setItems(page.items);
+      setContentHasMore(page.hasMore);
       setItemsLoadState({ channelId, phase: 'loaded' });
       return true;
     } catch (reason) {
       if (!isCurrent()) return false;
       if (loadedItemsChannelRef.current !== channelId) {
         setItems([]);
+        setContentHasMore(false);
         setItemsLoadState({ channelId, phase: 'error-without-valid-data' });
       }
       throw reason;
     }
   }, []);
+
+  const loadOlderItems = useCallback(async (): Promise<void> => {
+    const channelId = channelIdRef.current;
+    if (channelId === null || contentLoadingMore || !contentHasMore) return;
+
+    const cursor = contentHistoryCursor(items);
+    if (!cursor) {
+      setContentHasMore(false);
+      return;
+    }
+
+    const scopeKey = `content-history:older:${cursor.updatedAt}:${cursor.id}`;
+    const token = contentRequestOwnershipRef.current.begin(channelId, scopeKey);
+    const isCurrent = () => contentRequestOwnershipRef.current.isCurrent(
+      token,
+      channelIdRef.current,
+      scopeKey,
+    );
+
+    setContentLoadingMore(true);
+    setContentLoadMoreError(null);
+    try {
+      const rows = await studioApi.content(channelId, {
+        limit: CONTENT_HISTORY_PAGE_SIZE + 1,
+        beforeUpdatedAt: cursor.updatedAt,
+        beforeId: cursor.id,
+      });
+      if (!isCurrent()) return;
+      const page = splitContentHistoryPage(rows);
+      setItems((current) => mergeContentHistoryPage(current, page.items));
+      setContentHasMore(page.hasMore);
+    } catch (reason) {
+      if (isCurrent()) setContentLoadMoreError(errorMessage(reason));
+    } finally {
+      if (isCurrent()) setContentLoadingMore(false);
+    }
+  }, [contentHasMore, contentLoadingMore, items]);
 
   const runOperation = useCallback(async <T,>(
     key: string,
@@ -392,6 +449,9 @@ export default function App() {
       contentRequestOwnershipRef.current.invalidate();
       loadedItemsChannelRef.current = null;
       setItems([]);
+      setContentHasMore(false);
+      setContentLoadingMore(false);
+      setContentLoadMoreError(null);
       setItemsLoadState(null);
       return;
     }
@@ -399,6 +459,9 @@ export default function App() {
     setPreviewMessageIds([]);
     loadedItemsChannelRef.current = null;
     setItems([]);
+    setContentHasMore(false);
+    setContentLoadingMore(false);
+    setContentLoadMoreError(null);
     setItemsLoadState({ channelId: selectedChannelId, phase: 'loading' });
     void loadItems(selectedChannelId).catch((reason) => {
       if (channelIdRef.current === selectedChannelId) {
@@ -671,7 +734,13 @@ export default function App() {
                 <div className="panel-heading">
                   <div>
                     <h2>Публикации</h2>
-                    <small>{contentInitialLoading ? 'Загружаю Content domain…' : contentLoadFailed ? 'Content domain не загружен' : `${items.length} объектов в Content domain`}</small>
+                    <small>
+                      {contentInitialLoading
+                        ? 'Загружаю Content domain…'
+                        : contentLoadFailed
+                          ? 'Content domain не загружен'
+                          : `${items.length} загружено${contentHasMore ? ' · есть более старые' : ''}`}
+                    </small>
                   </div>
                 </div>
                 <AsyncRegion
@@ -713,6 +782,31 @@ export default function App() {
                       <span className={`status status-${item.status}`}>{item.status}</span>
                     </button>
                   ))}
+                  {(contentHasMore || contentLoadingMore || contentLoadMoreError) && (
+                    <div className="content-history-controls">
+                      {contentLoadMoreError && (
+                        <div className="content-history-error" role="alert">
+                          Не удалось загрузить старые публикации: {contentLoadMoreError}
+                        </div>
+                      )}
+                      {contentHasMore && (
+                        <button
+                          className="button secondary compact"
+                          onClick={() => void loadOlderItems()}
+                          disabled={contentLoadingMore}
+                        >
+                          {contentLoadingMore
+                            ? 'Загружаю старые…'
+                            : contentLoadMoreError
+                              ? 'Повторить загрузку'
+                              : 'Показать старые'}
+                        </button>
+                      )}
+                      {contentLoadingMore && (
+                        <InlineStatus>Загружаю более старые публикации…</InlineStatus>
+                      )}
+                    </div>
+                  )}
                 </AsyncRegion>
               </section>
 

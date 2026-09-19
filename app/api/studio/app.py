@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -188,12 +189,21 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
         session: SessionDep,
         status_filter: str | None = None,
         limit: int = 50,
+        before_updated_at: datetime | None = None,
+        before_id: int | None = None,
     ) -> list[ContentSummaryResponse]:
         await _owned_channel(session, principal, channel_id)
+        if (before_updated_at is None) != (before_id is None):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="before_updated_at and before_id must be provided together",
+            )
         rows = await ContentRepo(session).list_by_channel(
             channel_id,
             status=status_filter,
             limit=limit,
+            before_updated_at=before_updated_at,
+            before_id=before_id,
         )
         return [_content_summary(row) for row in rows]
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Mapping
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content import PostDocument, validate_native_document_capabilities
@@ -177,10 +178,25 @@ class ContentRepo:
         *,
         status: str | None = None,
         limit: int = 50,
+        before_updated_at: datetime | None = None,
+        before_id: int | None = None,
     ) -> list[ContentItem]:
+        if (before_updated_at is None) != (before_id is None):
+            raise ValueError("before_updated_at and before_id must be provided together")
+
         stmt = select(ContentItem).where(ContentItem.channel_id == int(channel_id))
         if status is not None:
             stmt = stmt.where(ContentItem.status == str(status))
+        if before_updated_at is not None and before_id is not None:
+            stmt = stmt.where(
+                or_(
+                    ContentItem.updated_at < before_updated_at,
+                    and_(
+                        ContentItem.updated_at == before_updated_at,
+                        ContentItem.id < int(before_id),
+                    ),
+                )
+            )
         stmt = stmt.order_by(ContentItem.updated_at.desc(), ContentItem.id.desc()).limit(
             max(1, min(int(limit), 200))
         )
