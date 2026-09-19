@@ -191,6 +191,7 @@ def test_admin_agent_approval_regression_suite_is_mandatory() -> None:
             "tests/test_admin_agent_approvals.py",
             "tests/test_studio_admin_agent_approval_api.py",
             "tests/test_admin_agent_resumable.py",
+            "tests/test_studio_admin_agent_resume_api.py",
         ],
         cwd=repo_root,
         env=os.environ.copy(),
