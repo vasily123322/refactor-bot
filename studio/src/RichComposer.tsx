@@ -437,12 +437,14 @@ export function RichComposer({
   const [assetFile, setAssetFile] = useState<File | null>(null);
   const [assetLabel, setAssetLabel] = useState('');
   const assetRequestOwnershipRef = useRef(new ChannelRequestOwnership());
+  const validAssetsChannelRef = useRef<number | null>(null);
   const channelIdRef = useRef<number | null>(channelId);
   channelIdRef.current = channelId;
 
   const loadAssets = useCallback(async () => {
     if (channelId === null) {
       assetRequestOwnershipRef.current.invalidate();
+      validAssetsChannelRef.current = null;
       setAssets([]);
       setAssetHasMore(false);
       setAssetLoadingMore(false);
@@ -451,6 +453,7 @@ export function RichComposer({
     }
 
     const scopeKey = 'media-assets:first';
+    const hasValidData = validAssetsChannelRef.current === channelId;
     const token = assetRequestOwnershipRef.current.begin(channelId, scopeKey);
     const isCurrent = () => assetRequestOwnershipRef.current.isCurrent(
       token,
@@ -460,12 +463,18 @@ export function RichComposer({
     setAssetError(null);
     setAssetLoadMoreError(null);
     setAssetLoadingMore(false);
+    if (!hasValidData) {
+      validAssetsChannelRef.current = null;
+      setAssets([]);
+      setAssetHasMore(false);
+    }
     try {
       const rows = await studioApi.mediaAssets(channelId, {
         limit: MEDIA_ASSET_HISTORY_PAGE_SIZE + 1,
       });
       if (!isCurrent()) return;
       const page = splitMediaAssetHistoryPage(rows);
+      validAssetsChannelRef.current = channelId;
       setAssets(page.items);
       setAssetHasMore(page.hasMore);
     } catch (error) {
@@ -557,6 +566,7 @@ export function RichComposer({
             storage_url: assetTransport === 'https' ? assetReference.trim() : null,
           });
       if (channelIdRef.current !== channelId) return;
+      validAssetsChannelRef.current = channelId;
       setAssets((current) => prependMediaAsset(current, created));
       setAssetReference('');
       setAssetFile(null);
