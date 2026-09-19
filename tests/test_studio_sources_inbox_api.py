@@ -67,7 +67,7 @@ class _FakeIngestion:
         )
 
 
-def test_sources_inbox_is_owner_scoped_and_candidates_can_be_dismissed(monkeypatch) -> None:
+def test_sources_inbox_is_owner_scoped_and_candidates_can_be_dismissed_and_restored(monkeypatch) -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         try:
@@ -152,6 +152,44 @@ def test_sources_inbox_is_owner_scoped_and_candidates_can_be_dismissed(monkeypat
                 )
                 assert empty.status_code == 200
                 assert empty.json() == []
+
+                dismissed_rows = await client.get(
+                    f"/api/studio/channels/{channel.id}/candidates",
+                    headers=headers,
+                    params={"status_filter": "dismissed"},
+                )
+                assert dismissed_rows.status_code == 200
+                assert [row["id"] for row in dismissed_rows.json()] == [candidate.id]
+
+                foreign_restore = await client.post(
+                    f"/api/studio/channels/{foreign.id}/candidates/{candidate.id}/restore",
+                    headers=headers,
+                    json={},
+                )
+                assert foreign_restore.status_code == 404
+
+                restored = await client.post(
+                    f"/api/studio/channels/{channel.id}/candidates/{candidate.id}/restore",
+                    headers=headers,
+                    json={},
+                )
+                assert restored.status_code == 200
+                assert restored.json()["status"] == "new"
+
+                restored_rows = await client.get(
+                    f"/api/studio/channels/{channel.id}/candidates",
+                    headers=headers,
+                )
+                assert restored_rows.status_code == 200
+                assert [row["id"] for row in restored_rows.json()] == [candidate.id]
+
+                dismissed_empty = await client.get(
+                    f"/api/studio/channels/{channel.id}/candidates",
+                    headers=headers,
+                    params={"status_filter": "dismissed"},
+                )
+                assert dismissed_empty.status_code == 200
+                assert dismissed_empty.json() == []
         finally:
             await engine.dispose()
 
