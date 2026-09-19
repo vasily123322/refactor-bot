@@ -100,6 +100,7 @@ jobs:
             tests/test_studio_candidate_rewrite_api.py \
             tests/test_studio_channel_onboarding_request_concurrency.py \
             tests/test_studio_channel_onboarding_requests.py \
+            tests/test_studio_api.py \
             tests/test_studio_sources_inbox_api.py \
             tests/test_studio_content_history_api.py \
             tests/test_suggested_post_actions.py \
