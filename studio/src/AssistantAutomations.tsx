@@ -9,6 +9,12 @@ import type {
 } from './api';
 import { AsyncRegion, SkeletonBlock } from './AsyncUI';
 import {
+  AUTOMATION_HISTORY_PAGE_SIZE,
+  automationHistoryCursor,
+  mergeAutomationHistoryPage,
+  splitAutomationHistoryPage,
+} from './automationRunHistory';
+import {
   ChannelRequestOwnership,
   ExclusiveOperationLock,
   resolveChannelDataView,
@@ -224,6 +230,9 @@ export function AssistantAutomations({
   const [historyRows, setHistoryRows] = useState<AssistantAutomationRunSummaryView[]>([]);
   const [historyState, setHistoryState] = useState<ScopedLoadState | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
+  const [historyLoadMoreError, setHistoryLoadMoreError] = useState<string | null>(null);
 
   const channelIdRef = useRef(channel.id);
   const loadOwnershipRef = useRef(new ChannelRequestOwnership());
@@ -307,6 +316,9 @@ export function AssistantAutomations({
     setHistoryRows([]);
     setHistoryState(null);
     setHistoryError(null);
+    setHistoryHasMore(false);
+    setHistoryLoadingMore(false);
+    setHistoryLoadMoreError(null);
     setSelectedSkillKey('');
     setSeriesBrief('');
     setSeriesPostCount(3);
@@ -456,16 +468,23 @@ export function AssistantAutomations({
     setHistoryAutomationId(automationId);
     setHistoryRows([]);
     setHistoryError(null);
+    setHistoryHasMore(false);
+    setHistoryLoadingMore(false);
+    setHistoryLoadMoreError(null);
     setHistoryState({ channelId, scopeKey, phase: 'loading' });
     const token = historyOwnershipRef.current.begin(channelId, scopeKey);
     try {
-      const rows = await studioApi.assistantAutomationRuns(channelId, automationId, 20);
+      const rows = await studioApi.assistantAutomationRuns(channelId, automationId, {
+        limit: AUTOMATION_HISTORY_PAGE_SIZE + 1,
+      });
       if (!historyOwnershipRef.current.isCurrent(
         token,
         channelIdRef.current,
         historyScopeRef.current,
       )) return;
-      setHistoryRows(rows);
+      const page = splitAutomationHistoryPage(rows);
+      setHistoryRows(page.items);
+      setHistoryHasMore(page.hasMore);
       setHistoryState({ channelId, scopeKey, phase: 'loaded' });
     } catch (reason) {
       if (!historyOwnershipRef.current.isCurrent(
@@ -474,10 +493,62 @@ export function AssistantAutomations({
         historyScopeRef.current,
       )) return;
       setHistoryRows([]);
+      setHistoryHasMore(false);
       setHistoryState({ channelId, scopeKey, phase: 'error-without-valid-data' });
       setHistoryError(automationErrorMessage(reason));
     }
   }, []);
+
+  const loadOlderHistory = useCallback(async (automationId: number) => {
+    const channelId = channelIdRef.current;
+    const scopeKey = String(automationId);
+    if (
+      historyScopeRef.current !== scopeKey
+      || historyLoadingMore
+      || !historyHasMore
+    ) return;
+
+    const cursor = automationHistoryCursor(historyRows);
+    if (!cursor) {
+      setHistoryHasMore(false);
+      return;
+    }
+
+    const token = historyOwnershipRef.current.begin(channelId, scopeKey);
+    setHistoryLoadingMore(true);
+    setHistoryLoadMoreError(null);
+    try {
+      const rows = await studioApi.assistantAutomationRuns(channelId, automationId, {
+        limit: AUTOMATION_HISTORY_PAGE_SIZE + 1,
+        beforeScheduledFor: cursor.scheduledFor,
+        beforeId: cursor.id,
+      });
+      if (!historyOwnershipRef.current.isCurrent(
+        token,
+        channelIdRef.current,
+        historyScopeRef.current,
+      )) return;
+      const page = splitAutomationHistoryPage(rows);
+      setHistoryRows((current) => mergeAutomationHistoryPage(current, page.items));
+      setHistoryHasMore(page.hasMore);
+    } catch (reason) {
+      if (historyOwnershipRef.current.isCurrent(
+        token,
+        channelIdRef.current,
+        historyScopeRef.current,
+      )) {
+        setHistoryLoadMoreError(automationErrorMessage(reason));
+      }
+    } finally {
+      if (historyOwnershipRef.current.isCurrent(
+        token,
+        channelIdRef.current,
+        historyScopeRef.current,
+      )) {
+        setHistoryLoadingMore(false);
+      }
+    }
+  }, [historyHasMore, historyLoadingMore, historyRows]);
 
   const resumeLatest = useCallback(async (automation: AssistantAutomationView) => {
     const run = automation.latest_run;
@@ -811,6 +882,9 @@ export function AssistantAutomations({
                         setHistoryRows([]);
                         setHistoryState(null);
                         setHistoryError(null);
+                        setHistoryHasMore(false);
+                        setHistoryLoadingMore(false);
+                        setHistoryLoadMoreError(null);
                       } else {
                         void loadHistory(automation.id);
                       }
@@ -850,6 +924,24 @@ export function AssistantAutomations({
                         </small>
                       </div>
                     ))}
+                    {!historyLoading && !historyFailed && historyLoadMoreError && (
+                      <small role="alert">
+                        Не удалось загрузить старые запуски: {historyLoadMoreError}
+                      </small>
+                    )}
+                    {!historyLoading && !historyFailed && historyHasMore && (
+                      <button
+                        className="button secondary"
+                        disabled={historyLoadingMore}
+                        onClick={() => void loadOlderHistory(automation.id)}
+                      >
+                        {historyLoadingMore
+                          ? 'Загружаю старые…'
+                          : historyLoadMoreError
+                            ? 'Повторить загрузку'
+                            : 'Показать старые'}
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
