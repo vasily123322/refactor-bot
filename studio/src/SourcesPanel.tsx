@@ -2,6 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { StudioApiError, studioApi, type CreateSourceInput } from './api';
+import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
+import {
+  ChannelRequestOwnership,
+  resolveChannelDataView,
+  type ChannelLoadState,
+} from './asyncControl';
 import {
   buildSourceCreateInput,
   CHANNEL_DM_SOURCE_KIND,
@@ -54,8 +60,10 @@ function sourceKindLabel(kind: string): string {
 
 export function SourcesPanel({ channel }: { channel: Channel | null }) {
   const [sources, setSources] = useState<SourceConnectorView[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadState, setLoadState] = useState<ChannelLoadState | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ channelId: number; message: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [kind, setKind] = useState<SourceCreateKindPreference>('rss');
@@ -64,6 +72,10 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
   const [reusePolicy, setReusePolicy] = useState<CreateSourceInput['reuse_policy']>('reference_only');
   const [citationEnabled, setCitationEnabled] = useState(true);
   const kindTouchedRef = useRef(false);
+  const requestOwnershipRef = useRef(new ChannelRequestOwnership());
+  const validDataChannelRef = useRef<number | null>(null);
+  const channelIdRef = useRef<number | null>(channel?.id ?? null);
+  channelIdRef.current = channel?.id ?? null;
 
   const closeCreateSourceForm = useCallback(() => {
     setShowForm(false);
@@ -71,18 +83,53 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
 
   useTelegramSourceCreateSecondaryButton(showForm, closeCreateSourceForm);
 
-  const load = useCallback(async () => {
-    if (!channel) {
+  const load = useCallback(async (): Promise<boolean> => {
+    const channelId = channelIdRef.current;
+    if (channelId === null) {
+      requestOwnershipRef.current.invalidate();
+      validDataChannelRef.current = null;
       setSources([]);
-      return;
+      setLoadState(null);
+      setRefreshing(false);
+      setError(null);
+      return false;
     }
-    setSources(await studioApi.sources(channel.id));
-  }, [channel]);
+
+    const token = requestOwnershipRef.current.begin(channelId);
+    const hasValidData = validDataChannelRef.current === channelId;
+    const isCurrent = () => requestOwnershipRef.current.isCurrent(token, channelIdRef.current);
+
+    setRefreshing(true);
+    setError(null);
+    if (!hasValidData) {
+      validDataChannelRef.current = null;
+      setSources([]);
+      setLoadState({ channelId, phase: 'loading' });
+    }
+
+    try {
+      const rows = await studioApi.sources(channelId);
+      if (!isCurrent()) return false;
+      validDataChannelRef.current = channelId;
+      setSources(rows);
+      setLoadState({ channelId, phase: 'loaded' });
+      return true;
+    } catch (reason) {
+      if (!isCurrent()) return false;
+      if (validDataChannelRef.current !== channelId) {
+        setSources([]);
+        setLoadState({ channelId, phase: 'error-without-valid-data' });
+      }
+      setError({ channelId, message: errorMessage(reason) });
+      return false;
+    } finally {
+      if (isCurrent()) setRefreshing(false);
+    }
+  }, [channel?.id]);
 
   useEffect(() => {
-    setError(null);
     setNotice(null);
-    void load().catch((reason) => setError(errorMessage(reason)));
+    void load();
   }, [load]);
 
   useEffect(() => {
@@ -110,12 +157,15 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
   );
 
   const run = async (key: string, action: () => Promise<void>) => {
+    const operationChannelId = channelIdRef.current;
     setBusyId(key);
     setError(null);
     try {
       await action();
     } catch (reason) {
-      setError(errorMessage(reason));
+      if (operationChannelId !== null && channelIdRef.current === operationChannelId) {
+        setError({ channelId: operationChannelId, message: errorMessage(reason) });
+      }
     } finally {
       setBusyId(null);
     }
@@ -124,6 +174,12 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
   const channelDMSourceExists = hasChannelDMSource(sources.map((source) => source.kind));
   const sourceValueReady = !sourceCreateNeedsValue(kind) || Boolean(value.trim());
   const duplicateChannelDMSource = kind === CHANNEL_DM_SOURCE_KIND && channelDMSourceExists;
+  const sourceDataView = channel
+    ? resolveChannelDataView(loadState, channel.id, sources.length)
+    : null;
+  const initialLoading = sourceDataView === 'loading';
+  const loadFailedWithoutValidData = sourceDataView === 'error-without-valid-data';
+  const hasValidData = sourceDataView === 'loaded-data' || sourceDataView === 'loaded-empty';
 
   const createSource = async (event: FormEvent) => {
     event.preventDefault();
@@ -197,12 +253,24 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
           <p>Connectors и ingestion pipeline. Нормализованные материалы после ingest появляются в отдельном Inbox.</p>
         </div>
         <div className="top-actions">
-          <button className="button secondary" onClick={() => void load()} disabled={busyId !== null}>↻ Обновить</button>
+          <button
+            className="button secondary"
+            onClick={() => void load()}
+            disabled={refreshing || busyId !== null}
+          >
+            ↻ Обновить
+          </button>
           <button className="button primary" onClick={() => setShowForm((current) => !current)}>+ Источник</button>
+          {refreshing && hasValidData && <InlineStatus>Обновляю источники…</InlineStatus>}
         </div>
       </header>
 
-      {error && <div className="banner error" role="alert">{error}<button onClick={() => setError(null)}>×</button></div>}
+      {error?.channelId === channel.id && (
+        <div className="banner error" role="alert">
+          {error.message}
+          <button aria-label="Закрыть ошибку" onClick={() => setError(null)}>×</button>
+        </div>
+      )}
       {notice && <div className="banner success">{notice}<button onClick={() => setNotice(null)}>×</button></div>}
 
       <SourceWorkerHealthCard />
@@ -284,10 +352,31 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
 
       <section className="sources-connectors-card sources-connectors-card-full">
         <div className="panel-heading">
-          <div><h2>Connectors</h2><small>{sources.length} подключено</small></div>
+          <div>
+            <h2>Connectors</h2>
+            <small>{initialLoading ? 'Загружаю…' : `${sources.length} подключено`}</small>
+          </div>
         </div>
-        <div className="source-list">
-          {sources.length === 0 && <div className="empty-state">Источников пока нет.</div>}
+        <AsyncRegion
+          className="source-list"
+          loading={initialLoading}
+          error={loadFailedWithoutValidData}
+          empty={sourceDataView === 'loaded-empty'}
+          loadingLabel="Загружаю источники…"
+          loadingFallback={
+            <>
+              {[0, 1, 2].map((index) => (
+                <article className="source-card ai-card-skeleton" key={index}>
+                  <SkeletonBlock height={18} width="28%" radius={999} />
+                  <SkeletonBlock height={14} width={index % 2 ? '72%' : '84%'} />
+                  <SkeletonBlock height={10} width="58%" />
+                </article>
+              ))}
+            </>
+          }
+          emptyFallback={<div className="empty-state">Источников пока нет.</div>}
+          errorFallback={<div className="empty-state">Источники не загружены. Повторите попытку.</div>}
+        >
           {sources.map((source) => {
             const canIngest =
               source.enabled &&
@@ -383,7 +472,7 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
               </article>
             );
           })}
-        </div>
+        </AsyncRegion>
       </section>
     </div>
   );

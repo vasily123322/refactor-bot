@@ -5,6 +5,12 @@ export type ChannelLoadState = {
   phase: ChannelLoadPhase;
 };
 
+export type ScopedLoadState = {
+  channelId: number;
+  scopeKey: string;
+  phase: ChannelLoadPhase;
+};
+
 export type ChannelDataView =
   | 'loading'
   | 'loaded-empty'
@@ -21,25 +27,52 @@ export function resolveChannelDataView(
   return itemCount === 0 ? 'loaded-empty' : 'loaded-data';
 }
 
+export function resolveScopedDataView(
+  state: ScopedLoadState | null,
+  channelId: number,
+  scopeKey: string,
+  itemCount: number,
+): ChannelDataView {
+  if (
+    !state
+    || state.channelId !== channelId
+    || state.scopeKey !== scopeKey
+    || state.phase === 'loading'
+  ) {
+    return 'loading';
+  }
+  if (state.phase === 'error-without-valid-data') return 'error-without-valid-data';
+  return itemCount === 0 ? 'loaded-empty' : 'loaded-data';
+}
+
 export type ChannelRequestToken = Readonly<{
   channelId: number;
+  scopeKey: string | null;
   epoch: number;
 }>;
 
 export class ChannelRequestOwnership {
   private epoch = 0;
 
-  begin(channelId: number): ChannelRequestToken {
+  begin(channelId: number, scopeKey: string | null = null): ChannelRequestToken {
     this.epoch += 1;
-    return { channelId, epoch: this.epoch };
+    return { channelId, scopeKey, epoch: this.epoch };
   }
 
   invalidate(): void {
     this.epoch += 1;
   }
 
-  isCurrent(token: ChannelRequestToken, currentChannelId: number | null): boolean {
-    return token.epoch === this.epoch && token.channelId === currentChannelId;
+  isCurrent(
+    token: ChannelRequestToken,
+    currentChannelId: number | null,
+    currentScopeKey: string | null = token.scopeKey,
+  ): boolean {
+    return (
+      token.epoch === this.epoch
+      && token.channelId === currentChannelId
+      && token.scopeKey === currentScopeKey
+    );
   }
 }
 

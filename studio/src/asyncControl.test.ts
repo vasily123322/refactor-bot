@@ -4,6 +4,7 @@ import {
   ChannelRequestOwnership,
   ExclusiveOperationLock,
   resolveChannelDataView,
+  resolveScopedDataView,
   runExclusiveOperation,
   type ChannelLoadState,
 } from './asyncControl';
@@ -42,6 +43,44 @@ describe('channel async load ownership', () => {
     const requestB = ownership.begin(20);
     expect(ownership.isCurrent(requestA, 20)).toBe(false);
     expect(ownership.isCurrent(requestB, 20)).toBe(true);
+  });
+
+  it('Planner stale response is ignored after channel or week ownership changes', () => {
+    const ownership = new ChannelRequestOwnership();
+    const oldWeek = ownership.begin(10, '2026-09-14');
+    const newWeek = ownership.begin(10, '2026-09-21');
+
+    expect(ownership.isCurrent(oldWeek, 10, '2026-09-21')).toBe(false);
+    expect(ownership.isCurrent(newWeek, 10, '2026-09-21')).toBe(true);
+
+    const nextChannel = ownership.begin(20, '2026-09-21');
+    expect(ownership.isCurrent(newWeek, 20, '2026-09-21')).toBe(false);
+    expect(ownership.isCurrent(nextChannel, 20, '2026-09-21')).toBe(true);
+  });
+
+  it('Planner zero rows stay loading until the current scope has loaded', () => {
+    expect(resolveScopedDataView(null, 10, '2026-09-21', 0)).toBe('loading');
+    expect(resolveScopedDataView(
+      { channelId: 10, scopeKey: '2026-09-14', phase: 'loaded' },
+      10,
+      '2026-09-21',
+      0,
+    )).toBe('loading');
+    expect(resolveScopedDataView(
+      { channelId: 10, scopeKey: '2026-09-21', phase: 'loaded' },
+      10,
+      '2026-09-21',
+      0,
+    )).toBe('loaded-empty');
+  });
+
+  it('Sources stale channel response cannot overwrite the current channel', () => {
+    const ownership = new ChannelRequestOwnership();
+    const requestA = ownership.begin(1);
+    const requestB = ownership.begin(2);
+
+    expect(ownership.isCurrent(requestA, 2)).toBe(false);
+    expect(ownership.isCurrent(requestB, 2)).toBe(true);
   });
 
   it('App content load error is distinct from a real loaded-empty list', () => {
@@ -93,6 +132,34 @@ describe('App exclusive operation ownership', () => {
     expect(lock.activeKey()).toBe('publish');
     releaseSave();
     await publish;
+  });
+
+  it('Planner reschedule/cancel share one schedule lock without blocking another schedule', async () => {
+    const scheduleOne = new ExclusiveOperationLock();
+    const scheduleTwo = new ExclusiveOperationLock();
+    let releaseMove!: () => void;
+    const moveGate = new Promise<void>((resolve) => { releaseMove = resolve; });
+    let cancellations = 0;
+    let unrelatedOperations = 0;
+
+    const reschedule = runExclusiveOperation(scheduleOne, 'reschedule:1', async () => {
+      await moveGate;
+    });
+    const conflictingCancel = await runExclusiveOperation(scheduleOne, 'cancel:1', async () => {
+      cancellations += 1;
+    });
+    const unrelatedCancel = await runExclusiveOperation(scheduleTwo, 'cancel:2', async () => {
+      unrelatedOperations += 1;
+    });
+
+    expect(conflictingCancel.started).toBe(false);
+    expect(cancellations).toBe(0);
+    expect(unrelatedCancel.started).toBe(true);
+    expect(unrelatedOperations).toBe(1);
+
+    releaseMove();
+    await reschedule;
+    expect(scheduleOne.isLocked()).toBe(false);
   });
 
   it('does not release a newer holder when an old token is released again', () => {
