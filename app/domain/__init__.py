@@ -5,6 +5,7 @@ Import ORM modules here so SQLAlchemy metadata is complete before startup
 still import concrete models from their own modules rather than from this registry.
 """
 
+from app.domain import admin_agent as _admin_agent_models  # noqa: F401
 from app.domain import ai_auto_task as _ai_auto_task_models  # noqa: F401
 from app.domain import channel_dm_reply as _channel_dm_reply_models  # noqa: F401
 from app.domain import channel_dm_reply_intent as _channel_dm_reply_intent_models  # noqa: F401
