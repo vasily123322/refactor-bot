@@ -402,6 +402,62 @@ export type AssistantApprovalView = {
   created_at: string | null;
 };
 
+
+export type AssistantSeriesApprovalState =
+  | 'pending_review'
+  | 'executing'
+  | 'executed'
+  | 'rejected'
+  | 'stale'
+  | 'partial_failed'
+  | 'failed';
+
+export type AssistantSeriesApprovalSlotInput = {
+  ordinal: number;
+  local_date: string;
+  local_time: string;
+};
+
+export type AssistantSeriesApprovalItemView = {
+  id: number;
+  ordinal: number;
+  content_item_id: number;
+  captured_content_revision: number;
+  content_title: string;
+  local_date: string;
+  local_time: string;
+  resolved_scheduled_at: string;
+  item_fingerprint: string;
+  execution_key: string;
+  state: string;
+  schedule_entry_id: number | null;
+  publication_id: number | null;
+  failure_reason: string | null;
+  execution_started_at: string | null;
+  executed_at: string | null;
+};
+
+export type AssistantSeriesApprovalView = {
+  id: number;
+  channel_id: number;
+  source_run_id: number;
+  action_type: 'schedule_content_series' | string;
+  state: AssistantSeriesApprovalState | string;
+  request_id: string;
+  timezone: string;
+  item_count: number;
+  series_title: string;
+  source_plan_fingerprint: string;
+  action_fingerprint: string;
+  execution_key: string;
+  reviewer_tg_user_id: number | null;
+  failure_reason: string | null;
+  reviewed_at: string | null;
+  executed_at: string | null;
+  created_at: string | null;
+  items: AssistantSeriesApprovalItemView[];
+};
+
 export const studioApi = {
   me: () => request<StudioUser>('/api/studio/me'),
   channels: () => request<Channel[]>('/api/studio/channels'),
@@ -623,6 +679,37 @@ export const studioApi = {
   rejectAssistantApproval: (channelId: number, approvalId: number) =>
     request<AssistantApprovalView>(
       `/api/studio/channels/${channelId}/assistant/approvals/${approvalId}/reject`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  assistantSeriesApprovals: (channelId: number, limit = 50) =>
+    request<AssistantSeriesApprovalView[]>(
+      `/api/studio/channels/${channelId}/assistant/series-approvals?limit=${encodeURIComponent(String(limit))}`,
+    ),
+  createAssistantSeriesApproval: (
+    channelId: number,
+    sourceRunId: number,
+    slots: AssistantSeriesApprovalSlotInput[],
+    requestId: string,
+  ) =>
+    request<AssistantSeriesApprovalView>(
+      `/api/studio/channels/${channelId}/assistant/series-approvals`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          source_run_id: sourceRunId,
+          request_id: requestId,
+          slots,
+        }),
+      },
+    ),
+  approveAssistantSeriesApproval: (channelId: number, batchId: number) =>
+    request<AssistantSeriesApprovalView>(
+      `/api/studio/channels/${channelId}/assistant/series-approvals/${batchId}/approve`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  rejectAssistantSeriesApproval: (channelId: number, batchId: number) =>
+    request<AssistantSeriesApprovalView>(
+      `/api/studio/channels/${channelId}/assistant/series-approvals/${batchId}/reject`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
   aiActivity: (channelId: number, limit = 50) =>

@@ -305,3 +305,112 @@
   outline: 2px solid currentColor;
   outline-offset: 2px;
 }
+
+
+.assistant-series-scheduling,
+.assistant-series-proposal-form,
+.assistant-series-review-items {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.assistant-series-scheduling {
+  padding-top: 4px;
+}
+
+.assistant-series-scheduling-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.assistant-series-scheduling-heading h3 {
+  margin: 0 0 4px;
+}
+
+.assistant-series-review-card {
+  overflow: hidden;
+}
+
+.assistant-series-review-items,
+.assistant-series-slot-grid {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.assistant-series-review-item,
+.assistant-series-slot {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border, rgba(15, 23, 42, 0.1));
+  border-radius: 9px;
+}
+
+.assistant-series-review-item small,
+.assistant-series-slot legend {
+  overflow-wrap: anywhere;
+}
+
+.assistant-series-slot legend {
+  padding: 0 4px;
+  font-weight: 600;
+}
+
+.assistant-series-slot label {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.assistant-series-slot input[type='date'],
+.assistant-series-slot input[type='time'] {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border, rgba(15, 23, 42, 0.16));
+  border-radius: 8px;
+  background: var(--panel, #fff);
+  color: inherit;
+  font: inherit;
+}
+
+.assistant-series-slot input[type='date']:focus-visible,
+.assistant-series-slot input[type='time']:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.assistant-approval-status-partial_failed {
+  font-weight: 700;
+}
+
+@media (min-width: 721px) {
+  .assistant-series-slot {
+    grid-template-columns: minmax(0, 1fr) minmax(150px, 0.35fr) minmax(130px, 0.3fr);
+    align-items: end;
+  }
+
+  .assistant-series-slot legend {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 720px) {
+  .assistant-series-scheduling-heading,
+  .assistant-series-review-item .assistant-item-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .assistant-series-slot-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -13,6 +13,7 @@ from app.api.studio.auth import StudioPrincipal, require_studio_principal
 from app.core.db import AsyncSessionLocal
 from app.domain.admin_agent import (
     AdminAgentApproval,
+    AdminAgentApprovalBatch,
     AdminAgentEvent,
     AdminAgentRun,
     AdminAgentRunArtifact,
@@ -39,6 +40,14 @@ from app.services.admin_agent_approvals import (
     ApprovalInputError,
     ApprovalStateConflict,
     AdminAgentApprovalService,
+)
+from app.services.admin_agent_series_approvals import (
+    ACTION_SCHEDULE_CONTENT_SERIES,
+    AdminAgentSeriesApprovalService,
+    SeriesApprovalExecutionError,
+    SeriesApprovalIdempotencyConflict,
+    SeriesApprovalInputError,
+    SeriesApprovalStateConflict,
 )
 from app.services.admin_agent_skills import (
     RESUME_NONE,
@@ -140,6 +149,70 @@ class AssistantApprovalCreateRequest(BaseModel):
 
 class AssistantApprovalDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class AssistantSeriesApprovalSlot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ordinal: int = Field(ge=1, le=8, strict=True)
+    local_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    local_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+
+
+class AssistantSeriesApprovalCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_run_id: int = Field(gt=0, strict=True)
+    request_id: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    slots: list[AssistantSeriesApprovalSlot] = Field(min_length=2, max_length=8)
+
+
+class AssistantSeriesApprovalDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class AssistantSeriesApprovalItemResponse(BaseModel):
+    id: int
+    ordinal: int
+    content_item_id: int
+    captured_content_revision: int
+    content_title: str
+    local_date: str
+    local_time: str
+    resolved_scheduled_at: datetime
+    item_fingerprint: str
+    execution_key: str
+    state: str
+    schedule_entry_id: int | None
+    publication_id: int | None
+    failure_reason: str | None
+    execution_started_at: datetime | None
+    executed_at: datetime | None
+
+
+class AssistantSeriesApprovalResponse(BaseModel):
+    id: int
+    channel_id: int
+    source_run_id: int
+    action_type: str
+    state: str
+    request_id: str
+    timezone: str
+    item_count: int
+    series_title: str
+    source_plan_fingerprint: str
+    action_fingerprint: str
+    execution_key: str
+    reviewer_tg_user_id: int | None
+    failure_reason: str | None
+    reviewed_at: datetime | None
+    executed_at: datetime | None
+    created_at: datetime | None
+    items: list[AssistantSeriesApprovalItemResponse]
 
 
 class AssistantApprovalResponse(BaseModel):
@@ -367,6 +440,65 @@ def _approval_response(row: AdminAgentApproval) -> AssistantApprovalResponse:
     )
 
 
+async def _series_approval_response(
+    session: AsyncSession,
+    row: AdminAgentApprovalBatch,
+) -> AssistantSeriesApprovalResponse:
+    item_rows = await AdminAgentSeriesApprovalService(session).items_for_batch(int(row.id))
+    items = [
+        AssistantSeriesApprovalItemResponse(
+            id=int(item.id),
+            ordinal=int(item.ordinal),
+            content_item_id=int(item.content_item_id),
+            captured_content_revision=int(item.captured_content_revision),
+            content_title=str(item.content_title),
+            local_date=item.local_date.isoformat(),
+            local_time=str(item.local_time),
+            resolved_scheduled_at=item.resolved_scheduled_at,
+            item_fingerprint=str(item.item_fingerprint),
+            execution_key=str(item.execution_key),
+            state=str(item.state),
+            schedule_entry_id=(
+                int(item.schedule_entry_id)
+                if item.schedule_entry_id is not None
+                else None
+            ),
+            publication_id=(
+                int(item.publication_id) if item.publication_id is not None else None
+            ),
+            failure_reason=item.failure_reason,
+            execution_started_at=item.execution_started_at,
+            executed_at=item.executed_at,
+        )
+        for item in item_rows
+    ]
+    return AssistantSeriesApprovalResponse(
+        id=int(row.id),
+        channel_id=int(row.channel_id),
+        source_run_id=int(row.source_run_id),
+        action_type=str(row.action_type),
+        state=str(row.state),
+        request_id=str(row.request_id),
+        timezone=str(row.timezone),
+        item_count=int(row.item_count),
+        series_title=str(row.series_title),
+        source_plan_fingerprint=str(row.source_plan_fingerprint),
+        action_fingerprint=str(row.action_fingerprint),
+        execution_key=str(row.execution_key),
+        reviewer_tg_user_id=(
+            int(row.reviewer_tg_user_id)
+            if row.reviewer_tg_user_id is not None
+            else None
+        ),
+        failure_reason=row.failure_reason,
+        reviewed_at=row.reviewed_at,
+        executed_at=row.executed_at,
+        created_at=row.created_at,
+        items=items,
+    )
+
+
+
 @router.get(
     "/channels/{channel_id}/assistant/skills",
     response_model=list[AssistantSkillResponse],
@@ -499,6 +631,136 @@ async def reject_assistant_approval(
     if row is None:
         raise HTTPException(status_code=404, detail="Approval not found")
     return _approval_response(row)
+
+
+@router.post(
+    "/channels/{channel_id}/assistant/series-approvals",
+    response_model=AssistantSeriesApprovalResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_assistant_series_approval(
+    channel_id: int,
+    request: AssistantSeriesApprovalCreateRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> AssistantSeriesApprovalResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    try:
+        row = await AdminAgentSeriesApprovalService(session).create(
+            owner_tg_user_id=principal.tg_user_id,
+            channel_id=channel_id,
+            source_run_id=request.source_run_id,
+            request_id=request.request_id,
+            slots=[
+                {
+                    "ordinal": slot.ordinal,
+                    "local_date": slot.local_date,
+                    "local_time": slot.local_time,
+                }
+                for slot in request.slots
+            ],
+        )
+    except SeriesApprovalInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SeriesApprovalIdempotencyConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if str(row.action_type) != ACTION_SCHEDULE_CONTENT_SERIES:
+        raise HTTPException(status_code=409, detail="Unsupported series approval action")
+    return await _series_approval_response(session, row)
+
+
+@router.get(
+    "/channels/{channel_id}/assistant/series-approvals",
+    response_model=list[AssistantSeriesApprovalResponse],
+)
+async def list_assistant_series_approvals(
+    channel_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=50)] = 50,
+) -> list[AssistantSeriesApprovalResponse]:
+    await _require_owned_channel(session, principal, channel_id)
+    rows = await AdminAgentSeriesApprovalService(session).list(
+        owner_tg_user_id=principal.tg_user_id,
+        channel_id=channel_id,
+        limit=limit,
+    )
+    return [await _series_approval_response(session, row) for row in rows]
+
+
+@router.get(
+    "/channels/{channel_id}/assistant/series-approvals/{batch_id}",
+    response_model=AssistantSeriesApprovalResponse,
+)
+async def get_assistant_series_approval(
+    channel_id: int,
+    batch_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> AssistantSeriesApprovalResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    row = await AdminAgentSeriesApprovalService(session).get(
+        batch_id=batch_id,
+        owner_tg_user_id=principal.tg_user_id,
+        channel_id=channel_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Series approval not found")
+    return await _series_approval_response(session, row)
+
+
+@router.post(
+    "/channels/{channel_id}/assistant/series-approvals/{batch_id}/approve",
+    response_model=AssistantSeriesApprovalResponse,
+)
+async def approve_assistant_series_approval(
+    channel_id: int,
+    batch_id: int,
+    _request: AssistantSeriesApprovalDecisionRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> AssistantSeriesApprovalResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    try:
+        row = await AdminAgentSeriesApprovalService(session).approve(
+            batch_id=batch_id,
+            owner_tg_user_id=principal.tg_user_id,
+            channel_id=channel_id,
+            reviewer_tg_user_id=principal.tg_user_id,
+        )
+    except SeriesApprovalStateConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SeriesApprovalExecutionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="Series approval not found")
+    return await _series_approval_response(session, row)
+
+
+@router.post(
+    "/channels/{channel_id}/assistant/series-approvals/{batch_id}/reject",
+    response_model=AssistantSeriesApprovalResponse,
+)
+async def reject_assistant_series_approval(
+    channel_id: int,
+    batch_id: int,
+    _request: AssistantSeriesApprovalDecisionRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> AssistantSeriesApprovalResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    try:
+        row = await AdminAgentSeriesApprovalService(session).reject(
+            batch_id=batch_id,
+            owner_tg_user_id=principal.tg_user_id,
+            channel_id=channel_id,
+            reviewer_tg_user_id=principal.tg_user_id,
+        )
+    except SeriesApprovalStateConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="Series approval not found")
+    return await _series_approval_response(session, row)
 
 
 @router.post(

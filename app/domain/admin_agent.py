@@ -195,3 +195,120 @@ class AdminAgentApproval(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+
+class AdminAgentApprovalBatch(Base):
+    """Durable approval parent for one bounded campaign scheduling intent."""
+
+    __tablename__ = "admin_agent_approval_batches"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_tg_user_id",
+            "channel_id",
+            "action_type",
+            "request_id",
+            name="uq_admin_agent_approval_batch_request",
+        ),
+        CheckConstraint(
+            "state IN ('pending_review','executing','executed','rejected','stale','partial_failed','failed')",
+            name="ck_admin_agent_approval_batch_state",
+        ),
+        Index(
+            "ix_admin_agent_approval_batches_channel_created",
+            "channel_id",
+            "created_at",
+        ),
+        Index(
+            "ix_admin_agent_approval_batches_owner_state",
+            "owner_tg_user_id",
+            "state",
+        ),
+        Index(
+            "ix_admin_agent_approval_batches_execution_key",
+            "execution_key",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    owner_tg_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    channel_id: Mapped[int] = mapped_column(
+        ForeignKey("channels.id", ondelete="CASCADE"), index=True
+    )
+    source_run_id: Mapped[int] = mapped_column(
+        ForeignKey("admin_agent_runs.id", ondelete="RESTRICT"), index=True
+    )
+    action_type: Mapped[str] = mapped_column(String(64), index=True)
+    state: Mapped[str] = mapped_column(String(32), index=True)
+    request_id: Mapped[str] = mapped_column(String(128))
+    timezone: Mapped[str] = mapped_column(String(64))
+    item_count: Mapped[int] = mapped_column(Integer)
+    series_title: Mapped[str] = mapped_column(String(255))
+    source_plan_fingerprint: Mapped[str] = mapped_column(String(64))
+    action_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    execution_key: Mapped[str] = mapped_column(String(64))
+    reviewer_tg_user_id: Mapped[int | None] = mapped_column(BigInteger)
+    execution_claim_token: Mapped[str | None] = mapped_column(String(64))
+    execution_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_reason: Mapped[str | None] = mapped_column(Text)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AdminAgentApprovalBatchItem(Base):
+    """Ordered, server-authored scheduling intent inside one campaign approval."""
+
+    __tablename__ = "admin_agent_approval_batch_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id", "ordinal", name="uq_admin_agent_approval_batch_item_ordinal"
+        ),
+        UniqueConstraint(
+            "batch_id", "content_item_id", name="uq_admin_agent_approval_batch_item_content"
+        ),
+        UniqueConstraint(
+            "execution_key", name="uq_admin_agent_approval_batch_item_execution_key"
+        ),
+        CheckConstraint(
+            "state IN ('pending','executing','executed','stale','failed')",
+            name="ck_admin_agent_approval_batch_item_state",
+        ),
+        Index(
+            "ix_admin_agent_approval_batch_items_batch_ordinal",
+            "batch_id",
+            "ordinal",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("admin_agent_approval_batches.id", ondelete="CASCADE"), index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer)
+    content_item_id: Mapped[int] = mapped_column(Integer, index=True)
+    captured_content_revision: Mapped[int] = mapped_column(Integer)
+    content_title: Mapped[str] = mapped_column(String(255))
+    local_date: Mapped[date] = mapped_column(Date)
+    local_time: Mapped[str] = mapped_column(String(5))
+    resolved_scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    item_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    execution_key: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(32), index=True)
+    schedule_entry_id: Mapped[int | None] = mapped_column(Integer)
+    publication_id: Mapped[int | None] = mapped_column(Integer)
+    failure_reason: Mapped[str | None] = mapped_column(Text)
+    execution_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
