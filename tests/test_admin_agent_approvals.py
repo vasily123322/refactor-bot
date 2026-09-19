@@ -471,6 +471,8 @@ def test_crash_after_canonical_commit_recovers_same_pair(monkeypatch) -> None:
             Session = async_sessionmaker(engine, expire_on_commit=False)
             async with Session() as session:
                 owner, channel = await _setup_channel(session, tg_user_id=9916)
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
                 item = await _draft(
                     session,
                     channel_id=channel_id,
@@ -485,8 +487,6 @@ def test_crash_after_canonical_commit_recovers_same_pair(monkeypatch) -> None:
                     local_time_value="18:00",
                     request_id="approval-recovery-0001",
                 )
-                owner_id = int(owner.tg_user_id)
-                channel_id = int(channel.id)
                 approval_id = int(approval.id)
 
                 original_finalize = service._finalize_executed
