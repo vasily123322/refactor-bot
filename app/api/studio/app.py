@@ -195,7 +195,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
         await _owned_channel(session, principal, channel_id)
         if (before_updated_at is None) != (before_id is None):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="before_updated_at and before_id must be provided together",
             )
         rows = await ContentRepo(session).list_by_channel(
