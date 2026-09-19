@@ -149,7 +149,10 @@ def test_manual_pause_and_safe_reenable_recompute_future_occurrence() -> None:
                 assert enabled.enabled is True
                 assert enabled.disabled_reason is None
                 assert enabled.disabled_at is None
-                assert enabled.next_run_at > now + timedelta(days=2, hours=1)
+                assert (
+                    enabled.next_run_at.replace(tzinfo=timezone.utc)
+                    > now + timedelta(days=2, hours=1)
+                )
                 assert enabled.last_scheduled_for is None
         finally:
             await engine.dispose()
