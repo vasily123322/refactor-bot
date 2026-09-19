@@ -520,7 +520,10 @@ def test_crash_after_canonical_commit_recovers_same_pair(monkeypatch) -> None:
     asyncio.run(run())
 
 
-def test_overlapping_approve_has_one_execution_winner(monkeypatch, tmp_path) -> None:
+def test_simultaneous_approve_has_one_atomic_execution_winner(
+    monkeypatch,
+    tmp_path,
+) -> None:
     async def run() -> None:
         database_path = tmp_path / "concurrent-approve.db"
         engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
@@ -550,62 +553,88 @@ def test_overlapping_approve_has_one_execution_winner(monkeypatch, tmp_path) -> 
                 channel_id = int(channel.id)
                 approval_id = int(approval.id)
 
-            entered = asyncio.Event()
-            release = asyncio.Event()
-            calls = 0
+            review_barrier = asyncio.Event()
+            queue_entered = asyncio.Event()
+            release_queue = asyncio.Event()
+            review_arrivals = 0
+            queue_calls = 0
+
+            original_stale_reason = AdminAgentApprovalService._stale_reason
             original_queue = LegacyPublicationBridge.queue
 
+            async def synchronized_stale_reason(self, approval):
+                nonlocal review_arrivals
+                if approval.state == STATE_PENDING_REVIEW:
+                    review_arrivals += 1
+                    if review_arrivals == 2:
+                        review_barrier.set()
+                    await review_barrier.wait()
+                return await original_stale_reason(self, approval)
+
             async def blocked_queue(self, **kwargs):
-                nonlocal calls
-                calls += 1
-                entered.set()
-                await release.wait()
+                nonlocal queue_calls
+                queue_calls += 1
+                queue_entered.set()
+                await release_queue.wait()
                 return await original_queue(self, **kwargs)
 
+            monkeypatch.setattr(
+                AdminAgentApprovalService,
+                "_stale_reason",
+                synchronized_stale_reason,
+            )
             monkeypatch.setattr(LegacyPublicationBridge, "queue", blocked_queue)
 
             async with Session() as first_session:
-                first_service = AdminAgentApprovalService(
-                    first_session,
-                    now_utc=datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc),
-                )
-                first_task = asyncio.create_task(
-                    first_service.approve(
-                        approval_id=approval_id,
-                        owner_tg_user_id=owner_id,
-                        channel_id=channel_id,
-                        reviewer_tg_user_id=owner_id,
-                    )
-                )
-                await entered.wait()
-
                 async with Session() as second_session:
+                    first_service = AdminAgentApprovalService(
+                        first_session,
+                        now_utc=datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc),
+                    )
                     second_service = AdminAgentApprovalService(
                         second_session,
                         now_utc=datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc),
                     )
-                    overlap = await second_service.approve(
-                        approval_id=approval_id,
-                        owner_tg_user_id=owner_id,
-                        channel_id=channel_id,
-                        reviewer_tg_user_id=owner_id,
+                    first_task = asyncio.create_task(
+                        first_service.approve(
+                            approval_id=approval_id,
+                            owner_tg_user_id=owner_id,
+                            channel_id=channel_id,
+                            reviewer_tg_user_id=owner_id,
+                        )
                     )
-                    assert overlap is not None
-                    assert overlap.state == STATE_EXECUTING
-                    assert calls == 1
+                    second_task = asyncio.create_task(
+                        second_service.approve(
+                            approval_id=approval_id,
+                            owner_tg_user_id=owner_id,
+                            channel_id=channel_id,
+                            reviewer_tg_user_id=owner_id,
+                        )
+                    )
 
-                release.set()
-                winner = await first_task
-                assert winner is not None
-                assert winner.state == STATE_EXECUTED
+                    await queue_entered.wait()
+                    assert review_arrivals == 2
+                    assert queue_calls == 1
+                    release_queue.set()
+                    first_result, second_result = await asyncio.gather(
+                        first_task,
+                        second_task,
+                    )
+                    assert first_result is not None
+                    assert second_result is not None
+                    assert {
+                        first_result.state,
+                        second_result.state,
+                    } <= {STATE_EXECUTING, STATE_EXECUTED}
 
             async with Session() as verify:
                 assert await _counts(verify, channel_id) == (1, 1)
                 stored = await verify.get(AdminAgentApproval, approval_id)
                 assert stored is not None
                 assert stored.state == STATE_EXECUTED
-                assert calls == 1
+                assert queue_calls == 1
         finally:
             await engine.dispose()
 
     asyncio.run(run())
+
