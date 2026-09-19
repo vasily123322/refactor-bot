@@ -25,7 +25,7 @@
 .planner-card-main small, .planner-card-status { display: block; margin-top: 4px; color: var(--tg-theme-hint-color, #94a3b8); font-size: 8px; }
 .planner-error-text { color: #ef4444 !important; overflow-wrap: anywhere; }
 .planner-card-actions { display: flex; justify-content: flex-end; gap: 3px; padding: 0 6px 6px; }
-.planner-card-actions button, .planner-card-actions a, .planner-reschedule button { display: grid; place-items: center; min-width: 26px; height: 25px; border: 0; border-radius: 6px; background: color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 12%, transparent); color: inherit; text-decoration: none; font-size: 10px; }
+.planner-card-actions button, .planner-card-actions a, .planner-reschedule button { display: grid; place-items: center; min-width: 40px; height: 40px; border: 0; border-radius: 6px; background: color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 12%, transparent); color: inherit; text-decoration: none; font-size: 10px; }
 .planner-card-actions button:hover, .planner-card-actions a:hover { background: color-mix(in srgb, var(--tg-theme-button-color, #2aabee) 16%, transparent); }
 .planner-reschedule { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 3px; padding: 0 6px 6px; }
 .planner-reschedule input { min-width: 0; border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 24%, transparent); border-radius: 6px; padding: 4px 5px; background: var(--tg-theme-bg-color, #0b1020); color: inherit; font-size: 9px; color-scheme: dark; }
@@ -41,4 +41,10 @@
   .planner-controls { margin-top: 10px; }
   .planner-week { min-height: 520px; grid-template-columns: repeat(7, minmax(210px, 80vw)); scroll-snap-type: x proximity; }
   .planner-day { scroll-snap-align: start; }
+  .planner-card-actions button,
+  .planner-card-actions a,
+  .planner-reschedule button {
+    min-width: 44px;
+    height: 44px;
+  }
 }
