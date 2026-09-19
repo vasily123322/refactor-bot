@@ -479,3 +479,101 @@ def test_studio_automation_e5_history_and_unsafe_enable_are_fail_closed(monkeypa
             await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_studio_automation_history_cursor_is_deterministic(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            monkeypatch.setattr(studio_app_module, "AsyncSessionLocal", Session)
+            monkeypatch.setattr(admin_agent_api_module, "AsyncSessionLocal", Session)
+
+            async with Session() as session:
+                owner = await ClientsRepo(session).create_or_get(
+                    17201, "history_owner", "History Owner"
+                )
+                channel = await ChannelsRepo(session).create(
+                    owner.id, -10017201, "Automation History"
+                )
+
+            headers = {"X-Telegram-Init-Data": _init_data(17201)}
+            app = create_studio_app(_config())
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://studio",
+            ) as client:
+                created = await client.post(
+                    f"/api/studio/channels/{channel.id}/assistant/automations",
+                    headers=headers,
+                    json={
+                        "request_id": "studio-history-cursor-0001",
+                        "skill_id": "drafts_tomorrow",
+                        "skill_version": "1",
+                        "operator_input": {},
+                        "cadence": {"kind": "daily", "local_time": "09:30"},
+                    },
+                )
+                assert created.status_code == 201
+                automation_id = int(created.json()["id"])
+
+                scheduled_for = datetime(2026, 9, 19, 9, 30, tzinfo=timezone.utc)
+                async with Session() as session:
+                    rows = []
+                    for index in range(4):
+                        row = AdminAgentRun(
+                            owner_tg_user_id=17201,
+                            channel_id=channel.id,
+                            scenario="drafts_tomorrow",
+                            request_id=f"studio-history-run-{index}",
+                            operator_input={},
+                            skill_id="drafts_tomorrow",
+                            skill_version="1",
+                            automation_id=automation_id,
+                            scheduled_for=scheduled_for,
+                            workflow_phase="completed",
+                            checkpoint={},
+                            status="completed",
+                            tokens_used=index,
+                        )
+                        session.add(row)
+                        rows.append(row)
+                    await session.commit()
+                    expected_ids = sorted((int(row.id) for row in rows), reverse=True)
+
+                first = await client.get(
+                    f"/api/studio/channels/{channel.id}/assistant/automations/{automation_id}/runs",
+                    headers=headers,
+                    params={"limit": 2},
+                )
+                assert first.status_code == 200
+                first_rows = first.json()
+                assert [row["id"] for row in first_rows] == expected_ids[:2]
+
+                cursor = first_rows[-1]
+                second = await client.get(
+                    f"/api/studio/channels/{channel.id}/assistant/automations/{automation_id}/runs",
+                    headers=headers,
+                    params={
+                        "limit": 2,
+                        "before_scheduled_for": cursor["scheduled_for"],
+                        "before_id": cursor["id"],
+                    },
+                )
+                assert second.status_code == 200
+                assert [row["id"] for row in second.json()] == expected_ids[2:]
+
+                incomplete = await client.get(
+                    f"/api/studio/channels/{channel.id}/assistant/automations/{automation_id}/runs",
+                    headers=headers,
+                    params={"before_id": expected_ids[0]},
+                )
+                assert incomplete.status_code == 422
+                assert "provided together" in incomplete.json()["detail"]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
