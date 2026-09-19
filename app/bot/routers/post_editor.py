@@ -27,7 +27,6 @@ from app.bot.keyboards.builders import (
     build_back_kb,
     build_preview_menu_kb,
 )
-from app.domain.models import PostTask
 from app.domain.models import Client
 from app.core.config import settings
 import urllib.parse as _urlparse
@@ -2595,72 +2594,7 @@ async def cb_media_replace(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
 
 
-# Сохранить текущие значения автудаления из state.payload в запись PostTask,
-# если мы пришли из карточки контент‑плана (state["return_to_notice"]).
+# Historical content-plan transport edits are retired. Canonical publication edits
+# use PublicationEditAutodeleteSyncService through the Publication editor flow.
 async def _persist_autodelete_if_cp(state: FSMContext) -> tuple[int | None, str | None]:
-    data = await state.get_data()
-    meta = data.get("return_to_notice") or {}
-    post_id = meta.get("post_id")
-    date_iso = meta.get("date")
-    if not post_id:
-        return None, None
-    payload = dict(data.get("payload") or {})
-    try:
-        async with AsyncSessionLocal() as session:
-            post = await session.get(PostTask, int(post_id))
-            if post is not None:
-                pl = dict(post.payload or {})
-                for k in (
-                    "autodelete_seconds",
-                    "autodelete_label",
-                    "autodelete_views",
-                    "autodelete_report",
-                    "autodelete_effective_seconds",
-                ):
-                    if k in payload:
-                        pl[k] = payload[k]
-                    elif (
-                        k in pl
-                        and k
-                        in {
-                            "autodelete_seconds",
-                            "autodelete_label",
-                            "autodelete_views",
-                        }
-                        and k not in payload
-                    ):
-                        # не стираем прочие поля здесь
-                        pass
-                post.payload = pl
-                await session.commit()
-                # Если пост уже опубликован (status=done) и задан таймер в секундах —
-                # планируем удаление от текущего момента и, при необходимости, отчёт.
-                try:
-                    # учитывать эффективный таймер, если он был сохранён
-                    sec = int(
-                        pl.get("autodelete_effective_seconds")
-                        or pl.get("autodelete_seconds")
-                        or 0
-                    )
-                    ids = list(pl.get("result_ids") or [])
-                    if str(getattr(post, "status", "")) == "done" and sec > 0 and ids:
-                        # Разрешим tg_chat_id и владельца для отчёта
-                        from app.domain.models import Channel, Client
-
-                        ch = await session.get(Channel, int(post.channel_id))
-                        chat_id = int(getattr(ch, "tg_chat_id", 0)) if ch else None
-                        (
-                            await session.get(Client, getattr(ch, "owner_id", 0))
-                            if ch
-                            else None
-                        )
-                        bool(pl.get("autodelete_report", False))
-                        pl.get("result_link")
-                        if chat_id:
-                            # автоудаление выполняет планировщик; здесь ничего не планируем
-                            pass
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    return int(post_id), str(date_iso) if date_iso else None
+    return None, None
