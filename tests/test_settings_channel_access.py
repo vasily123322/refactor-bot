@@ -9,7 +9,7 @@ from app.core.settings_channel_access import (
     _post_task_id_from_callback,
     _resolve_channel_target,
 )
-from app.domain.models import GrabSource, PostTask
+from app.domain.models import GrabSource
 from app.services.publication_execution_mode import CANONICAL_EXECUTION_MODE
 
 
@@ -98,13 +98,10 @@ class _FakeSession:
     def __init__(
         self,
         source_channel_id: int | None = None,
-        post_task_channel_id: int | None = None,
         canonical_rows=None,
     ):
         self.source_channel_id = source_channel_id
-        self.post_task_channel_id = post_task_channel_id
         self.canonical_rows = list(canonical_rows or [])
-        self.post_task_reads = 0
 
     async def execute(self, _statement):
         return _RowsResult(self.canonical_rows)
@@ -114,20 +111,14 @@ class _FakeSession:
             if self.source_channel_id is None or object_id != 44:
                 return None
             return SimpleNamespace(target_channel_id=self.source_channel_id)
-        if model is PostTask:
-            self.post_task_reads += 1
-            if self.post_task_channel_id is None or object_id != 44:
-                return None
-            return SimpleNamespace(channel_id=self.post_task_channel_id)
         return None
 
 
-def _canonical_row(publication_id: int, channel_id: int, legacy_post_task_id=None):
+def _canonical_row(publication_id: int, channel_id: int):
     return SimpleNamespace(
         id=publication_id,
         channel_id=channel_id,
         execution_mode=CANONICAL_EXECUTION_MODE,
-        legacy_post_task_id=legacy_post_task_id,
     )
 
 
@@ -155,48 +146,43 @@ def test_missing_grab_source_fails_closed() -> None:
     assert channel_id is None
 
 
-def test_true_legacy_content_plan_target_uses_posttask_channel() -> None:
-    session = _FakeSession(post_task_channel_id=12)
+def test_unmapped_legacy_content_plan_target_fails_closed() -> None:
     recognized, channel_id = asyncio.run(
         _resolve_channel_target(
-            session,
+            _FakeSession(),
             "cp_delete_post:44:2026-08-10",
         )
     )
     assert recognized is True
-    assert channel_id == 12
-    assert session.post_task_reads == 1
+    assert channel_id is None
 
 
 def test_canonical_linked_callback_uses_publication_channel_without_posttask() -> None:
     session = _FakeSession(
-        canonical_rows=[_canonical_row(9001, 12, legacy_post_task_id=None)]
+        canonical_rows=[_canonical_row(9001, 12)]
     )
     recognized, channel_id = asyncio.run(
         _resolve_channel_target(session, "cp_edit_post:44:2026-08-10")
     )
     assert recognized is True
     assert channel_id == 12
-    assert session.post_task_reads == 0
 
 
 def test_ambiguous_canonical_callback_fails_closed_without_posttask_fallback() -> None:
     session = _FakeSession(
         canonical_rows=[
-            _canonical_row(9001, 12, legacy_post_task_id=44),
-            _canonical_row(9002, 12, legacy_post_task_id=44),
+            _canonical_row(9001, 12),
+            _canonical_row(9002, 12),
         ],
-        post_task_channel_id=12,
     )
     recognized, channel_id = asyncio.run(
         _resolve_channel_target(session, "cp_open_post:44:2026-08-10")
     )
     assert recognized is True
     assert channel_id is None
-    assert session.post_task_reads == 0
 
 
-def test_missing_content_plan_post_task_fails_closed() -> None:
+def test_missing_historical_callback_alias_fails_closed() -> None:
     recognized, channel_id = asyncio.run(
         _resolve_channel_target(_FakeSession(), "cp_open_post:44:2026-08-10")
     )
