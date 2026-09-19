@@ -117,7 +117,8 @@ def test_manual_pause_and_safe_reenable_recompute_future_occurrence() -> None:
                 assert paused is not None
                 assert paused.enabled is False
                 assert paused.disabled_reason == DISABLED_MANUAL_PAUSE
-                assert paused.disabled_at == now
+                assert paused.disabled_at is not None
+                assert paused.disabled_at.replace(tzinfo=timezone.utc) == now
                 assert paused.claim_token is None
 
                 enabled = await service.set_enabled(
@@ -296,7 +297,8 @@ def test_misfire_sets_outcome_and_zero_run() -> None:
             async with Session() as session:
                 stored = await session.get(AdminAgentAutomation, row_id)
                 assert stored is not None
-                assert stored.last_scheduled_for == scheduled
+                assert stored.last_scheduled_for is not None
+                assert stored.last_scheduled_for.replace(tzinfo=timezone.utc) == scheduled
                 assert stored.last_outcome == OUTCOME_MISFIRE_SKIPPED
                 assert stored.enabled is True
                 assert (
