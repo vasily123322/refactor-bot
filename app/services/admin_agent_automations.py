@@ -798,7 +798,7 @@ class AdminAgentAutomationTickService:
         claim_token: str,
         scheduled_for: datetime,
         after_utc: datetime,
-        outcome: str,
+        outcome: str = OUTCOME_RUN_RECORDED,
     ) -> None:
         next_run_at = next_occurrence_utc(
             cadence_kind=str(row.cadence_kind),
@@ -934,7 +934,6 @@ class AdminAgentAutomationTickService:
                     claim_token=claim_token,
                     scheduled_for=scheduled_for,
                     after_utc=scheduled_for,
-                    outcome=OUTCOME_RUN_RECORDED,
                 )
                 return
 
@@ -961,7 +960,6 @@ class AdminAgentAutomationTickService:
                 claim_token=claim_token,
                 scheduled_for=scheduled_for,
                 after_utc=scheduled_for,
-                outcome=OUTCOME_RUN_RECORDED,
             )
 
     async def tick(self, *, now_utc: datetime | None = None) -> int:
