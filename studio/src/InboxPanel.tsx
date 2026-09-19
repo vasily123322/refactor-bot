@@ -38,7 +38,9 @@ import {
 } from './candidateStructuredEdit';
 import {
   candidateMediaLabel,
-  loadCandidateMedia,
+  candidateMediaMap,
+  loadCandidateMediaForCandidates,
+  mergeCandidateMediaMap,
   promoteCandidateMedia,
   type CandidateMediaView,
 } from './candidateMedia';
@@ -81,10 +83,6 @@ function actionLabel(action: string | null): string {
 function scoreLabel(score: number | null): string | null {
   if (score === null || !Number.isFinite(score)) return null;
   return `${Math.round(Math.max(0, Math.min(1, score)) * 100)}%`;
-}
-
-function mediaMap(rows: CandidateMediaView[]): Record<number, CandidateMediaView> {
-  return Object.fromEntries(rows.map((row) => [row.candidate_id, row]));
 }
 
 const structuredEditLabels: Array<[StructuredEditOperation, string]> = [
@@ -195,23 +193,24 @@ export function InboxPanel({
     }
 
     try {
-      const [rows, mediaRows] = await Promise.all([
-        studioApi.candidates(channelId, status, {
-          limit: INBOX_HISTORY_PAGE_SIZE + 1,
-        }),
-        status === 'new'
-          ? loadCandidateMedia(channelId)
-          : Promise.resolve<CandidateMediaView[]>([]),
-      ]);
+      const rows = await studioApi.candidates(channelId, status, {
+        limit: INBOX_HISTORY_PAGE_SIZE + 1,
+      });
       if (!isCurrent()) return false;
       const page = splitInboxHistoryPage(rows);
-      const previews = status === 'new'
-        ? await loadCurrentStructuredRewritePreviews(channelId, page.items)
-        : {};
+      const [mediaRows, previews] = status === 'new'
+        ? await Promise.all([
+            loadCandidateMediaForCandidates(
+              channelId,
+              page.items.map((candidate) => candidate.id),
+            ),
+            loadCurrentStructuredRewritePreviews(channelId, page.items),
+          ])
+        : [[], {} as Record<number, RewritePreview>];
       if (!isCurrent()) return false;
 
       setCandidates(page.items);
-      setCandidateMedia(mediaMap(mediaRows));
+      setCandidateMedia(candidateMediaMap(mediaRows));
       setRewritePreviews(previews);
       setHistoryHasMore(page.hasMore);
       validDataScopeRef.current = dataScope;
@@ -275,13 +274,20 @@ export function InboxPanel({
       });
       if (!isCurrent()) return;
       const page = splitInboxHistoryPage(rows);
-      const previews = status === 'new'
-        ? await loadCurrentStructuredRewritePreviews(channelId, page.items)
-        : {};
+      const [mediaRows, previews] = status === 'new'
+        ? await Promise.all([
+            loadCandidateMediaForCandidates(
+              channelId,
+              page.items.map((candidate) => candidate.id),
+            ),
+            loadCurrentStructuredRewritePreviews(channelId, page.items),
+          ])
+        : [[], {} as Record<number, RewritePreview>];
       if (!isCurrent()) return;
 
       setCandidates((current) => mergeInboxHistoryPage(current, page.items));
       if (status === 'new') {
+        setCandidateMedia((current) => mergeCandidateMediaMap(current, mediaRows));
         setRewritePreviews((current) => ({ ...current, ...previews }));
       }
       setHistoryHasMore(page.hasMore);
