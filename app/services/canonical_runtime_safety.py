@@ -3,10 +3,10 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.runtime_safety import CanonicalRuntimeSafetyAudit
+from app.domain.publishing.models import CanonicalRuntimeSafetyAudit
 
 
-NO_REPLAY_STATE = "no_replay"
+NO_REPLAY_STATES = frozenset({"terminal_no_replay", "no_replay"})
 
 
 async def has_no_replay_barrier(
@@ -26,7 +26,7 @@ async def has_no_replay_barrier(
         select(CanonicalRuntimeSafetyAudit.id)
         .where(
             CanonicalRuntimeSafetyAudit.publication_id == safe_publication_id,
-            CanonicalRuntimeSafetyAudit.state == NO_REPLAY_STATE,
+            CanonicalRuntimeSafetyAudit.state.in_(NO_REPLAY_STATES),
         )
         .limit(1)
     )
