@@ -378,17 +378,59 @@ export type AssistantAutomationCadence = {
   weekday: number | null;
 };
 
+export type AssistantAutomationRunSummaryView = {
+  id: number;
+  scheduled_for: string | null;
+  status: string;
+  workflow_phase: string | null;
+  resumable: boolean;
+  resume_state: string;
+  tokens_used: number;
+  model: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  result_kind: string | null;
+  result_metadata: Record<string, unknown>;
+};
+
+export type AssistantAutomationUsageView = {
+  occurrence_runs: number;
+  completed: number;
+  failed: number;
+  restart_required_or_manual_resume: number;
+  tokens_used: number;
+};
+
 export type AssistantAutomationView = {
   id: number;
   channel_id: number;
   skill_id: string;
   skill_version: string;
   operator_input: Record<string, unknown>;
+  automation_policy: string;
   cadence: AssistantAutomationCadence;
   timezone: string;
   enabled: boolean;
+  disabled_reason: string | null;
+  disabled_at: string | null;
   next_run_at: string;
   last_scheduled_for: string | null;
+  last_outcome: string | null;
+  last_outcome_at: string | null;
+  health: 'active' | 'paused' | 'blocked' | 'needs_attention';
+  health_reason: string;
+  claim_active: boolean;
+  claimed_at: string | null;
+  latest_run: AssistantAutomationRunSummaryView | null;
+  usage_7d: AssistantAutomationUsageView;
+  usage_30d: AssistantAutomationUsageView;
+  execution_limits: AssistantExecutionLimits | null;
+  cadence_occurrences_per_week: number;
+  post_count: number | null;
+  migration_available: boolean;
+  suggested_skill_id: string | null;
+  suggested_skill_version: string | null;
   request_id: string;
   definition_fingerprint: string;
   created_at: string | null;
@@ -667,6 +709,10 @@ export const studioApi = {
   assistantAutomation: (channelId: number, automationId: number) =>
     request<AssistantAutomationView>(
       `/api/studio/channels/${channelId}/assistant/automations/${automationId}`,
+    ),
+  assistantAutomationRuns: (channelId: number, automationId: number, limit = 20) =>
+    request<AssistantAutomationRunSummaryView[]>(
+      `/api/studio/channels/${channelId}/assistant/automations/${automationId}/runs?limit=${encodeURIComponent(String(limit))}`,
     ),
   createAssistantAutomation: (
     channelId: number,
