@@ -1331,6 +1331,8 @@ class AdminAgentSeriesApprovalService:
                     failed_item=item,
                 )
 
+            item_id = int(item.id)
+            batch_id = int(batch.id)
             try:
                 schedule, publication = await self._queue_item(
                     batch=batch,
@@ -1350,11 +1352,11 @@ class AdminAgentSeriesApprovalService:
                 await self.session.rollback()
                 current_item = await self.session.get(
                     AdminAgentApprovalBatchItem,
-                    int(item.id),
+                    item_id,
                 )
                 current_batch = await self.session.get(
                     AdminAgentApprovalBatch,
-                    int(batch.id),
+                    batch_id,
                 )
                 if current_item is not None and current_batch is not None:
                     recovery, schedule, publication = await self._recover_existing(
