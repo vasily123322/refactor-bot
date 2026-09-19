@@ -363,6 +363,21 @@ def test_visible_series_run_approval_lookup_survives_newer_channel_batches(monke
                 ai = await ChannelAISettingsRepo(session).get_or_create(channel.id)
                 ai.enabled = True
                 ai.model = "provider/model"
+                foreign_owner = await ClientsRepo(session).create_or_get(
+                    13202,
+                    "foreign",
+                    "Foreign",
+                )
+                foreign_channel = await ChannelsRepo(session).create(
+                    foreign_owner.id,
+                    -10013202,
+                    "Foreign",
+                )
+                foreign_ai = await ChannelAISettingsRepo(session).get_or_create(
+                    foreign_channel.id
+                )
+                foreign_ai.enabled = True
+                foreign_ai.model = "provider/model"
                 await session.commit()
 
             async def generated(self, **kwargs):
@@ -376,6 +391,7 @@ def test_visible_series_run_approval_lookup_survives_newer_channel_batches(monke
 
             monkeypatch.setattr(AIGenerationService, "run_pipeline", generated)
             headers = {"X-Telegram-Init-Data": _init_data(13201)}
+            foreign_headers = {"X-Telegram-Init-Data": _init_data(13202)}
             app = create_studio_app(_config())
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(
@@ -411,6 +427,21 @@ def test_visible_series_run_approval_lookup_survives_newer_channel_batches(monke
                 )
                 assert noise_run_response.status_code == 201
                 noise_run = noise_run_response.json()
+
+                foreign_run_response = await client.post(
+                    f"/api/studio/channels/{foreign_channel.id}/assistant/runs",
+                    json={
+                        "scenario": "prepare_content_series",
+                        "request_id": "series-association-foreign-run",
+                        "operator_input": {
+                            "brief": "Подготовь три evergreen поста для foreign association.",
+                            "post_count": 3,
+                        },
+                    },
+                    headers=foreign_headers,
+                )
+                assert foreign_run_response.status_code == 201
+                foreign_run = foreign_run_response.json()
 
                 target_approval_response = await client.post(
                     f"/api/studio/channels/{channel.id}/assistant/series-approvals",
@@ -479,6 +510,15 @@ def test_visible_series_run_approval_lookup_survives_newer_channel_batches(monke
                 assert latest_noise.status_code == 200
                 assert [row["id"] for row in latest_noise.json()] == [latest_noise_id]
                 assert latest_noise.json()[0]["state"] == "rejected"
+
+                foreign_run_lookup = await client.get(
+                    (
+                        f"/api/studio/channels/{channel.id}/assistant/runs/"
+                        f"{foreign_run['id']}/series-approvals"
+                    ),
+                    headers=headers,
+                )
+                assert foreign_run_lookup.status_code == 404
 
                 missing_run = await client.get(
                     (
