@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AssistantBrief,
   AssistantPanel,
+  AssistantSkillCatalog,
   mergeAssistantApproval,
   mergeAssistantRun,
 } from './AssistantPanel';
@@ -13,7 +14,7 @@ import {
   resolveChannelDataView,
   runExclusiveOperation,
 } from './asyncControl';
-import type { AssistantApprovalView, AssistantRunView } from './api';
+import type { AssistantApprovalView, AssistantRunView, AssistantSkillView } from './api';
 import type { Channel } from './types';
 
 function attentionRunView(summary: string): AssistantRunView {
@@ -126,6 +127,69 @@ function draftRunView(): AssistantRunView {
   };
 }
 
+function skillViews(): AssistantSkillView[] {
+  return [
+    {
+      skill_id: 'attention_today',
+      version: '1',
+      scenario: 'attention_today',
+      display_title: 'Что сегодня требует внимания?',
+      description: 'Показывает bounded operational snapshot.',
+      category: 'operations',
+      operator_input_schema: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      result_kind: 'attention_brief',
+      capability_classes: ['read_only'],
+      capability_summary: 'Read-only: без Content writes.',
+      context_profile: 'none',
+      context_requirements: 'Channel-scoped operational state.',
+      resume_policy: 'none',
+      resumable: false,
+      approval_requirement: 'none',
+      execution_limits: {
+        max_steps: 5,
+        max_tool_calls: 4,
+        max_llm_calls: 1,
+        max_seconds: 20,
+        max_items_per_tool: 20,
+      },
+    },
+    {
+      skill_id: 'drafts_tomorrow',
+      version: '1',
+      scenario: 'drafts_tomorrow',
+      display_title: 'Создать 3 черновика на завтра',
+      description: 'Создаёт ordinary Content drafts.',
+      category: 'editorial',
+      operator_input_schema: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      result_kind: 'content_drafts',
+      capability_classes: ['draft_write'],
+      capability_summary: 'Draft-write: scheduling отдельно.',
+      context_profile: 'editorial_v1',
+      context_requirements: 'Existing channel memory/profile + bounded Content context.',
+      resume_policy: 'explicit',
+      resumable: true,
+      approval_requirement: 'none',
+      execution_limits: {
+        max_steps: 4,
+        max_tool_calls: 0,
+        max_llm_calls: 1,
+        max_seconds: 30,
+        max_items_per_tool: 0,
+      },
+    },
+  ];
+}
+
 function approvalView(
   state: AssistantApprovalView['state'] = 'pending_review',
 ): AssistantApprovalView {
@@ -170,7 +234,7 @@ describe('Assistant async ownership', () => {
     expect(ownership.isCurrent(newChannel, 2)).toBe(true);
   });
 
-  it('repeated CTA click starts only one execution while unrelated code can continue', async () => {
+  it('catalog launcher preserves the one-request execution lock', async () => {
     const lock = new ExclusiveOperationLock();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -234,6 +298,69 @@ describe('Assistant async ownership', () => {
     expect(secondCalls).toBe(1);
     release();
     await first;
+  });
+});
+
+describe('Assistant skill catalog rendering', () => {
+  it('shows current metadata, capabilities, resumability, approval and primary limits', () => {
+    const html = renderToStaticMarkup(
+      <AssistantSkillCatalog
+        skills={skillViews()}
+        loading={false}
+        errorMessage={null}
+        runningScenario={null}
+        onRun={() => undefined}
+      />,
+    );
+    expect(html).toContain('attention_today@1');
+    expect(html).toContain('drafts_tomorrow@1');
+    expect(html).toContain('read-only');
+    expect(html).toContain('draft-write');
+    expect(html).toContain('explicit');
+    expect(html).toContain('для запуска не требуется');
+    expect(html).toContain('LLM ≤ 1');
+    expect(html).toContain('time ≤ 30s');
+    expect(html).toContain('Existing channel memory/profile');
+    expect(html.match(/Запустить/g)).toHaveLength(2);
+  });
+
+  it('has distinct loading, error and empty catalog states', () => {
+    const loading = renderToStaticMarkup(
+      <AssistantSkillCatalog
+        skills={[]}
+        loading
+        errorMessage={null}
+        runningScenario={null}
+      />,
+    );
+    const error = renderToStaticMarkup(
+      <AssistantSkillCatalog
+        skills={[]}
+        loading={false}
+        errorMessage="catalog unavailable"
+        runningScenario={null}
+      />,
+    );
+    const empty = renderToStaticMarkup(
+      <AssistantSkillCatalog
+        skills={[]}
+        loading={false}
+        errorMessage={null}
+        runningScenario={null}
+      />,
+    );
+    expect(loading).toContain('Загружаю каталог навыков');
+    expect(error).toContain('Каталог навыков не загружен');
+    expect(error).toContain('catalog unavailable');
+    expect(empty).toContain('Каталог навыков пуст');
+  });
+
+  it('stale catalog ownership is rejected after channel switch', () => {
+    const ownership = new ChannelRequestOwnership();
+    const oldCatalog = ownership.begin(1);
+    const newCatalog = ownership.begin(2);
+    expect(ownership.isCurrent(oldCatalog, 2)).toBe(false);
+    expect(ownership.isCurrent(newCatalog, 2)).toBe(true);
   });
 });
 
