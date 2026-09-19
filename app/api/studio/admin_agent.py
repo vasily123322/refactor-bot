@@ -838,8 +838,15 @@ async def list_assistant_automation_runs(
     principal: PrincipalDep,
     session: SessionDep,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    before_scheduled_for: datetime | None = None,
+    before_id: int | None = None,
 ) -> list[AssistantAutomationRunSummaryResponse]:
     await _require_owned_channel(session, principal, channel_id)
+    if (before_scheduled_for is None) != (before_id is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="before_scheduled_for and before_id must be provided together",
+        )
     service = AdminAgentAutomationService(session)
     row = await service.get(
         automation_id=automation_id,
@@ -853,6 +860,8 @@ async def list_assistant_automation_runs(
         owner_tg_user_id=principal.tg_user_id,
         channel_id=channel_id,
         limit=limit,
+        before_scheduled_for=before_scheduled_for,
+        before_id=before_id,
     )
     return [_automation_run_summary(run) for run in runs]
 

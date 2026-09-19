@@ -8,7 +8,7 @@ from datetime import datetime, time, timedelta, timezone
 from uuid import uuid4
 
 from loguru import logger
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -345,16 +345,31 @@ class AdminAgentAutomationService:
         owner_tg_user_id: int,
         channel_id: int,
         limit: int = 20,
+        before_scheduled_for: datetime | None = None,
+        before_id: int | None = None,
     ) -> list[AdminAgentRun]:
+        if (before_scheduled_for is None) != (before_id is None):
+            raise ValueError("before_scheduled_for and before_id must be provided together")
+
+        statement = select(AdminAgentRun).where(
+            AdminAgentRun.automation_id == int(automation_id),
+            AdminAgentRun.owner_tg_user_id == int(owner_tg_user_id),
+            AdminAgentRun.channel_id == int(channel_id),
+        )
+        if before_scheduled_for is not None and before_id is not None:
+            statement = statement.where(
+                or_(
+                    AdminAgentRun.scheduled_for < before_scheduled_for,
+                    and_(
+                        AdminAgentRun.scheduled_for == before_scheduled_for,
+                        AdminAgentRun.id < int(before_id),
+                    ),
+                )
+            )
         return list(
             (
                 await self.session.execute(
-                    select(AdminAgentRun)
-                    .where(
-                        AdminAgentRun.automation_id == int(automation_id),
-                        AdminAgentRun.owner_tg_user_id == int(owner_tg_user_id),
-                        AdminAgentRun.channel_id == int(channel_id),
-                    )
+                    statement
                     .order_by(
                         AdminAgentRun.scheduled_for.desc(),
                         AdminAgentRun.id.desc(),
