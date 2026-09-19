@@ -204,7 +204,7 @@ def test_series_proposal_is_server_authored_snapshot_and_idempotent(monkeypatch)
                 assert proposal.state == STATE_PENDING_REVIEW
                 assert proposal.item_count == 4
                 assert proposal.timezone == "UTC+3"
-                items = await service.items_for_batch(proposal_id)
+                items = await service.items_for_batch(proposal.id)
                 assert [item.ordinal for item in items] == [1, 2, 3, 4]
                 assert items[0].captured_content_revision == 2
                 assert [item.state for item in items] == [ITEM_PENDING] * 4
@@ -451,10 +451,10 @@ def test_series_approve_uses_bridge_once_per_item_and_retry_never_duplicates(
 
                 monkeypatch.setattr(LegacyPublicationBridge, "queue", observed_queue)
                 executed = await service.approve(
-                    batch_id=proposal_id,
-                    owner_tg_user_id=owner_id,
-                    channel_id=channel_id,
-                    reviewer_tg_user_id=owner_id,
+                    batch_id=proposal.id,
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    reviewer_tg_user_id=owner.tg_user_id,
                 )
                 assert executed is not None
                 assert executed.state == STATE_EXECUTED
@@ -578,10 +578,10 @@ def test_series_full_preflight_stale_and_reject_have_zero_batch_mutations(
                 assert await _counts(session, channel.id) == (0, 0, 0)
                 with pytest.raises(Exception):
                     await service.reject(
-                        batch_id=proposal_id,
-                        owner_tg_user_id=owner_id,
-                        channel_id=channel_id,
-                        reviewer_tg_user_id=owner_id,
+                        batch_id=proposal.id,
+                        owner_tg_user_id=owner.tg_user_id,
+                        channel_id=channel.id,
+                        reviewer_tg_user_id=owner.tg_user_id,
                     )
         finally:
             await engine.dispose()
