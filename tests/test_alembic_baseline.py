@@ -13,7 +13,7 @@ from app.core.db import Base
 from migration_snapshots.schema_20260809 import Base as FrozenBaselineBase
 
 
-HEAD = "20260919_0022"
+HEAD = "20260919_0023"
 
 
 def _run_alembic(
