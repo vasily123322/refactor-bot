@@ -68,6 +68,73 @@ class ContentRepo:
             await self.session.rollback()
             raise
 
+    async def create_batch(
+        self,
+        *,
+        channel_id: int,
+        items: list[Mapping[str, Any]],
+        kind: str = "post",
+        status: str = "draft",
+        created_by_tg_user_id: int | None = None,
+        source: str = "editor",
+    ) -> list[ContentItem]:
+        """Create first revisions for a bounded content batch in one transaction.
+
+        Every document is validated before the first INSERT. Persistence then flushes
+        each item only to obtain its canonical id; no commit occurs until all items
+        and revisions are staged successfully.
+        """
+
+        prepared: list[tuple[dict[str, Any], str | None, dict[str, Any], dict[str, Any]]] = []
+        for raw in items:
+            document = raw.get("document")
+            if not isinstance(document, (PostDocument, Mapping)):
+                raise ValueError("batch content document is required")
+            doc = _document_dict(document)
+            title_value = raw.get("title")
+            title = str(title_value) if title_value is not None else None
+            metadata = dict(raw.get("metadata") or {})
+            revision_metadata = dict(raw.get("revision_metadata") or metadata)
+            prepared.append((doc, title, metadata, revision_metadata))
+
+        if not prepared:
+            return []
+
+        created: list[ContentItem] = []
+        try:
+            for doc, title, metadata, revision_metadata in prepared:
+                item = ContentItem(
+                    channel_id=int(channel_id),
+                    kind=str(kind),
+                    status=str(status),
+                    title=title,
+                    current_revision=0,
+                    meta=metadata,
+                )
+                self.session.add(item)
+                await self.session.flush()
+                self.session.add(
+                    ContentRevision(
+                        content_item_id=int(item.id),
+                        revision=1,
+                        document=doc,
+                        source=str(source),
+                        created_by_tg_user_id=created_by_tg_user_id,
+                        meta=revision_metadata,
+                    )
+                )
+                item.current_revision = 1
+                created.append(item)
+
+            await self.session.flush()
+            await self.session.commit()
+            for item in created:
+                await self.session.refresh(item)
+            return created
+        except Exception:
+            await self.session.rollback()
+            raise
+
     async def create_from_legacy_payload(
         self,
         *,
