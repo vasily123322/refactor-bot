@@ -773,6 +773,7 @@ class AdminAgentRunner:
         self.session.add(run)
         await self.session.commit()
         await self.session.refresh(run)
+        run_id = int(run.id)
         await self._event(
             run,
             "run_started",
@@ -800,7 +801,7 @@ class AdminAgentRunner:
             )
         except asyncio.TimeoutError:
             await self.session.rollback()
-            run = await self.session.get(AdminAgentRun, int(run.id))
+            run = await self.session.get(AdminAgentRun, run_id)
             assert run is not None
             run.status = RUN_FAILED
             run.error = "admin agent wall-clock limit exceeded"
@@ -809,7 +810,7 @@ class AdminAgentRunner:
             await self._event(run, "run_failed", payload={"reason": "wall_clock_limit"})
         except AgentExecutionLimit as exc:
             await self.session.rollback()
-            run = await self.session.get(AdminAgentRun, int(run.id))
+            run = await self.session.get(AdminAgentRun, run_id)
             assert run is not None
             run.status = RUN_FAILED
             run.error = str(exc)
@@ -818,7 +819,7 @@ class AdminAgentRunner:
             await self._event(run, "run_failed", payload={"reason": "execution_limit"})
         except Exception:
             await self.session.rollback()
-            run = await self.session.get(AdminAgentRun, int(run.id))
+            run = await self.session.get(AdminAgentRun, run_id)
             assert run is not None
             run.status = RUN_FAILED
             run.error = "admin agent execution failed"
@@ -876,6 +877,7 @@ class AdminAgentRunner:
                 return existing
             raise
 
+        run_id = int(run.id)
         await self._event(
             run,
             "run_started",
@@ -904,7 +906,7 @@ class AdminAgentRunner:
             )
         except asyncio.TimeoutError:
             await self.session.rollback()
-            run = await self.session.get(AdminAgentRun, int(run.id))
+            run = await self.session.get(AdminAgentRun, run_id)
             assert run is not None
             run.status = RUN_FAILED
             run.error = "admin agent wall-clock limit exceeded"
@@ -913,7 +915,7 @@ class AdminAgentRunner:
             await self._event(run, "run_failed", payload={"reason": "wall_clock_limit"})
         except AgentExecutionLimit as exc:
             await self.session.rollback()
-            run = await self.session.get(AdminAgentRun, int(run.id))
+            run = await self.session.get(AdminAgentRun, run_id)
             assert run is not None
             run.status = RUN_FAILED
             run.error = str(exc)
@@ -922,7 +924,7 @@ class AdminAgentRunner:
             await self._event(run, "run_failed", payload={"reason": "execution_limit"})
         except Exception:
             await self.session.rollback()
-            run = await self.session.get(AdminAgentRun, int(run.id))
+            run = await self.session.get(AdminAgentRun, run_id)
             assert run is not None
             run.status = RUN_FAILED
             run.error = "admin agent execution failed"
