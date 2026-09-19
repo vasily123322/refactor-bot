@@ -564,7 +564,14 @@ export function InboxPanel({
     return <div className="sources-empty-page">Выберите канал, чтобы открыть Inbox.</div>;
   }
 
-  const inboxDataView = resolveChannelDataView(loadState, channel.id, candidates.length);
+  const activeScopeKey = inboxStatusScope(statusView);
+  const presentation = inboxStatusPresentation(statusView);
+  const inboxDataView = resolveScopedDataView(
+    loadState,
+    channel.id,
+    activeScopeKey,
+    candidates.length,
+  );
   const inboxLoading = inboxDataView === 'loading';
   const inboxLoadFailed = inboxDataView === 'error-without-valid-data';
   const inboxEmpty = inboxDataView === 'loaded-empty';
@@ -585,29 +592,54 @@ export function InboxPanel({
           >
             ↻ Обновить
           </button>
-          <button
-            className="button secondary"
-            onClick={() => void enrichBatch()}
-            disabled={hasCurrentBusy || candidates.length === 0}
-            title="Deterministic local enrichment, без AI-токенов"
-          >
-            Local batch
-          </button>
+          {presentation.showActiveActions && (
+            <button
+              className="button secondary"
+              onClick={() => void enrichBatch()}
+              disabled={hasCurrentBusy || candidates.length === 0}
+              title="Deterministic local enrichment, без AI-токенов"
+            >
+              Local batch
+            </button>
+          )}
           {isBusy('refresh') && <InlineStatus>Обновляю Inbox…</InlineStatus>}
-          {isBusy('batch-local') && <InlineStatus>Анализирую Inbox batch…</InlineStatus>}
+          {presentation.showActiveActions && isBusy('batch-local') && (
+            <InlineStatus>Анализирую Inbox batch…</InlineStatus>
+          )}
         </div>
       </header>
 
-      {error?.channelId === channel.id && <div className="banner error" role="alert">{error.message}<button aria-label="Закрыть ошибку" onClick={() => setError(null)}>×</button></div>}
+      {error?.channelId === channel.id && error.scopeKey === activeScopeKey && (
+        <div className="banner error" role="alert">
+          {error.message}
+          <button aria-label="Закрыть ошибку" onClick={() => setError(null)}>×</button>
+        </div>
+      )}
       {notice && <InlineStatus className="banner success">{notice}<button aria-label="Закрыть уведомление" onClick={() => setNotice(null)}>×</button></InlineStatus>}
 
       <section className="sources-inbox-card inbox-standalone-card">
         <div className="panel-heading">
           <div>
-            <h2>Новые кандидаты</h2>
+            <h2>{presentation.heading}</h2>
             <small>
-              {inboxLoading ? 'Загружаю Inbox…' : inboxLoadFailed ? 'Inbox не загружен' : `${candidates.length} в очереди редактора`}
+              {inboxLoading
+                ? 'Загружаю Inbox…'
+                : inboxLoadFailed
+                  ? 'Inbox не загружен'
+                  : `${candidates.length} ${presentation.countSuffix}`}
             </small>
+          </div>
+          <div className="inbox-status-switch" role="group" aria-label="Фильтр Inbox">
+            {INBOX_STATUS_OPTIONS.map((option) => (
+              <button
+                key={option.status}
+                className="button secondary compact"
+                aria-pressed={statusView === option.status}
+                onClick={() => setStatusView(option.status)}
+              >
+                {option.label}
+              </button>
+            ))}
           </div>
         </div>
         <AsyncRegion
@@ -630,7 +662,7 @@ export function InboxPanel({
             </div>
           }
           emptyFallback={
-            <div className="empty-state">Inbox пуст. Источники и ingestion worker добавят новые материалы сюда.</div>
+            <div className="empty-state">{presentation.emptyText}</div>
           }
           errorFallback={
             <div className="empty-state">Inbox не загружен. Повторите попытку обновления.</div>
@@ -645,8 +677,10 @@ export function InboxPanel({
               candidate.source_document_id,
             );
             const media = candidateMedia[candidate.id];
-            const canRewrite = candidate.reuse_policy === 'rewrite_with_attribution';
-            const canPromoteMedia = Boolean(media?.promotable && !media.media_asset_id);
+            const canRewrite = presentation.showActiveActions
+              && candidate.reuse_policy === 'rewrite_with_attribution';
+            const canPromoteMedia = presentation.showActiveActions
+              && Boolean(media?.promotable && !media.media_asset_id);
             const prompt = rewriteInstructions[candidate.id] || '';
             const primaryText = candidateInboxPrimaryText(candidate);
             const enrichmentSummary = channelDMEnrichmentSummary(candidate)
