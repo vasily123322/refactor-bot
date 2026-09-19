@@ -140,3 +140,25 @@ def test_fresh_head_contains_agent_tables_and_matches_registered_orm(tmp_path) -
     tables = _tables(database_path)
     assert {"admin_agent_runs", "admin_agent_events", "admin_agent_approvals"} <= tables
     assert tables == set(Base.metadata.tables) | {"alembic_version"}
+
+
+def test_admin_agent_approval_regression_suite_is_mandatory() -> None:
+    """Keep MVP-C approval regressions inside the existing blocking CI gate."""
+
+    repo_root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "tests/test_admin_agent_approvals.py",
+            "tests/test_studio_admin_agent_approval_api.py",
+        ],
+        cwd=repo_root,
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
