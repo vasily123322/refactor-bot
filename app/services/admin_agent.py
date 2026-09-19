@@ -556,7 +556,7 @@ class AdminAgentRunner:
         self._sequence += 1
         self.session.add(
             AdminAgentEvent(
-                run_id=resolved_run_id,
+                run_id=int(run.id),
                 sequence=self._sequence,
                 event_type=event_type,
                 tool_name=tool_name,
@@ -809,7 +809,7 @@ class AdminAgentRunner:
         for ordinal, item in enumerate(items, start=1):
             self.session.add(
                 AdminAgentRunArtifact(
-                    run_id=resolved_run_id,
+                    run_id=int(run.id),
                     artifact_type=_DRAFT_ARTIFACT_TYPE,
                     ordinal=ordinal,
                     content_item_id=int(item.id),
