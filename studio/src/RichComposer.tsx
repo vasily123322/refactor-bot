@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   StudioApiError,
@@ -6,8 +6,16 @@ import {
   type MediaAssetKind,
   type MediaAssetView,
 } from './api';
+import { ChannelRequestOwnership } from './asyncControl';
 import { MapBlockEditor } from './MapBlockEditor';
 import { MediaCollectionEditor } from './MediaCollectionEditor';
+import {
+  MEDIA_ASSET_HISTORY_PAGE_SIZE,
+  mediaAssetHistoryCursor,
+  mergeMediaAssetHistoryPage,
+  prependMediaAsset,
+  splitMediaAssetHistoryPage,
+} from './mediaAssetHistory';
 import { RichCaptionEditor } from './RichCaptionEditor';
 import { RichListEditor } from './RichListEditor';
 import { RichMediaOptionsEditor } from './RichMediaOptionsEditor';
@@ -419,25 +427,88 @@ export function RichComposer({
   const [assets, setAssets] = useState<MediaAssetView[]>([]);
   const [assetError, setAssetError] = useState<string | null>(null);
   const [assetBusy, setAssetBusy] = useState(false);
+  const [assetHasMore, setAssetHasMore] = useState(false);
+  const [assetLoadingMore, setAssetLoadingMore] = useState(false);
+  const [assetLoadMoreError, setAssetLoadMoreError] = useState<string | null>(null);
   const [showAssetForm, setShowAssetForm] = useState(false);
   const [assetKind, setAssetKind] = useState<MediaAssetKind>('photo');
   const [assetTransport, setAssetTransport] = useState<AssetTransport>('upload');
   const [assetReference, setAssetReference] = useState('');
   const [assetFile, setAssetFile] = useState<File | null>(null);
   const [assetLabel, setAssetLabel] = useState('');
+  const assetRequestOwnershipRef = useRef(new ChannelRequestOwnership());
+  const channelIdRef = useRef<number | null>(channelId);
+  channelIdRef.current = channelId;
 
   const loadAssets = useCallback(async () => {
     if (channelId === null) {
+      assetRequestOwnershipRef.current.invalidate();
       setAssets([]);
+      setAssetHasMore(false);
+      setAssetLoadingMore(false);
+      setAssetLoadMoreError(null);
       return;
     }
+
+    const scopeKey = 'media-assets:first';
+    const token = assetRequestOwnershipRef.current.begin(channelId, scopeKey);
+    const isCurrent = () => assetRequestOwnershipRef.current.isCurrent(
+      token,
+      channelIdRef.current,
+      scopeKey,
+    );
     setAssetError(null);
+    setAssetLoadMoreError(null);
+    setAssetLoadingMore(false);
     try {
-      setAssets(await studioApi.mediaAssets(channelId));
+      const rows = await studioApi.mediaAssets(channelId, {
+        limit: MEDIA_ASSET_HISTORY_PAGE_SIZE + 1,
+      });
+      if (!isCurrent()) return;
+      const page = splitMediaAssetHistoryPage(rows);
+      setAssets(page.items);
+      setAssetHasMore(page.hasMore);
     } catch (error) {
-      setAssetError(errorMessage(error));
+      if (isCurrent()) setAssetError(errorMessage(error));
     }
   }, [channelId]);
+
+  const loadOlderAssets = useCallback(async () => {
+    const currentChannelId = channelIdRef.current;
+    if (currentChannelId === null || assetLoadingMore || !assetHasMore) return;
+
+    const cursor = mediaAssetHistoryCursor(assets);
+    if (!cursor) {
+      setAssetHasMore(false);
+      return;
+    }
+
+    const scopeKey = `media-assets:older:${cursor.createdAt}:${cursor.id}`;
+    const token = assetRequestOwnershipRef.current.begin(currentChannelId, scopeKey);
+    const isCurrent = () => assetRequestOwnershipRef.current.isCurrent(
+      token,
+      channelIdRef.current,
+      scopeKey,
+    );
+
+    setAssetLoadingMore(true);
+    setAssetLoadMoreError(null);
+    try {
+      const rows = await studioApi.mediaAssets(currentChannelId, {
+        limit: MEDIA_ASSET_HISTORY_PAGE_SIZE + 1,
+        beforeCreatedAt: cursor.createdAt,
+        beforeId: cursor.id,
+      });
+      if (!isCurrent()) return;
+      const page = splitMediaAssetHistoryPage(rows);
+      setAssets((current) => mergeMediaAssetHistoryPage(current, page.items));
+      setAssetHasMore(page.hasMore);
+    } catch (error) {
+      if (isCurrent()) setAssetLoadMoreError(errorMessage(error));
+    } finally {
+      if (isCurrent()) setAssetLoadingMore(false);
+    }
+  }, [assetHasMore, assetLoadingMore, assets]);
 
   useEffect(() => {
     void loadAssets();
@@ -485,7 +556,8 @@ export function RichComposer({
             telegram_file_id: assetTransport === 'telegram' ? assetReference.trim() : null,
             storage_url: assetTransport === 'https' ? assetReference.trim() : null,
           });
-      setAssets((current) => [created, ...current.filter((asset) => asset.id !== created.id)]);
+      if (channelIdRef.current !== channelId) return;
+      setAssets((current) => prependMediaAsset(current, created));
       setAssetReference('');
       setAssetFile(null);
       setAssetLabel('');
@@ -515,7 +587,10 @@ export function RichComposer({
         <div className="rich-media-library-head">
           <div>
             <strong>Media assets</strong>
-            <small>{assets.length} в текущем канале · raw URL/file ID не возвращаются API</small>
+            <small>
+              {assets.length} загружено{assetHasMore ? ' · есть более старые' : ''}
+              {' · '}raw URL/file ID не возвращаются API
+            </small>
           </div>
           <div>
             <button onClick={() => void loadAssets()} disabled={assetBusy || channelId === null}>↻</button>
@@ -574,6 +649,27 @@ export function RichComposer({
             <button onClick={() => void registerAsset()} disabled={!canRegister}>
               {assetBusy ? 'Сохраняю…' : assetTransport === 'upload' ? 'Загрузить' : 'Добавить'}
             </button>
+          </div>
+        )}
+        {(assetHasMore || assetLoadingMore || assetLoadMoreError) && (
+          <div className="rich-media-history-controls">
+            {assetLoadMoreError && (
+              <div className="rich-media-error" role="alert">
+                Не удалось загрузить старые media assets: {assetLoadMoreError}
+              </div>
+            )}
+            {assetHasMore && (
+              <button
+                onClick={() => void loadOlderAssets()}
+                disabled={assetLoadingMore}
+              >
+                {assetLoadingMore
+                  ? 'Загружаю старые…'
+                  : assetLoadMoreError
+                    ? 'Повторить загрузку'
+                    : 'Показать старые'}
+              </button>
+            )}
           </div>
         )}
       </div>
