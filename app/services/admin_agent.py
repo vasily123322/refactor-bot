@@ -16,6 +16,7 @@ from app.domain.publishing.models import Publication, ScheduleEntry
 from app.domain.sources.models import SourceConnector
 from app.services.ai_activity import AIActivityService
 from app.services.ai_generation import AIGenerationService
+from app.services.scheduling import as_utc
 
 
 SCENARIO_ATTENTION_TODAY = "attention_today"
@@ -137,7 +138,8 @@ async def _schedule_attention(ctx: AgentToolContext) -> dict:
 
     facts: list[dict] = []
     for schedule, publication in rows:
-        overdue = schedule.scheduled_at < start_utc
+        scheduled_at = as_utc(schedule.scheduled_at)
+        overdue = scheduled_at < start_utc
         facts.append(
             {
                 "fact_id": f"schedule:{int(schedule.id)}:{'overdue' if overdue else 'today'}",
