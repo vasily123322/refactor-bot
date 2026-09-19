@@ -249,6 +249,23 @@ def test_series_proposal_is_server_authored_snapshot_and_idempotent(monkeypatch)
                         slots=changed,
                     )
 
+                other_source = await _source_run(
+                    session,
+                    monkeypatch,
+                    owner=owner,
+                    channel=channel,
+                    count=4,
+                    request_id="series-source-idempotency-other-0001",
+                )
+                with pytest.raises(SeriesApprovalIdempotencyConflict):
+                    await service.create(
+                        owner_tg_user_id=owner.tg_user_id,
+                        channel_id=channel.id,
+                        source_run_id=other_source.id,
+                        request_id="series-approval-create-0001",
+                        slots=_slots(4),
+                    )
+
                 malformed_sets = [
                     _slots(3),
                     _slots(4) + [{"ordinal": 5, "local_date": "2026-09-20", "local_time": "19:00"}],
