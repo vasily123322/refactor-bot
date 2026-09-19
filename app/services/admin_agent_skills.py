@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Mapping
 
 
@@ -23,6 +24,13 @@ class AdminAgentSkillSpec:
     allowed_capability_classes: tuple[str, ...]
     context_profile: str
     resume_policy: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "execution_limits",
+            MappingProxyType(dict(self.execution_limits)),
+        )
 
 
 class AdminAgentSkillRegistry:
@@ -93,6 +101,7 @@ SKILL_REGISTRY = AdminAgentSkillRegistry(
                 "max_tool_calls": 4,
                 "max_llm_calls": 1,
                 "max_seconds": 20.0,
+                "max_items_per_tool": 20,
             },
             allowed_capability_classes=(CAPABILITY_READ_ONLY,),
             context_profile=CONTEXT_NONE,
@@ -107,6 +116,7 @@ SKILL_REGISTRY = AdminAgentSkillRegistry(
                 "max_tool_calls": 0,
                 "max_llm_calls": 1,
                 "max_seconds": 30.0,
+                "max_items_per_tool": 0,
             },
             allowed_capability_classes=(CAPABILITY_DRAFT_WRITE,),
             context_profile=CONTEXT_EDITORIAL_V1,
