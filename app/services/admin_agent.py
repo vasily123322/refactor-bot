@@ -977,12 +977,13 @@ class AdminAgentRunner:
         if self._llm_calls > self.limits.max_llm_calls:
             raise AgentExecutionLimit("admin agent LLM-call limit exceeded")
 
+        provider_timeout = self._remaining_seconds()
         generation = await asyncio.wait_for(
             AIGenerationService(self.session).run_pipeline(
                 channel_id=int(run.channel_id),
                 mode="from_scratch",
-            topic=(
-                "Сценарий Studio drafts_tomorrow. Создай ровно три РАЗНЫХ черновика "
+                topic=(
+                    "Сценарий Studio drafts_tomorrow. Создай ровно три РАЗНЫХ черновика "
                 "Telegram-постов в уже настроенном стиле выбранного канала. Используй "
                 "существующие правила тона, длины, emoji, preset/custom prompt, publication "
                 "profile и channel memory, которые уже переданы системным контекстом. "
@@ -1006,14 +1007,14 @@ class AdminAgentRunner:
                     ensure_ascii=False,
                     separators=(",", ":"),
                 )
-            ),
+                ),
                 extra={
                     "force_custom": False,
                     "date": target_local_date,
                     "schedule": "",
                 },
             ),
-            timeout=self._remaining_seconds(),
+            timeout=provider_timeout,
         )
         success = bool(generation.get("success"))
         tokens_used = int(generation.get("tokens_used") or 0)
