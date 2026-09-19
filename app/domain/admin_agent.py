@@ -101,6 +101,16 @@ class AdminAgentAutomation(Base):
             "(cadence_kind = 'weekly' AND weekday BETWEEN 0 AND 6)",
             name="ck_admin_agent_automation_weekday",
         ),
+        CheckConstraint(
+            "disabled_reason IS NULL OR disabled_reason IN "
+            "('manual_pause','ownership_lost','unsupported_skill_version','invalid_definition')",
+            name="ck_admin_agent_automation_disabled_reason",
+        ),
+        CheckConstraint(
+            "last_outcome IS NULL OR last_outcome IN "
+            "('run_recorded','misfire_skipped','safety_disabled')",
+            name="ck_admin_agent_automation_last_outcome",
+        ),
         Index(
             "ix_admin_agent_automations_due",
             "enabled",
@@ -131,6 +141,10 @@ class AdminAgentAutomation(Base):
     weekday: Mapped[int | None] = mapped_column(Integer)
     timezone: Mapped[str] = mapped_column(String(64))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    disabled_reason: Mapped[str | None] = mapped_column(String(64))
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_outcome: Mapped[str | None] = mapped_column(String(64))
+    last_outcome_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     last_scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     claim_token: Mapped[str | None] = mapped_column(String(64))
