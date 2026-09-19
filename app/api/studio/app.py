@@ -49,7 +49,6 @@ from app.domain.content import (
 from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
 from app.repositories.content import ContentNotFoundError, ContentRepo
-from app.services.content import LegacyPayloadError, legacy_payload_from_document
 from app.services.publication_bridge import LegacyPublicationBridge, PublicationBridgeError
 from app.services.telegram_preview import TelegramPreviewError, TelegramPreviewService
 
@@ -291,22 +290,10 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
             document = PostDocument.from_dict(request.document)
         except PostDocumentError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        try:
-            payload = legacy_payload_from_document(document)
-            return PreviewResponse(
-                mode=document.mode,
-                primary_text=document.primary_text(),
-                legacy_payload=payload,
-                publishable_via_legacy=True,
-            )
-        except LegacyPayloadError as exc:
-            return PreviewResponse(
-                mode=document.mode,
-                primary_text=document.primary_text(),
-                legacy_payload=None,
-                publishable_via_legacy=False,
-                reason=str(exc),
-            )
+        return PreviewResponse(
+            mode=document.mode,
+            primary_text=document.primary_text(),
+        )
 
     @app.post(
         "/api/studio/preview/telegram",
@@ -377,11 +364,6 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
             schedule_entry_id=(
                 int(publication.schedule_entry_id)
                 if publication.schedule_entry_id is not None
-                else None
-            ),
-            legacy_post_task_id=(
-                int(publication.legacy_post_task_id)
-                if publication.legacy_post_task_id is not None
                 else None
             ),
         )
