@@ -28,6 +28,16 @@ describe('Inbox candidate status views', () => {
     ).toBe(true);
   });
 
+  it('rejects a stale dismissed mutation after returning to the new view', () => {
+    const ownership = new ChannelRequestOwnership();
+    const restore = ownership.begin(7, inboxStatusScope('dismissed'));
+    ownership.begin(7, inboxStatusScope('new'));
+
+    expect(
+      ownership.isCurrent(restore, 7, inboxStatusScope('new')),
+    ).toBe(false);
+  });
+
   it('shows restore-only mutations for dismissed candidates', () => {
     expect(inboxStatusPresentation('dismissed')).toMatchObject({
       heading: 'Скрытые кандидаты',
