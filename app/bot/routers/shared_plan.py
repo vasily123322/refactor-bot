@@ -6,7 +6,7 @@ import calendar as cal
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from app.core.db import AsyncSessionLocal
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 
 
 def month_name_ru(m: int) -> str:
@@ -92,7 +92,8 @@ async def render_calendar(
     focus_date: datetime,
     selected_date: datetime | None,
 ) -> None:
-    from app.domain.models import PostTask, Channel
+    from app.domain.models import Channel
+    from app.domain.publishing.models import Publication, ScheduleEntry
 
     async with AsyncSessionLocal() as session:
         start = datetime(
@@ -107,12 +108,14 @@ async def render_calendar(
         end = start.replace(hour=23, minute=59, second=59, microsecond=999999)
         res = await session.execute(
             select(func.count())
-            .select_from(PostTask)
+            .select_from(Publication)
+            .join(ScheduleEntry, ScheduleEntry.id == Publication.schedule_entry_id)
             .where(
-                (PostTask.channel_id == channel_id)
-                & (PostTask.status == "pending")
-                & (PostTask.scheduled_at >= start)
-                & (PostTask.scheduled_at <= end)
+                Publication.channel_id == channel_id,
+                Publication.status == "queued",
+                ScheduleEntry.status == "pending",
+                ScheduleEntry.scheduled_at >= start,
+                ScheduleEntry.scheduled_at <= end,
             )
         )
         count = int(res.scalar() or 0)
