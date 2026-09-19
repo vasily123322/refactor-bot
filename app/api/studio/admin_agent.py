@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.studio.auth import StudioPrincipal, require_studio_principal
 from app.core.db import AsyncSessionLocal
-from app.domain.admin_agent import AdminAgentEvent, AdminAgentRun
+from app.domain.admin_agent import AdminAgentApproval, AdminAgentEvent, AdminAgentRun
 from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
 from app.services.admin_agent import (
@@ -19,6 +19,13 @@ from app.services.admin_agent import (
     AdminAgentRunner,
     SCENARIO_ATTENTION_TODAY,
     SCENARIO_DRAFTS_TOMORROW,
+)
+from app.services.admin_agent_approvals import (
+    ACTION_SCHEDULE_DRAFT_TOMORROW,
+    ApprovalExecutionError,
+    ApprovalInputError,
+    ApprovalStateConflict,
+    AdminAgentApprovalService,
 )
 
 
@@ -44,6 +51,46 @@ class AssistantRunRequest(BaseModel):
         max_length=128,
         pattern=r"^[A-Za-z0-9._:-]+$",
     )
+
+
+class AssistantApprovalCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content_item_id: int = Field(gt=0)
+    local_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    request_id: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+
+
+class AssistantApprovalDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class AssistantApprovalResponse(BaseModel):
+    id: int
+    channel_id: int
+    source_admin_agent_run_id: int | None
+    action_type: str
+    state: str
+    content_item_id: int
+    content_revision: int
+    timezone: str
+    target_local_date: str
+    local_time: str
+    resolved_scheduled_at: datetime
+    action_fingerprint: str
+    execution_key: str | None
+    request_id: str
+    schedule_entry_id: int | None
+    publication_id: int | None
+    reviewer_tg_user_id: int | None
+    failure_reason: str | None
+    reviewed_at: datetime | None
+    executed_at: datetime | None
+    created_at: datetime | None
 
 
 class AssistantEventResponse(BaseModel):
@@ -131,6 +178,165 @@ async def _response(
         created_at=row.created_at,
         events=events,
     )
+
+
+def _approval_response(row: AdminAgentApproval) -> AssistantApprovalResponse:
+    return AssistantApprovalResponse(
+        id=int(row.id),
+        channel_id=int(row.channel_id),
+        source_admin_agent_run_id=(
+            int(row.source_admin_agent_run_id)
+            if row.source_admin_agent_run_id is not None
+            else None
+        ),
+        action_type=str(row.action_type),
+        state=str(row.state),
+        content_item_id=int(row.content_item_id),
+        content_revision=int(row.content_revision),
+        timezone=str(row.timezone),
+        target_local_date=row.target_local_date.isoformat(),
+        local_time=str(row.local_time),
+        resolved_scheduled_at=row.resolved_scheduled_at,
+        action_fingerprint=str(row.action_fingerprint),
+        execution_key=row.execution_key,
+        request_id=str(row.request_id),
+        schedule_entry_id=(
+            int(row.schedule_entry_id) if row.schedule_entry_id is not None else None
+        ),
+        publication_id=(
+            int(row.publication_id) if row.publication_id is not None else None
+        ),
+        reviewer_tg_user_id=(
+            int(row.reviewer_tg_user_id)
+            if row.reviewer_tg_user_id is not None
+            else None
+        ),
+        failure_reason=row.failure_reason,
+        reviewed_at=row.reviewed_at,
+        executed_at=row.executed_at,
+        created_at=row.created_at,
+    )
+
+
+@router.post(
+    "/channels/{channel_id}/assistant/approvals",
+    response_model=AssistantApprovalResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_assistant_approval(
+    channel_id: int,
+    request: AssistantApprovalCreateRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> AssistantApprovalResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    try:
+        row = await AdminAgentApprovalService(session).create_schedule_draft_tomorrow(
+            owner_tg_user_id=principal.tg_user_id,
+            channel_id=channel_id,
+            content_item_id=request.content_item_id,
+            local_time_value=request.local_time,
+            request_id=request.request_id,
+        )
+    except ApprovalInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if str(row.action_type) != ACTION_SCHEDULE_DRAFT_TOMORROW:
+        raise HTTPException(status_code=409, detail="Unsupported approval action")
+    return _approval_response(row)
+
+
+@router.get(
+    "/channels/{channel_id}/assistant/approvals",
+    response_model=list[AssistantApprovalResponse],
+)
+async def list_assistant_approvals(
+    channel_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=50)] = 50,
+) -> list[AssistantApprovalResponse]:
+    await _require_owned_channel(session, principal, channel_id)
+    rows = await AdminAgentApprovalService(session).list(
+        owner_tg_user_id=principal.tg_user_id,
+        channel_id=channel_id,
+        limit=limit,
+    )
+    return [_approval_response(row) for row in rows]
+
+
+@router.get(
+    "/channels/{channel_id}/assistant/approvals/{approval_id}",
+    response_model=AssistantApprovalResponse,
+)
+async def get_assistant_approval(
+    channel_id: int,
+    approval_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> AssistantApprovalResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    row = await AdminAgentApprovalService(session).get(
+        approval_id=approval_id,
+        owner_tg_user_id=principal.tg_user_id,
+        channel_id=channel_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    return _approval_response(row)
+
+
+@router.post(
+    "/channels/{channel_id}/assistant/approvals/{approval_id}/approve",
+    response_model=AssistantApprovalResponse,
+)
+async def approve_assistant_approval(
+    channel_id: int,
+    approval_id: int,
+    _request: AssistantApprovalDecisionRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> AssistantApprovalResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    try:
+        row = await AdminAgentApprovalService(session).approve(
+            approval_id=approval_id,
+            owner_tg_user_id=principal.tg_user_id,
+            channel_id=channel_id,
+            reviewer_tg_user_id=principal.tg_user_id,
+        )
+    except ApprovalStateConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ApprovalExecutionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    return _approval_response(row)
+
+
+@router.post(
+    "/channels/{channel_id}/assistant/approvals/{approval_id}/reject",
+    response_model=AssistantApprovalResponse,
+)
+async def reject_assistant_approval(
+    channel_id: int,
+    approval_id: int,
+    _request: AssistantApprovalDecisionRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> AssistantApprovalResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    try:
+        row = await AdminAgentApprovalService(session).reject(
+            approval_id=approval_id,
+            owner_tg_user_id=principal.tg_user_id,
+            channel_id=channel_id,
+            reviewer_tg_user_id=principal.tg_user_id,
+        )
+    except ApprovalStateConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    return _approval_response(row)
 
 
 @router.post(
