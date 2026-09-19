@@ -119,6 +119,7 @@ export function AssistantPanel({
   const [error, setError] = useState<{ channelId: number; message: string } | null>(null);
   const [running, setRunning] = useState(false);
   const requestOwnershipRef = useRef(new ChannelRequestOwnership());
+  const runOwnershipRef = useRef(new ChannelRequestOwnership());
   const operationLockRef = useRef(new ExclusiveOperationLock());
   const validDataChannelRef = useRef<number | null>(null);
   const channelIdRef = useRef<number | null>(channel?.id ?? null);
@@ -166,12 +167,15 @@ export function AssistantPanel({
   }, [channel?.id]);
 
   useEffect(() => {
+    runOwnershipRef.current.invalidate();
     void loadHistory();
   }, [loadHistory]);
 
   const runAttention = useCallback(async () => {
     const channelId = channelIdRef.current;
     if (channelId === null) return;
+    const token = runOwnershipRef.current.begin(channelId);
+    const isCurrent = () => runOwnershipRef.current.isCurrent(token, channelIdRef.current);
     const result = await runExclusiveOperation(
       operationLockRef.current,
       'attention_today',
@@ -180,17 +184,17 @@ export function AssistantPanel({
         setError(null);
         try {
           const run = await studioApi.createAssistantRun(channelId, 'attention_today');
-          if (channelIdRef.current !== channelId) return;
+          if (!isCurrent()) return;
           setCurrentRun(run);
           setRuns((previous) => [run, ...previous.filter((item) => item.id !== run.id)].slice(0, 10));
           validDataChannelRef.current = channelId;
           setLoadState({ channelId, phase: 'loaded' });
         } catch (reason) {
-          if (channelIdRef.current === channelId) {
+          if (isCurrent()) {
             setError({ channelId, message: errorMessage(reason) });
           }
         } finally {
-          if (channelIdRef.current === channelId) setRunning(false);
+          if (isCurrent()) setRunning(false);
         }
       },
     );
