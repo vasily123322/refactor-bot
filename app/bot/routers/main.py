@@ -17,7 +17,6 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 import html
 from datetime import datetime, date, timezone, timedelta
 import re
-from sqlalchemy import select, func
 from contextlib import suppress
 from typing import Any, Mapping, Tuple
 from app.core.callbacks import CB
