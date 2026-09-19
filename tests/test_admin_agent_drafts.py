@@ -379,7 +379,7 @@ def test_drafts_tomorrow_ai_disabled_and_quota_exhausted_fail_without_content() 
                     request_id="draft-quota-0001",
                 )
                 assert exhausted.status == "failed"
-                assert await _content_count(session, channel_id) == 0
+                assert await _content_count(session, channel.id) == 0
         finally:
             await engine.dispose()
 
