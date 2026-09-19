@@ -135,7 +135,7 @@ def test_attention_run_is_channel_scoped_persistent_and_timezone_aware(monkeypat
                 assert result.status == "completed"
                 assert result.result is not None
                 assert result.result["timezone"] == "America/Los_Angeles"
-                assert result.result["generated_by"] == "deterministic_fallback"
+                assert result.result["generated_by"] == "deterministic"
 
                 items = result.result["attention_items"]
                 fact_ids = {item["fact_id"] for item in items}
