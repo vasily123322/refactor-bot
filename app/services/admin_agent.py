@@ -1119,14 +1119,24 @@ class AdminAgentRunner:
             run.execution_claim_token = None
             run.execution_claimed_at = None
         await self.session.commit()
-        await self._event(
-            run,
-            "run_completed",
-            payload={
-                "draft_count": int(result.get("draft_count") or 0),
-                "target_local_date": result.get("target_local_date"),
-            },
-        )
+        try:
+            await self._event(
+                run,
+                "run_completed",
+                payload={
+                    "draft_count": int(result.get("draft_count") or 0),
+                    "target_local_date": result.get("target_local_date"),
+                },
+            )
+        except Exception:
+            # Completion and claim clearing are already durable. A best-effort audit
+            # append must never turn the canonical completed run back into a failed
+            # resumable state.
+            await self.session.rollback()
+            durable = await self.session.get(AdminAgentRun, int(run.id))
+            if durable is None:
+                raise
+            return durable
         await self.session.refresh(run)
         return run
 
