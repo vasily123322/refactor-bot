@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -28,6 +29,7 @@ from app.services.admin_agent_series_approvals import (
     ITEM_PENDING,
     STATE_EXECUTED,
     STATE_EXECUTING,
+    STATE_FAILED,
     STATE_PARTIAL_FAILED,
     STATE_PENDING_REVIEW,
     STATE_REJECTED,
@@ -276,6 +278,28 @@ def test_series_proposal_is_server_authored_snapshot_and_idempotent(monkeypatch)
                         source_run_id=source.id,
                         request_id="series-invalid-time-0001",
                         slots=duplicate_time,
+                    )
+
+                malformed_date = _slots(4)
+                malformed_date[0]["local_date"] = "2026-9-20"
+                with pytest.raises(SeriesApprovalInputError, match="YYYY-MM-DD"):
+                    await service.create(
+                        owner_tg_user_id=owner.tg_user_id,
+                        channel_id=channel.id,
+                        source_run_id=source.id,
+                        request_id="series-invalid-date-format-0001",
+                        slots=malformed_date,
+                    )
+
+                malformed_clock = _slots(4)
+                malformed_clock[0]["local_time"] = "9:00"
+                with pytest.raises(SeriesApprovalInputError, match="HH:MM"):
+                    await service.create(
+                        owner_tg_user_id=owner.tg_user_id,
+                        channel_id=channel.id,
+                        source_run_id=source.id,
+                        request_id="series-invalid-clock-format-0001",
+                        slots=malformed_clock,
                     )
 
                 past = _slots(4)
@@ -546,6 +570,192 @@ def test_series_full_preflight_stale_and_reject_have_zero_batch_mutations(
             await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_series_timezone_and_canonical_conflict_preflight_are_zero_new_mutations(
+    monkeypatch,
+) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                owner, channel = await _setup_channel(session, 13007)
+                source = await _source_run(
+                    session,
+                    monkeypatch,
+                    owner=owner,
+                    channel=channel,
+                    count=2,
+                    request_id="series-source-timezone-0001",
+                )
+                service = AdminAgentSeriesApprovalService(session, now_utc=NOW)
+                proposal = await service.create(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    source_run_id=source.id,
+                    request_id="series-timezone-stale-0001",
+                    slots=_slots(2),
+                )
+                assert proposal.timezone == "UTC+3"
+                items = await service.items_for_batch(proposal.id)
+
+                await LegacyPublicationBridge(session).queue(
+                    content_item_id=items[0].content_item_id,
+                    content_revision=items[0].captured_content_revision,
+                    scheduled_at=items[0].resolved_scheduled_at,
+                    timezone_name="Europe/Berlin",
+                    repeat_rule=None,
+                    runtime_options=None,
+                    metadata={"test": "timezone-policy-change"},
+                )
+                before_timezone_approval = await _counts(session, channel.id)
+                stale_timezone = await service.approve(
+                    batch_id=proposal.id,
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    reviewer_tg_user_id=owner.tg_user_id,
+                )
+                assert stale_timezone is not None
+                assert stale_timezone.state == STATE_STALE
+                assert stale_timezone.failure_reason == "channel timezone changed"
+                assert await _counts(session, channel.id) == before_timezone_approval
+
+                source2 = await _source_run(
+                    session,
+                    monkeypatch,
+                    owner=owner,
+                    channel=channel,
+                    count=2,
+                    request_id="series-source-conflict-0001",
+                )
+                proposal2 = await service.create(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    source_run_id=source2.id,
+                    request_id="series-conflict-stale-0001",
+                    slots=_slots(2, minute_offset=15),
+                )
+                assert proposal2.timezone == "Europe/Berlin"
+                items2 = await service.items_for_batch(proposal2.id)
+                await LegacyPublicationBridge(session).queue(
+                    content_item_id=items2[1].content_item_id,
+                    content_revision=items2[1].captured_content_revision,
+                    scheduled_at=items2[1].resolved_scheduled_at,
+                    timezone_name=proposal2.timezone,
+                    repeat_rule=None,
+                    runtime_options=None,
+                    metadata={"test": "canonical-conflict"},
+                )
+                before_conflict_approval = await _counts(session, channel.id)
+                stale_conflict = await service.approve(
+                    batch_id=proposal2.id,
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    reviewer_tg_user_id=owner.tg_user_id,
+                )
+                assert stale_conflict is not None
+                assert stale_conflict.state == STATE_STALE
+                assert "conflicting canonical schedule" in str(
+                    stale_conflict.failure_reason
+                )
+                assert await _counts(session, channel.id) == before_conflict_approval
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_series_multiple_exact_recovery_outcomes_fail_closed(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                owner, channel = await _setup_channel(session, 13008)
+                source = await _source_run(
+                    session,
+                    monkeypatch,
+                    owner=owner,
+                    channel=channel,
+                    count=2,
+                    request_id="series-source-multi-recovery-0001",
+                )
+                service = AdminAgentSeriesApprovalService(session, now_utc=NOW)
+                proposal = await service.create(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    source_run_id=source.id,
+                    request_id="series-multi-recovery-0001",
+                    slots=_slots(2),
+                )
+                original_finalize = service._finalize_item
+
+                async def crash_after_bridge(*args, **kwargs):
+                    raise RuntimeError("synthetic recovery ambiguity seed")
+
+                monkeypatch.setattr(service, "_finalize_item", crash_after_bridge)
+                with pytest.raises(RuntimeError, match="synthetic recovery ambiguity seed"):
+                    await service.approve(
+                        batch_id=proposal.id,
+                        owner_tg_user_id=owner.tg_user_id,
+                        channel_id=channel.id,
+                        reviewer_tg_user_id=owner.tg_user_id,
+                    )
+                monkeypatch.setattr(service, "_finalize_item", original_finalize)
+
+                items = await service.items_for_batch(proposal.id)
+                first = items[0]
+                assert first.state == ITEM_EXECUTING
+                existing_schedule = (
+                    await session.execute(
+                        select(ScheduleEntry).where(
+                            ScheduleEntry.content_item_id == first.content_item_id,
+                            ScheduleEntry.content_revision
+                            == first.captured_content_revision,
+                        )
+                    )
+                ).scalar_one()
+                await LegacyPublicationBridge(session).queue(
+                    content_item_id=first.content_item_id,
+                    content_revision=first.captured_content_revision,
+                    scheduled_at=first.resolved_scheduled_at,
+                    timezone_name=proposal.timezone,
+                    repeat_rule=None,
+                    runtime_options=None,
+                    metadata=dict(existing_schedule.meta or {}),
+                )
+                before_retry = await _counts(session, channel.id)
+                recovery_service = AdminAgentSeriesApprovalService(
+                    session,
+                    now_utc=NOW + timedelta(seconds=31),
+                )
+                failed = await recovery_service.approve(
+                    batch_id=proposal.id,
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    reviewer_tg_user_id=owner.tg_user_id,
+                )
+                assert failed is not None
+                assert failed.state == STATE_FAILED
+                assert "canonical recovery conflict" in str(failed.failure_reason)
+                assert await _counts(session, channel.id) == before_retry
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_series_service_has_no_direct_canonical_insert_or_llm_path() -> None:
+    source = inspect.getsource(AdminAgentSeriesApprovalService)
+    assert "ScheduleEntry(" not in source
+    assert "Publication(" not in source
+    assert "AIGenerationService" not in source
+    assert "LegacyPublicationBridge(self.session).queue(" in source
 
 
 def test_series_crash_recovery_and_partial_failure_are_no_replay(monkeypatch) -> None:
