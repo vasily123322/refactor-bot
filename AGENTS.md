@@ -71,6 +71,13 @@ python -m app.bot.dispatcher
 - Archived `docs/archive/AI_*.md` files are historical and **not** authoritative — code/tests win.  
 - Don't invent second storage for memory/profile outside `filters`.
 
+### Studio UI
+
+- Before any Studio UI change, read and follow `studio/DESIGN_QA.md`.
+- `studio/DESIGN_QA.md` is the single canonical Studio UI QA/rules document; do not create a parallel UI standard/checklist.
+- External references such as `interfaces.dev/cheat-sheet` are engineering inputs only. Project requirements become normative by being incorporated into `studio/DESIGN_QA.md`.
+- Reuse existing Studio async/accessibility primitives and keep UI PRs scoped; do not mix UI quality work with backend publishing authority changes.
+
 ### External bots / tokens / sessions
 
 Conservative side effects (user preference):
