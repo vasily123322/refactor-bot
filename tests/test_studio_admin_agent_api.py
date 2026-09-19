@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 import httpx
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.api.studio.admin_agent as admin_agent_api_module
@@ -16,8 +17,10 @@ from app.api.studio.app import create_studio_app
 from app.api.studio.config import StudioConfig
 from app.core.config import settings
 from app.core.db import Base
+from app.domain.content.models import ContentItem
 from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
+from app.services.ai_generation import AIGenerationService
 
 
 def _init_data(user_id: int) -> str:
@@ -52,7 +55,7 @@ def _config() -> StudioConfig:
     )
 
 
-def test_studio_assistant_runs_are_owner_scoped_and_input_is_bounded(monkeypatch) -> None:
+def test_studio_assistant_runs_are_owner_scoped_bounded_and_draft_idempotent(monkeypatch) -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         try:
@@ -68,6 +71,31 @@ def test_studio_assistant_runs_are_owner_scoped_and_input_is_bounded(monkeypatch
                 other = await ClientsRepo(session).create_or_get(9702, "other", "Other")
                 foreign = await ChannelsRepo(session).create(other.id, -1009702, "Foreign")
 
+            generation_calls = 0
+
+            async def generated(self, **kwargs):
+                nonlocal generation_calls
+                generation_calls += 1
+                assert kwargs["channel_id"] == channel.id
+                return {
+                    "success": True,
+                    "text": json.dumps(
+                        {
+                            "drafts": [
+                                {"title": "Первый черновик", "text": "Evergreen текст номер один."},
+                                {"title": "Второй черновик", "text": "Evergreen текст номер два."},
+                                {"title": "Третий черновик", "text": "Evergreen текст номер три."},
+                            ]
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "tokens_used": 33,
+                    "model": "provider/model",
+                    "error": None,
+                }
+
+            monkeypatch.setattr(AIGenerationService, "run_pipeline", generated)
+
             headers = {"X-Telegram-Init-Data": _init_data(9701)}
             app = create_studio_app(_config())
             transport = httpx.ASGITransport(app=app)
@@ -81,6 +109,7 @@ def test_studio_assistant_runs_are_owner_scoped_and_input_is_bounded(monkeypatch
                 body = created.json()
                 assert body["channel_id"] == channel.id
                 assert body["scenario"] == "attention_today"
+                assert body["request_id"] is None
                 assert body["status"] == "completed"
                 assert body["result"]["tool_names"] == [
                     "schedule_attention",
@@ -118,6 +147,77 @@ def test_studio_assistant_runs_are_owner_scoped_and_input_is_bounded(monkeypatch
                     headers=headers,
                 )
                 assert invalid.status_code == 422
+
+                missing_key = await client.post(
+                    f"/api/studio/channels/{channel.id}/assistant/runs",
+                    json={"scenario": "drafts_tomorrow"},
+                    headers=headers,
+                )
+                assert missing_key.status_code == 422
+
+                forged_channel = await client.post(
+                    f"/api/studio/channels/{channel.id}/assistant/runs",
+                    json={
+                        "scenario": "drafts_tomorrow",
+                        "request_id": "api-draft-0001",
+                        "channel_id": foreign.id,
+                    },
+                    headers=headers,
+                )
+                assert forged_channel.status_code == 422
+
+                drafts = await client.post(
+                    f"/api/studio/channels/{channel.id}/assistant/runs",
+                    json={
+                        "scenario": "drafts_tomorrow",
+                        "request_id": "api-draft-0001",
+                    },
+                    headers=headers,
+                )
+                assert drafts.status_code == 201
+                draft_body = drafts.json()
+                assert draft_body["channel_id"] == channel.id
+                assert draft_body["scenario"] == "drafts_tomorrow"
+                assert draft_body["request_id"] == "api-draft-0001"
+                assert draft_body["status"] == "completed"
+                assert draft_body["result"]["draft_count"] == 3
+                assert len(draft_body["result"]["drafts"]) == 3
+                assert all(
+                    item["status"] == "draft"
+                    for item in draft_body["result"]["drafts"]
+                )
+
+                retry = await client.post(
+                    f"/api/studio/channels/{channel.id}/assistant/runs",
+                    json={
+                        "scenario": "drafts_tomorrow",
+                        "request_id": "api-draft-0001",
+                    },
+                    headers=headers,
+                )
+                assert retry.status_code == 201
+                assert retry.json()["id"] == draft_body["id"]
+                assert retry.json()["result"] == draft_body["result"]
+                assert generation_calls == 1
+
+                foreign_reuse = await client.post(
+                    f"/api/studio/channels/{foreign.id}/assistant/runs",
+                    json={
+                        "scenario": "drafts_tomorrow",
+                        "request_id": "api-draft-0001",
+                    },
+                    headers=headers,
+                )
+                assert foreign_reuse.status_code == 404
+
+            async with Session() as session:
+                assert (
+                    await session.execute(
+                        select(func.count(ContentItem.id)).where(
+                            ContentItem.channel_id == channel.id
+                        )
+                    )
+                ).scalar_one() == 3
         finally:
             await engine.dispose()
 
