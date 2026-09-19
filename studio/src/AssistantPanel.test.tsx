@@ -411,8 +411,8 @@ describe('Assistant skill catalog rendering', () => {
     expect(html).toContain('Brief серии');
     expect(html).toContain('Количество постов');
     expect(html).toContain('Подготовить серию');
-    expect(html).toContain('minlength="20"');
-    expect(html).toContain('maxlength="2000"');
+    expect(html).toContain('minLength="20"');
+    expect(html).toContain('maxLength="2000"');
     expect(html).toContain('read-only');
     expect(html).toContain('draft-write');
     expect(html).toContain('explicit');
