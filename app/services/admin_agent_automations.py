@@ -386,15 +386,15 @@ class AdminAgentAutomationService:
         if not owner_current:
             health = HEALTH_BLOCKED
             health_reason = DISABLED_OWNERSHIP_LOST
+        elif definition_blocker is not None:
+            health = HEALTH_BLOCKED
+            health_reason = definition_blocker
         elif durable_reason == DISABLED_MANUAL_PAUSE:
             health = HEALTH_PAUSED
             health_reason = DISABLED_MANUAL_PAUSE
         elif durable_reason in SAFETY_DISABLED_REASONS:
             health = HEALTH_BLOCKED
             health_reason = durable_reason
-        elif definition_blocker is not None:
-            health = HEALTH_BLOCKED
-            health_reason = definition_blocker
         elif not bool(row.enabled):
             health = HEALTH_BLOCKED
             health_reason = "disabled_without_reason"
@@ -843,6 +843,17 @@ class AdminAgentAutomationTickService:
                 return
 
             scheduled_for = as_utc(row.next_run_at)
+            if now - scheduled_for > MISFIRE_GRACE:
+                await self._advance_claimed(
+                    session,
+                    row,
+                    claim_token=claim_token,
+                    scheduled_for=scheduled_for,
+                    after_utc=now,
+                    outcome=OUTCOME_MISFIRE_SKIPPED,
+                )
+                return
+
             stored_input = (
                 dict(row.operator_input)
                 if isinstance(row.operator_input, Mapping)
@@ -907,17 +918,6 @@ class AdminAgentAutomationTickService:
                     claim_token=claim_token,
                     reason=DISABLED_OWNERSHIP_LOST,
                     now_utc=now,
-                )
-                return
-
-            if now - scheduled_for > MISFIRE_GRACE:
-                await self._advance_claimed(
-                    session,
-                    row,
-                    claim_token=claim_token,
-                    scheduled_for=scheduled_for,
-                    after_utc=now,
-                    outcome=OUTCOME_MISFIRE_SKIPPED,
                 )
                 return
 
