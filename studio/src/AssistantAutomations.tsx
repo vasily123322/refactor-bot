@@ -14,6 +14,7 @@ import {
   resolveChannelDataView,
   runExclusiveOperation,
   type ChannelLoadState,
+  type ChannelRequestToken,
   type ScopedLoadState,
 } from './asyncControl';
 import type { Channel } from './types';
@@ -216,9 +217,9 @@ export function AssistantAutomations({
   const [seriesBrief, setSeriesBrief] = useState('');
   const [seriesPostCount, setSeriesPostCount] = useState(3);
   const [creating, setCreating] = useState(false);
-  const [toggleBusyIds, setToggleBusyIds] = useState<Set<number>>(() => new Set());
-  const [resumeBusyIds, setResumeBusyIds] = useState<Set<number>>(() => new Set());
-  const [replacementBusyIds, setReplacementBusyIds] = useState<Set<number>>(() => new Set());
+  const [toggleBusyIds, setToggleBusyIds] = useState<Set<string>>(() => new Set());
+  const [resumeBusyIds, setResumeBusyIds] = useState<Set<string>>(() => new Set());
+  const [replacementBusyIds, setReplacementBusyIds] = useState<Set<string>>(() => new Set());
   const [historyAutomationId, setHistoryAutomationId] = useState<number | null>(null);
   const [historyRows, setHistoryRows] = useState<AssistantAutomationRunSummaryView[]>([]);
   const [historyState, setHistoryState] = useState<ScopedLoadState | null>(null);
@@ -227,17 +228,26 @@ export function AssistantAutomations({
   const channelIdRef = useRef(channel.id);
   const loadOwnershipRef = useRef(new ChannelRequestOwnership());
   const createOwnershipRef = useRef(new ChannelRequestOwnership());
+  const operationContextOwnershipRef = useRef(new ChannelRequestOwnership());
+  const operationContextRef = useRef<{
+    channelId: number | null;
+    token: ChannelRequestToken | null;
+  }>({ channelId: null, token: null });
   const createLockRef = useRef(new ExclusiveOperationLock());
-  const automationLocksRef = useRef(new Map<number, ExclusiveOperationLock>());
+  const automationLocksRef = useRef(new Map<string, ExclusiveOperationLock>());
   const historyOwnershipRef = useRef(new ChannelRequestOwnership());
   const historyScopeRef = useRef<string | null>(null);
-  const replacementRequestIdsRef = useRef(new Map<number, string>());
+  const replacementRequestIdsRef = useRef(new Map<string, string>());
   const validDataChannelRef = useRef<number | null>(null);
   const pendingCreateRef = useRef<{
     channelId: number;
     fingerprint: string;
     requestId: string;
   } | null>(null);
+  if (operationContextRef.current.channelId !== channel.id) {
+    operationContextRef.current.channelId = channel.id;
+    operationContextRef.current.token = operationContextOwnershipRef.current.begin(channel.id);
+  }
   channelIdRef.current = channel.id;
 
   const selectedSkill = eligibleSkills.find(
@@ -291,17 +301,12 @@ export function AssistantAutomations({
     createOwnershipRef.current.invalidate();
     pendingCreateRef.current = null;
     setCreating(false);
-    setToggleBusyIds(new Set());
-    setResumeBusyIds(new Set());
-    setReplacementBusyIds(new Set());
-    automationLocksRef.current.clear();
     historyOwnershipRef.current.invalidate();
     historyScopeRef.current = null;
     setHistoryAutomationId(null);
     setHistoryRows([]);
     setHistoryState(null);
     setHistoryError(null);
-    replacementRequestIdsRef.current.clear();
     setSelectedSkillKey('');
     setSeriesBrief('');
     setSeriesPostCount(3);
@@ -402,37 +407,42 @@ export function AssistantAutomations({
     automation: AssistantAutomationView,
   ) => {
     const channelId = channelIdRef.current;
-    let lock = automationLocksRef.current.get(automation.id);
+    const operationContextToken = operationContextRef.current.token;
+    if (operationContextToken === null) return;
+    const isCurrent = () => operationContextOwnershipRef.current.isCurrent(
+      operationContextToken,
+      channelIdRef.current,
+    );
+    const resourceKey = `${channelId}:${automation.id}`;
+    let lock = automationLocksRef.current.get(resourceKey);
     if (!lock) {
       lock = new ExclusiveOperationLock();
-      automationLocksRef.current.set(automation.id, lock);
+      automationLocksRef.current.set(resourceKey, lock);
     }
     const result = await runExclusiveOperation(
       lock,
       `toggle:${automation.id}`,
       async () => {
-        setToggleBusyIds((previous) => new Set(previous).add(automation.id));
-        setError(null);
+        setToggleBusyIds((previous) => new Set(previous).add(resourceKey));
+        if (isCurrent()) setError(null);
         try {
           const updated = await studioApi.setAssistantAutomationEnabled(
             channelId,
             automation.id,
             !automation.enabled,
           );
-          if (channelIdRef.current !== channelId) return;
+          if (!isCurrent()) return;
           setAutomations((previous) => mergeAssistantAutomation(previous, updated));
         } catch (reason) {
-          if (channelIdRef.current === channelId) {
+          if (isCurrent()) {
             setError({ channelId, message: automationErrorMessage(reason) });
           }
         } finally {
-          if (channelIdRef.current === channelId) {
-            setToggleBusyIds((previous) => {
-              const next = new Set(previous);
-              next.delete(automation.id);
-              return next;
-            });
-          }
+          setToggleBusyIds((previous) => {
+            const next = new Set(previous);
+            next.delete(resourceKey);
+            return next;
+          });
         }
       },
     );
@@ -473,31 +483,37 @@ export function AssistantAutomations({
     const run = automation.latest_run;
     if (!run?.resumable) return;
     const channelId = channelIdRef.current;
-    let lock = automationLocksRef.current.get(automation.id);
+    const operationContextToken = operationContextRef.current.token;
+    if (operationContextToken === null) return;
+    const isCurrent = () => operationContextOwnershipRef.current.isCurrent(
+      operationContextToken,
+      channelIdRef.current,
+    );
+    const resourceKey = `${channelId}:${automation.id}`;
+    let lock = automationLocksRef.current.get(resourceKey);
     if (!lock) {
       lock = new ExclusiveOperationLock();
-      automationLocksRef.current.set(automation.id, lock);
+      automationLocksRef.current.set(resourceKey, lock);
     }
     await runExclusiveOperation(lock, `resume:${automation.id}`, async () => {
-      setResumeBusyIds((previous) => new Set(previous).add(automation.id));
-      setError(null);
+      setResumeBusyIds((previous) => new Set(previous).add(resourceKey));
+      if (isCurrent()) setError(null);
       try {
         await studioApi.resumeAssistantRun(channelId, run.id);
-        if (channelIdRef.current !== channelId) return;
+        if (!isCurrent()) return;
         await loadAutomations();
+        if (!isCurrent()) return;
         await loadHistory(automation.id);
       } catch (reason) {
-        if (channelIdRef.current === channelId) {
+        if (isCurrent()) {
           setError({ channelId, message: automationErrorMessage(reason) });
         }
       } finally {
-        if (channelIdRef.current === channelId) {
-          setResumeBusyIds((previous) => {
-            const next = new Set(previous);
-            next.delete(automation.id);
-            return next;
-          });
-        }
+        setResumeBusyIds((previous) => {
+          const next = new Set(previous);
+          next.delete(resourceKey);
+          return next;
+        });
       }
     });
   }, [loadAutomations, loadHistory]);
@@ -509,21 +525,27 @@ export function AssistantAutomations({
       || !automation.suggested_skill_version
     ) return;
     const channelId = channelIdRef.current;
-    const existingRequestId = replacementRequestIdsRef.current.get(automation.id);
+    const operationContextToken = operationContextRef.current.token;
+    if (operationContextToken === null) return;
+    const isCurrent = () => operationContextOwnershipRef.current.isCurrent(
+      operationContextToken,
+      channelIdRef.current,
+    );
+    const resourceKey = `${channelId}:${automation.id}`;
+    const existingRequestId = replacementRequestIdsRef.current.get(resourceKey);
     const requestId = existingRequestId ?? automationRequestId();
-    replacementRequestIdsRef.current.set(automation.id, requestId);
-    let lock = automationLocksRef.current.get(automation.id);
+    replacementRequestIdsRef.current.set(resourceKey, requestId);
+    let lock = automationLocksRef.current.get(resourceKey);
     if (!lock) {
       lock = new ExclusiveOperationLock();
-      automationLocksRef.current.set(automation.id, lock);
+      automationLocksRef.current.set(resourceKey, lock);
     }
     await runExclusiveOperation(
       lock,
       `replacement:${automation.id}`,
       async () => {
-        const isCurrent = () => channelIdRef.current === channelId;
-        setReplacementBusyIds((previous) => new Set(previous).add(automation.id));
-        setError(null);
+        setReplacementBusyIds((previous) => new Set(previous).add(resourceKey));
+        if (isCurrent()) setError(null);
         try {
           const created = await studioApi.createAssistantAutomation(channelId, {
             request_id: requestId,
@@ -539,20 +561,18 @@ export function AssistantAutomations({
             },
           });
           if (!isCurrent()) return;
-          replacementRequestIdsRef.current.delete(automation.id);
+          replacementRequestIdsRef.current.delete(resourceKey);
           setAutomations((previous) => mergeAssistantAutomation(previous, created));
         } catch (reason) {
           if (isCurrent()) {
             setError({ channelId, message: automationErrorMessage(reason) });
           }
         } finally {
-          if (isCurrent()) {
-            setReplacementBusyIds((previous) => {
-              const next = new Set(previous);
-              next.delete(automation.id);
-              return next;
-            });
-          }
+          setReplacementBusyIds((previous) => {
+            const next = new Set(previous);
+            next.delete(resourceKey);
+            return next;
+          });
         }
       },
     );
@@ -725,9 +745,10 @@ export function AssistantAutomations({
           const controls = automationAvailableControls(automation);
           const canEnable = controls.includes('enable');
           const canPause = controls.includes('pause');
-          const automationBusy = toggleBusyIds.has(automation.id)
-            || resumeBusyIds.has(automation.id)
-            || replacementBusyIds.has(automation.id);
+          const automationResourceKey = `${channel.id}:${automation.id}`;
+          const automationBusy = toggleBusyIds.has(automationResourceKey)
+            || resumeBusyIds.has(automationResourceKey)
+            || replacementBusyIds.has(automationResourceKey);
           return (
             <article className="assistant-automation-row assistant-automation-row-e5" key={automation.id}>
               <div className="assistant-automation-main">
@@ -766,7 +787,7 @@ export function AssistantAutomations({
                       disabled={automationBusy}
                       onClick={() => void toggleEnabled(automation)}
                     >
-                      {toggleBusyIds.has(automation.id)
+                      {toggleBusyIds.has(automationResourceKey)
                         ? 'Сохраняю…'
                         : canPause ? 'Приостановить' : 'Включить'}
                     </button>
@@ -777,7 +798,7 @@ export function AssistantAutomations({
                       disabled={automationBusy}
                       onClick={() => void resumeLatest(automation)}
                     >
-                      {resumeBusyIds.has(automation.id) ? 'Продолжаю…' : 'Продолжить'}
+                      {resumeBusyIds.has(automationResourceKey) ? 'Продолжаю…' : 'Продолжить'}
                     </button>
                   )}
                   <button
@@ -805,7 +826,7 @@ export function AssistantAutomations({
                       disabled={automationBusy}
                       onClick={() => void createReplacement(automation)}
                     >
-                      {replacementBusyIds.has(automation.id)
+                      {replacementBusyIds.has(automationResourceKey)
                         ? 'Создаю замену…'
                         : `Создать замену на ${automation.suggested_skill_id}@${automation.suggested_skill_version}`}
                     </button>
