@@ -11,7 +11,7 @@ from app.core.db import Base
 
 
 PREVIOUS_HEAD = "20260919_0018"
-HEAD = "20260919_0020"
+HEAD = "20260919_0021"
 
 
 def _upgrade(repo_root: Path, database_path: Path, target: str) -> None:
@@ -226,13 +226,172 @@ def test_admin_agent_operator_input_migration_upgrades_existing_0019_schema(tmp_
         assert historical == (None,)
 
 
+
+def test_series_approval_batch_migration_upgrades_existing_0020_schema(tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    database_path = tmp_path / "existing-0020.db"
+    _upgrade(repo_root, database_path, "20260919_0020")
+
+    with sqlite3.connect(database_path) as connection:
+        assert "admin_agent_approval_batches" not in _tables(database_path)
+        connection.execute(
+            """
+            INSERT INTO admin_agent_runs
+                (
+                    owner_tg_user_id, channel_id, scenario, request_id,
+                    operator_input, status, tokens_used
+                )
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                779,
+                999997,
+                "drafts_tomorrow",
+                "historical-0020-run",
+                None,
+                "completed",
+                0,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO admin_agent_approvals
+                (
+                    owner_tg_user_id, channel_id, action_type, state,
+                    content_item_id, content_revision, timezone,
+                    target_local_date, local_time, resolved_scheduled_at,
+                    action_fingerprint, execution_key, request_id
+                )
+            VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                779,
+                999997,
+                "schedule_draft_tomorrow",
+                "pending_review",
+                123,
+                1,
+                "UTC+3",
+                "2099-09-20",
+                "14:30",
+                "2099-09-20 11:30:00+00:00",
+                "a" * 64,
+                "b" * 64,
+                "historical-c-approval-0020",
+            ),
+        )
+        connection.commit()
+
+    _upgrade(repo_root, database_path, "head")
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD,)
+        assert {
+            "admin_agent_approval_batches",
+            "admin_agent_approval_batch_items",
+        } <= _tables(database_path)
+        batch_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(admin_agent_approval_batches)"
+            )
+        }
+        assert {
+            "owner_tg_user_id",
+            "channel_id",
+            "source_run_id",
+            "action_type",
+            "state",
+            "request_id",
+            "timezone",
+            "item_count",
+            "series_title",
+            "source_plan_fingerprint",
+            "action_fingerprint",
+            "execution_key",
+            "reviewer_tg_user_id",
+            "execution_claim_token",
+            "execution_claimed_at",
+            "failure_reason",
+            "reviewed_at",
+            "executed_at",
+        } <= batch_columns
+        item_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(admin_agent_approval_batch_items)"
+            )
+        }
+        assert {
+            "batch_id",
+            "ordinal",
+            "content_item_id",
+            "captured_content_revision",
+            "content_title",
+            "local_date",
+            "local_time",
+            "resolved_scheduled_at",
+            "item_fingerprint",
+            "execution_key",
+            "state",
+            "schedule_entry_id",
+            "publication_id",
+            "failure_reason",
+            "execution_started_at",
+            "executed_at",
+        } <= item_columns
+        batch_indexes = {
+            row[1]: bool(row[2])
+            for row in connection.execute(
+                "PRAGMA index_list(admin_agent_approval_batches)"
+            )
+        }
+        item_indexes = {
+            row[1]: bool(row[2])
+            for row in connection.execute(
+                "PRAGMA index_list(admin_agent_approval_batch_items)"
+            )
+        }
+        assert batch_indexes["ix_admin_agent_approval_batches_execution_key"] is True
+        assert item_indexes["sqlite_autoindex_admin_agent_approval_batch_items_3"] is True
+        assert connection.execute(
+            """
+            SELECT request_id, operator_input, status
+            FROM admin_agent_runs
+            WHERE request_id = 'historical-0020-run'
+            """
+        ).fetchone() == ("historical-0020-run", None, "completed")
+        assert connection.execute(
+            """
+            SELECT action_type, state, request_id
+            FROM admin_agent_approvals
+            WHERE request_id = 'historical-c-approval-0020'
+            """
+        ).fetchone() == (
+            "schedule_draft_tomorrow",
+            "pending_review",
+            "historical-c-approval-0020",
+        )
+
+
 def test_fresh_head_contains_agent_tables_and_matches_registered_orm(tmp_path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     database_path = tmp_path / "fresh-head.db"
     _upgrade(repo_root, database_path, "head")
 
     tables = _tables(database_path)
-    assert {"admin_agent_runs", "admin_agent_events", "admin_agent_approvals", "admin_agent_run_artifacts"} <= tables
+    assert {
+        "admin_agent_runs",
+        "admin_agent_events",
+        "admin_agent_approvals",
+        "admin_agent_run_artifacts",
+        "admin_agent_approval_batches",
+        "admin_agent_approval_batch_items",
+    } <= tables
     assert tables == set(Base.metadata.tables) | {"alembic_version"}
 
 
@@ -247,7 +406,9 @@ def test_admin_agent_approval_regression_suite_is_mandatory() -> None:
             "pytest",
             "-q",
             "tests/test_admin_agent_approvals.py",
+            "tests/test_admin_agent_series_approvals.py",
             "tests/test_studio_admin_agent_approval_api.py",
+            "tests/test_studio_admin_agent_series_approval_api.py",
             "tests/test_admin_agent_resumable.py",
             "tests/test_studio_admin_agent_resume_api.py",
         ],
