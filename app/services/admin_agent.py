@@ -1021,11 +1021,15 @@ class AdminAgentRunner:
         owner_tg_user_id: int,
     ) -> AdminAgentRun:
         self._reset_execution_state()
+        skill = SKILL_REGISTRY.current_for_scenario(SCENARIO_ATTENTION_TODAY)
         run = AdminAgentRun(
             owner_tg_user_id=int(owner_tg_user_id),
             channel_id=int(channel_id),
             scenario=SCENARIO_ATTENTION_TODAY,
             request_id=None,
+            skill_id=skill.skill_id,
+            skill_version=skill.version,
+            workflow_phase=PHASE_CREATED,
             status=RUN_RUNNING,
             started_at=self.now_utc,
         )
@@ -1036,7 +1040,11 @@ class AdminAgentRunner:
         await self._event(
             run,
             "run_started",
-            payload={"scenario": SCENARIO_ATTENTION_TODAY},
+            payload={
+                "scenario": SCENARIO_ATTENTION_TODAY,
+                "skill_id": skill.skill_id,
+                "skill_version": skill.version,
+            },
         )
 
         try:
@@ -1048,6 +1056,8 @@ class AdminAgentRunner:
             run.tokens_used = int(result.pop("_tokens_used", 0) or 0)
             run.result = result
             run.status = RUN_COMPLETED
+            run.workflow_phase = PHASE_COMPLETED
+            run.checkpoint = None
             run.finished_at = datetime.now(timezone.utc)
             await self.session.commit()
             await self._event(
@@ -1064,6 +1074,7 @@ class AdminAgentRunner:
             assert run is not None
             run.status = RUN_FAILED
             run.error = "admin agent wall-clock limit exceeded"
+            run.workflow_phase = PHASE_FAILED
             run.finished_at = datetime.now(timezone.utc)
             await self.session.commit()
             await self._event(run, "run_failed", payload={"reason": "wall_clock_limit"})
@@ -1073,6 +1084,7 @@ class AdminAgentRunner:
             assert run is not None
             run.status = RUN_FAILED
             run.error = str(exc)
+            run.workflow_phase = PHASE_FAILED
             run.finished_at = datetime.now(timezone.utc)
             await self.session.commit()
             await self._event(run, "run_failed", payload={"reason": "execution_limit"})
@@ -1082,6 +1094,7 @@ class AdminAgentRunner:
             assert run is not None
             run.status = RUN_FAILED
             run.error = "admin agent execution failed"
+            run.workflow_phase = PHASE_FAILED
             run.finished_at = datetime.now(timezone.utc)
             await self.session.commit()
             await self._event(run, "run_failed", payload={"reason": "execution_error"})
