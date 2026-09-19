@@ -1005,3 +1005,78 @@ def test_series_concurrent_approve_has_single_batch_winner(
             await engine.dispose()
 
     asyncio.run(run())
+
+
+
+def test_claim_ownership_check_bypasses_stale_identity_map(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    async def run() -> None:
+        database_path = tmp_path / "series-claim-refresh.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as setup:
+                owner, channel = await _setup_channel(setup, 13007)
+                source = await _source_run(
+                    setup,
+                    monkeypatch,
+                    owner=owner,
+                    channel=channel,
+                    count=2,
+                    request_id="series-source-claim-refresh-0001",
+                )
+                proposal = await AdminAgentSeriesApprovalService(
+                    setup,
+                    now_utc=NOW,
+                ).create(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    source_run_id=source.id,
+                    request_id="series-claim-refresh-0001",
+                    slots=_slots(2),
+                )
+                batch_id = int(proposal.id)
+
+            async with Session() as first_session:
+                cached = await first_session.get(AdminAgentApprovalBatch, batch_id)
+                assert cached is not None
+                cached.state = STATE_EXECUTING
+                cached.execution_claim_token = "old-claim"
+                cached.execution_claimed_at = NOW
+                await first_session.commit()
+                assert cached.execution_claim_token == "old-claim"
+
+                async with Session() as second_session:
+                    current = await second_session.get(
+                        AdminAgentApprovalBatch,
+                        batch_id,
+                    )
+                    assert current is not None
+                    current.execution_claim_token = "new-claim"
+                    current.execution_claimed_at = NOW + timedelta(seconds=31)
+                    await second_session.commit()
+
+                # expire_on_commit=False deliberately leaves the first session's
+                # identity-map object stale. Ownership must still be checked
+                # against the database before any next canonical side effect.
+                assert cached.execution_claim_token == "old-claim"
+                service = AdminAgentSeriesApprovalService(
+                    first_session,
+                    now_utc=NOW + timedelta(seconds=31),
+                )
+                assert await service._claim_still_owned(
+                    batch_id=batch_id,
+                    claim_token="old-claim",
+                ) is False
+                assert await service._claim_still_owned(
+                    batch_id=batch_id,
+                    claim_token="new-claim",
+                ) is True
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
