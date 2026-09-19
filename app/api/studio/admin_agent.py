@@ -913,6 +913,36 @@ async def list_assistant_approvals(
 
 
 @router.get(
+    "/channels/{channel_id}/assistant/runs/{run_id}/approvals",
+    response_model=list[AssistantApprovalResponse],
+)
+async def list_assistant_run_approvals(
+    channel_id: int,
+    run_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> list[AssistantApprovalResponse]:
+    await _require_owned_channel(session, principal, channel_id)
+    run = await session.scalar(
+        select(AdminAgentRun).where(
+            AdminAgentRun.id == int(run_id),
+            AdminAgentRun.channel_id == int(channel_id),
+            AdminAgentRun.owner_tg_user_id == int(principal.tg_user_id),
+        )
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="Assistant run not found")
+    if str(run.scenario) != SCENARIO_DRAFTS_TOMORROW:
+        return []
+    rows = await AdminAgentApprovalService(session).latest_for_source_run(
+        owner_tg_user_id=principal.tg_user_id,
+        channel_id=channel_id,
+        source_run_id=run_id,
+    )
+    return [_approval_response(row) for row in rows]
+
+
+@router.get(
     "/channels/{channel_id}/assistant/approvals/{approval_id}",
     response_model=AssistantApprovalResponse,
 )

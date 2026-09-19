@@ -422,6 +422,27 @@ describe('Assistant async ownership', () => {
     expect(retry[0].id).toBe(approval.id);
   });
 
+  it('approval merge keeps only the latest association for one draft', () => {
+    const older = approvalView('rejected');
+    const newer = {
+      ...approvalView(),
+      id: 72,
+      request_id: 'approval-request-72',
+    };
+    const merged = mergeAssistantApproval([older], newer);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].id).toBe(72);
+    expect(merged[0].content_item_id).toBe(older.content_item_id);
+  });
+
+  it('rejects a stale targeted approval response after run switch', () => {
+    const ownership = new ChannelRequestOwnership();
+    const oldRun = ownership.begin(7, '22');
+    const newRun = ownership.begin(7, '23');
+    expect(ownership.isCurrent(oldRun, 7, '23')).toBe(false);
+    expect(ownership.isCurrent(newRun, 7, '23')).toBe(true);
+  });
+
 
   it('series approval merge replaces an idempotent retry instead of duplicating review cards', () => {
     const approval = seriesApprovalView();
@@ -704,6 +725,14 @@ describe('Assistant scenario rendering', () => {
     expect(html).toContain('На этом шаге расписание не меняется');
     expect(html).not.toContain('Поставлено в план');
     expect(html).not.toContain('ScheduleEntry #501');
+  });
+
+  it('does not offer a fresh proposal before targeted approval association is loaded', () => {
+    const html = renderToStaticMarkup(
+      <AssistantBrief run={draftRunView()} draftApprovalsReady={false} />,
+    );
+    expect(html).not.toContain('Создать предложение');
+    expect(html).not.toContain('type="time"');
   });
 
   it('pending review card shows exact effect, provider boundary and explicit decisions', () => {

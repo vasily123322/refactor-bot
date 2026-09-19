@@ -840,6 +840,10 @@ export const studioApi = {
     request<AssistantApprovalView[]>(
       `/api/studio/channels/${channelId}/assistant/approvals?limit=${encodeURIComponent(String(limit))}`,
     ),
+  assistantRunApprovals: (channelId: number, runId: number) =>
+    request<AssistantApprovalView[]>(
+      `/api/studio/channels/${channelId}/assistant/runs/${runId}/approvals`,
+    ),
   createAssistantApproval: (
     channelId: number,
     contentItemId: number,
