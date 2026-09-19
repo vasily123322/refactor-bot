@@ -158,6 +158,15 @@ class AdminAgentSkillRegistry:
         except KeyError as exc:
             raise KeyError(f"unknown admin-agent skill version: {key[0]}@{key[1]}") from exc
 
+    def current_for_skill_id(self, skill_id: str) -> AdminAgentSkillSpec:
+        key = str(skill_id)
+        matches = tuple(
+            spec for spec in self._current_by_scenario.values() if spec.skill_id == key
+        )
+        if len(matches) != 1:
+            raise KeyError(f"unknown admin-agent current skill id: {key}")
+        return matches[0]
+
     @property
     def specs(self) -> tuple[AdminAgentSkillSpec, ...]:
         return tuple(self._by_version.values())
