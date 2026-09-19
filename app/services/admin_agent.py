@@ -140,13 +140,13 @@ class AgentLimits:
     max_items_per_tool: int = 20
 
 
-DRAFT_SCENARIO_LIMITS = AgentLimits(
-    max_steps=4,
-    max_tool_calls=0,
-    max_llm_calls=1,
-    max_seconds=30.0,
-    max_items_per_tool=0,
-)
+def _limits_for_scenario(scenario: str) -> AgentLimits:
+    spec = SKILL_REGISTRY.current_for_scenario(scenario)
+    return AgentLimits(**dict(spec.execution_limits))
+
+
+ATTENTION_SCENARIO_LIMITS = _limits_for_scenario(SCENARIO_ATTENTION_TODAY)
+DRAFT_SCENARIO_LIMITS = _limits_for_scenario(SCENARIO_DRAFTS_TOMORROW)
 
 
 @dataclass(frozen=True, slots=True)
@@ -526,7 +526,7 @@ class AdminAgentRunner:
         now_utc: datetime | None = None,
     ):
         self.session = session
-        self.limits = limits or AgentLimits()
+        self.limits = limits or ATTENTION_SCENARIO_LIMITS
         self.registry = registry
         self.now_utc = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
         self._sequence = 0
