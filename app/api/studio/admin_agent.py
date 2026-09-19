@@ -14,6 +14,7 @@ from app.core.db import AsyncSessionLocal
 from app.domain.admin_agent import (
     AdminAgentApproval,
     AdminAgentApprovalBatch,
+    AdminAgentAutomation,
     AdminAgentEvent,
     AdminAgentRun,
     AdminAgentRunArtifact,
@@ -34,6 +35,11 @@ from app.services.admin_agent import (
     SCENARIO_PREPARE_CONTENT_SERIES,
     assistant_run_resume_state,
 )
+from app.services.admin_agent_automations import (
+    AutomationIdempotencyConflict,
+    AutomationInputError,
+    AdminAgentAutomationService,
+)
 from app.services.admin_agent_approvals import (
     ACTION_SCHEDULE_DRAFT_TOMORROW,
     ApprovalExecutionError,
@@ -50,6 +56,7 @@ from app.services.admin_agent_series_approvals import (
     SeriesApprovalStateConflict,
 )
 from app.services.admin_agent_skills import (
+    AUTOMATION_BOUNDED,
     RESUME_NONE,
     AdminAgentSkillSpec,
     SKILL_REGISTRY,
@@ -128,7 +135,72 @@ class AssistantSkillResponse(BaseModel):
     resume_policy: str
     resumable: bool
     approval_requirement: str
+    automation_policy: str
+    automation_allowed: bool
     execution_limits: dict[str, int | float]
+
+
+class EmptyAutomationOperatorInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class AssistantAutomationCadenceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["daily", "weekly"]
+    local_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    weekday: int | None = Field(default=None, ge=0, le=6, strict=True)
+
+    @model_validator(mode="after")
+    def validate_weekday(self) -> "AssistantAutomationCadenceRequest":
+        if self.kind == "daily" and self.weekday is not None:
+            raise ValueError("daily cadence must not include weekday")
+        if self.kind == "weekly" and self.weekday is None:
+            raise ValueError("weekly cadence requires weekday")
+        return self
+
+
+class AssistantAutomationCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    skill_id: str = Field(min_length=1, max_length=64)
+    skill_version: str = Field(min_length=1, max_length=32)
+    operator_input: EmptyAutomationOperatorInput | ContentSeriesOperatorInput
+    cadence: AssistantAutomationCadenceRequest
+
+
+class AssistantAutomationEnabledRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+
+
+class AssistantAutomationCadenceResponse(BaseModel):
+    kind: Literal["daily", "weekly"]
+    local_time: str
+    weekday: int | None = None
+
+
+class AssistantAutomationResponse(BaseModel):
+    id: int
+    channel_id: int
+    skill_id: str
+    skill_version: str
+    operator_input: dict[str, Any]
+    cadence: AssistantAutomationCadenceResponse
+    timezone: str
+    enabled: bool
+    next_run_at: datetime
+    last_scheduled_for: datetime | None
+    request_id: str
+    definition_fingerprint: str
+    created_at: datetime | None
+    updated_at: datetime | None
 
 
 class AssistantResumeRequest(BaseModel):
@@ -310,9 +382,34 @@ def _skill_response(spec: AdminAgentSkillSpec) -> AssistantSkillResponse:
         resume_policy=spec.resume_policy,
         resumable=spec.resume_policy != RESUME_NONE,
         approval_requirement=spec.approval_requirement,
+        automation_policy=spec.automation_policy,
+        automation_allowed=spec.automation_policy == AUTOMATION_BOUNDED,
         execution_limits={
             str(key): value for key, value in spec.execution_limits.items()
         },
+    )
+
+
+def _automation_response(row: AdminAgentAutomation) -> AssistantAutomationResponse:
+    return AssistantAutomationResponse(
+        id=int(row.id),
+        channel_id=int(row.channel_id),
+        skill_id=str(row.skill_id),
+        skill_version=str(row.skill_version),
+        operator_input=dict(row.operator_input or {}),
+        cadence=AssistantAutomationCadenceResponse(
+            kind=str(row.cadence_kind),
+            local_time=str(row.local_time),
+            weekday=(int(row.weekday) if row.weekday is not None else None),
+        ),
+        timezone=str(row.timezone),
+        enabled=bool(row.enabled),
+        next_run_at=row.next_run_at,
+        last_scheduled_for=row.last_scheduled_for,
+        request_id=str(row.request_id),
+        definition_fingerprint=str(row.definition_fingerprint),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
     )
 
 
@@ -510,6 +607,99 @@ async def list_assistant_skills(
 ) -> list[AssistantSkillResponse]:
     await _require_owned_channel(session, principal, channel_id)
     return [_skill_response(spec) for spec in SKILL_REGISTRY.current_specs]
+
+
+@router.get(
+    "/channels/{channel_id}/assistant/automations",
+    response_model=list[AssistantAutomationResponse],
+)
+async def list_assistant_automations(
+    channel_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> list[AssistantAutomationResponse]:
+    await _require_owned_channel(session, principal, channel_id)
+    rows = await AdminAgentAutomationService(session).list(
+        owner_tg_user_id=principal.tg_user_id,
+        channel_id=channel_id,
+    )
+    return [_automation_response(row) for row in rows]
+
+
+@router.post(
+    "/channels/{channel_id}/assistant/automations",
+    response_model=AssistantAutomationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_assistant_automation(
+    channel_id: int,
+    request: AssistantAutomationCreateRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> AssistantAutomationResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    operator_input = request.operator_input.model_dump()
+    try:
+        row = await AdminAgentAutomationService(session).create(
+            owner_tg_user_id=principal.tg_user_id,
+            channel_id=channel_id,
+            request_id=request.request_id,
+            skill_id=request.skill_id,
+            skill_version=request.skill_version,
+            operator_input=operator_input,
+            cadence_kind=request.cadence.kind,
+            local_time_value=request.cadence.local_time,
+            weekday=request.cadence.weekday,
+        )
+    except AutomationInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except AutomationIdempotencyConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _automation_response(row)
+
+
+@router.get(
+    "/channels/{channel_id}/assistant/automations/{automation_id}",
+    response_model=AssistantAutomationResponse,
+)
+async def get_assistant_automation(
+    channel_id: int,
+    automation_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> AssistantAutomationResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    row = await AdminAgentAutomationService(session).get(
+        automation_id=automation_id,
+        owner_tg_user_id=principal.tg_user_id,
+        channel_id=channel_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Automation not found")
+    return _automation_response(row)
+
+
+@router.post(
+    "/channels/{channel_id}/assistant/automations/{automation_id}/enabled",
+    response_model=AssistantAutomationResponse,
+)
+async def set_assistant_automation_enabled(
+    channel_id: int,
+    automation_id: int,
+    request: AssistantAutomationEnabledRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> AssistantAutomationResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    row = await AdminAgentAutomationService(session).set_enabled(
+        automation_id=automation_id,
+        owner_tg_user_id=principal.tg_user_id,
+        channel_id=channel_id,
+        enabled=request.enabled,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Automation not found")
+    return _automation_response(row)
 
 
 @router.post(
