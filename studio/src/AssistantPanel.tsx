@@ -13,6 +13,7 @@ import type {
   AssistantSkillView,
 } from './api';
 import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
+import { AssistantAutomations } from './AssistantAutomations';
 import {
   ChannelRequestOwnership,
   ExclusiveOperationLock,
@@ -1291,6 +1292,8 @@ export function AssistantPanel({
         runningScenario={runningScenario}
         onRun={(scenario, operatorInput) => void runScenario(scenario, operatorInput)}
       />
+
+      <AssistantAutomations channel={channel} skills={skills} />
 
       <section className="assistant-work-card">
         <div className="panel-heading">
