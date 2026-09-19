@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   ChannelRequestOwnership,
   ExclusiveOperationLock,
+  ScopedExclusiveOperationLock,
   resolveChannelDataView,
   resolveScopedDataView,
   runExclusiveOperation,
+  runScopedExclusiveOperation,
   type ChannelLoadState,
 } from './asyncControl';
 
@@ -197,6 +199,56 @@ describe('App exclusive operation ownership', () => {
     releaseDoctor();
     await doctor;
     expect(sourceOne.isLocked()).toBe(false);
+  });
+
+  it('Inbox scopes conflicting candidate operations without blocking another candidate', async () => {
+    const lock = new ScopedExclusiveOperationLock();
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let duplicate = 0;
+    let unrelated = 0;
+
+    const first = runScopedExclusiveOperation(lock, 'candidate:10', 'enrich-ai:10', async () => {
+      await firstGate;
+    });
+    const conflicting = await runScopedExclusiveOperation(lock, 'candidate:10', 'draft:10', async () => {
+      duplicate += 1;
+    });
+    const other = await runScopedExclusiveOperation(lock, 'candidate:11', 'draft:11', async () => {
+      unrelated += 1;
+    });
+
+    expect(conflicting.started).toBe(false);
+    expect(duplicate).toBe(0);
+    expect(other.started).toBe(true);
+    expect(unrelated).toBe(1);
+
+    releaseFirst();
+    await first;
+  });
+
+  it('Inbox global operations conflict with any candidate operation', async () => {
+    const lock = new ScopedExclusiveOperationLock();
+    let releaseCandidate!: () => void;
+    const candidateGate = new Promise<void>((resolve) => { releaseCandidate = resolve; });
+    let batchRuns = 0;
+
+    const candidate = runScopedExclusiveOperation(lock, 'candidate:10', 'rewrite-ai:10', async () => {
+      await candidateGate;
+    });
+    const batch = await runScopedExclusiveOperation(lock, null, 'batch-local', async () => {
+      batchRuns += 1;
+    });
+
+    expect(batch.started).toBe(false);
+    expect(batchRuns).toBe(0);
+    releaseCandidate();
+    await candidate;
+
+    const refresh = runScopedExclusiveOperation(lock, null, 'refresh', async () => undefined);
+    const blockedCandidate = await runScopedExclusiveOperation(lock, 'candidate:10', 'draft:10', async () => undefined);
+    expect(blockedCandidate.started).toBe(false);
+    expect((await refresh).started).toBe(true);
   });
 
   it('does not release a newer holder when an old token is released again', () => {
