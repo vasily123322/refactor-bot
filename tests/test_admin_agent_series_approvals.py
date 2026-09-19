@@ -161,6 +161,145 @@ async def _counts(session, channel_id: int) -> tuple[int, int, int]:
     return schedule_count, publication_count, attempt_count
 
 
+def test_series_proposal_rejects_dst_invalid_slots_atomically(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                owner, channel = await _setup_channel(session, 13010)
+                source = await _source_run(
+                    session,
+                    monkeypatch,
+                    owner=owner,
+                    channel=channel,
+                    count=2,
+                    request_id="series-source-dst-0001",
+                )
+                anchor_item = await ContentRepo(session).create(
+                    channel_id=channel.id,
+                    document=PostDocument(
+                        blocks=[{"id": "dst-anchor", "type": "text", "text": "DST anchor"}]
+                    ),
+                    status="draft",
+                    title="DST anchor",
+                    created_by_tg_user_id=owner.tg_user_id,
+                )
+                session.add(
+                    ScheduleEntry(
+                        content_item_id=anchor_item.id,
+                        content_revision=anchor_item.current_revision,
+                        channel_id=channel.id,
+                        scheduled_at=datetime(2026, 3, 28, 14, 0, tzinfo=timezone.utc),
+                        timezone="Europe/Berlin",
+                        status="completed",
+                        repeat_rule={},
+                        meta={},
+                    )
+                )
+                await session.commit()
+
+                gap_service = AdminAgentSeriesApprovalService(
+                    session,
+                    now_utc=datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc),
+                )
+                gap_slots = [
+                    {
+                        "ordinal": 1,
+                        "local_date": "2026-03-29",
+                        "local_time": "02:30",
+                    },
+                    {
+                        "ordinal": 2,
+                        "local_date": "2026-03-29",
+                        "local_time": "04:00",
+                    },
+                ]
+                with pytest.raises(SeriesApprovalInputError, match="does not exist"):
+                    await gap_service.create(
+                        owner_tg_user_id=owner.tg_user_id,
+                        channel_id=channel.id,
+                        source_run_id=source.id,
+                        request_id="series-dst-gap-0001",
+                        slots=gap_slots,
+                    )
+                assert (
+                    await session.execute(
+                        select(func.count(AdminAgentApprovalBatch.id)).where(
+                            AdminAgentApprovalBatch.channel_id == channel.id
+                        )
+                    )
+                ).scalar_one() == 0
+                assert await _counts(session, channel.id) == (1, 0, 0)
+
+                overlap_service = AdminAgentSeriesApprovalService(
+                    session,
+                    now_utc=datetime(2026, 10, 24, 12, 0, tzinfo=timezone.utc),
+                )
+                overlap_slots = [
+                    {
+                        "ordinal": 1,
+                        "local_date": "2026-10-25",
+                        "local_time": "02:30",
+                    },
+                    {
+                        "ordinal": 2,
+                        "local_date": "2026-10-25",
+                        "local_time": "04:00",
+                    },
+                ]
+                with pytest.raises(SeriesApprovalInputError, match="ambiguous"):
+                    await overlap_service.create(
+                        owner_tg_user_id=owner.tg_user_id,
+                        channel_id=channel.id,
+                        source_run_id=source.id,
+                        request_id="series-dst-overlap-0001",
+                        slots=overlap_slots,
+                    )
+                assert (
+                    await session.execute(
+                        select(func.count(AdminAgentApprovalBatch.id)).where(
+                            AdminAgentApprovalBatch.channel_id == channel.id
+                        )
+                    )
+                ).scalar_one() == 0
+
+                valid = await gap_service.create(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    source_run_id=source.id,
+                    request_id="series-dst-valid-0001",
+                    slots=[
+                        {
+                            "ordinal": 1,
+                            "local_date": "2026-03-29",
+                            "local_time": "03:30",
+                        },
+                        {
+                            "ordinal": 2,
+                            "local_date": "2026-03-29",
+                            "local_time": "04:00",
+                        },
+                    ],
+                )
+                assert valid.timezone == "Europe/Berlin"
+                items = await gap_service.items_for_batch(valid.id)
+                assert items[0].resolved_scheduled_at == datetime(
+                    2026,
+                    3,
+                    29,
+                    1,
+                    30,
+                    tzinfo=timezone.utc,
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_series_proposal_is_server_authored_snapshot_and_idempotent(monkeypatch) -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
