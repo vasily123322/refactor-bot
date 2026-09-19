@@ -379,7 +379,7 @@ def test_drafts_tomorrow_ai_disabled_and_quota_exhausted_fail_without_content() 
                     request_id="draft-quota-0001",
                 )
                 assert exhausted.status == "failed"
-                assert await _content_count(session, channel.id) == 0
+                assert await _content_count(session, channel_id) == 0
         finally:
             await engine.dispose()
 
@@ -466,6 +466,7 @@ def test_content_batch_rolls_back_when_second_flush_fails(monkeypatch) -> None:
             Session = async_sessionmaker(engine, expire_on_commit=False)
             async with Session() as session:
                 owner, channel, _ = await _setup_channel(session, tg_user_id=9840)
+                channel_id = int(channel.id)
                 original_flush = session.flush
                 calls = 0
 
