@@ -10,9 +10,6 @@ from aiogram.types import CallbackQuery
 
 from app.bot.routers.content_plan import (
     _render_content_plan,
-    cb_cp_edit_post,
-    cb_cp_open_post,
-    cb_cp_repeat_off,
     router as legacy_content_plan_router,
 )
 from app.bot.routers.content_plan_publication import (
@@ -83,6 +80,13 @@ async def _identity_for_callback(
     )
 
 
+async def _answer_expired(callback: CallbackQuery) -> None:
+    await callback.answer(
+        "Эта кнопка устарела. Переоткройте контент-план.",
+        show_alert=True,
+    )
+
+
 async def _answer_ambiguous(callback: CallbackQuery) -> None:
     await callback.answer(
         "Публикацию нельзя однозначно определить",
@@ -109,7 +113,7 @@ async def cb_cp_open_post_history_bridge(
 
     identity = await _identity_for_callback(post_id, callback)
     if identity.kind is HistoryPublicationIdentityKind.LEGACY_ONLY:
-        await cb_cp_open_post(callback, state)
+        await _answer_expired(callback)
         return
     if (
         identity.kind is not HistoryPublicationIdentityKind.CANONICAL_LINKED
@@ -143,7 +147,7 @@ async def cb_cp_edit_post_history_bridge(
 
     identity = await _identity_for_callback(post_id, callback)
     if identity.kind is HistoryPublicationIdentityKind.LEGACY_ONLY:
-        await cb_cp_edit_post(callback, state)
+        await _answer_expired(callback)
         return
     if (
         identity.kind is not HistoryPublicationIdentityKind.CANONICAL_LINKED
@@ -185,35 +189,10 @@ async def cb_cp_delete_post_canonical(
         )
         await cb_cp_delete_publication(canonical_callback, state)
         return
-    if identity.kind is HistoryPublicationIdentityKind.FAIL_CLOSED:
-        await _answer_ambiguous(callback)
+    if identity.kind is HistoryPublicationIdentityKind.LEGACY_ONLY:
+        await _answer_expired(callback)
         return
-
-    # True intentional legacy keeps the existing PostTask-aware cancellation behavior.
-    try:
-        result = await ContentPlanCancellationService(AsyncSessionLocal).delete(post_id)
-    except Exception:
-        await callback.answer("Не удалось удалить", show_alert=True)
-        return
-
-    if result.outcome == "cannot_cancel":
-        await callback.answer(
-            "Публикацию сейчас нельзя безопасно отменить",
-            show_alert=True,
-        )
-        return
-
-    try:
-        cid = int((await state.get_data()).get("cp_channel_id") or 0)
-        if not cid:
-            await callback.answer("Удалено", show_alert=False)
-            return
-        center = datetime.fromisoformat(date_iso)
-        await _render_content_plan(callback, state, cid, center)
-        with suppress(TelegramBadRequest):
-            await callback.answer("🗑 Удалено", show_alert=False)
-    except Exception:
-        await callback.answer("🗑 Удалено", show_alert=False)
+    await _answer_ambiguous(callback)
 
 
 @router.callback_query(F.data.startswith("cp_repeat_off:"))
@@ -234,7 +213,7 @@ async def cb_cp_repeat_off_history_bridge(
 
     identity = await _identity_for_callback(post_id, callback)
     if identity.kind is HistoryPublicationIdentityKind.LEGACY_ONLY:
-        await cb_cp_repeat_off(callback, state)
+        await _answer_expired(callback)
         return
     if identity.kind is HistoryPublicationIdentityKind.CANONICAL_LINKED:
         await callback.answer(
