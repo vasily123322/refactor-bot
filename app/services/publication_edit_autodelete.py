@@ -137,7 +137,6 @@ class PublicationEditAutodeleteSyncService:
         current_seconds = _option_int(current, "autodelete_seconds")
         previous_views = _option_int(previous, "autodelete_views")
         current_views = _option_int(current, "autodelete_views")
-        current_report = _option_report(current)
         if current_seconds is not None and current_views is not None:
             raise PublicationEditAutodeleteSyncError(
                 "canonical autodelete timer and views are mutually exclusive"
