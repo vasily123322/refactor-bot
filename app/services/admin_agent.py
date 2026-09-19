@@ -556,7 +556,7 @@ class AdminAgentRunner:
         self._sequence += 1
         self.session.add(
             AdminAgentEvent(
-                run_id=int(run.id),
+                run_id=resolved_run_id,
                 sequence=self._sequence,
                 event_type=event_type,
                 tool_name=tool_name,
@@ -809,7 +809,7 @@ class AdminAgentRunner:
         for ordinal, item in enumerate(items, start=1):
             self.session.add(
                 AdminAgentRunArtifact(
-                    run_id=int(run.id),
+                    run_id=resolved_run_id,
                     artifact_type=_DRAFT_ARTIFACT_TYPE,
                     ordinal=ordinal,
                     content_item_id=int(item.id),
@@ -1390,17 +1390,18 @@ class AdminAgentRunner:
         if str(run.status) == RUN_COMPLETED:
             return run
 
+        resolved_run_id = int(run.id)
         self._reset_execution_state()
-        await self._load_resume_sequence(int(run.id))
+        await self._load_resume_sequence(resolved_run_id)
         claim_token = uuid4().hex
         try:
-            await self._acquire_resume_claim(int(run.id), claim_token)
+            await self._acquire_resume_claim(resolved_run_id, claim_token)
         except AgentExecutionBusy:
-            current = await self.session.get(AdminAgentRun, int(run.id))
+            current = await self.session.get(AdminAgentRun, resolved_run_id)
             if current is not None and str(current.status) == RUN_COMPLETED:
                 return current
             raise
-        run = await self.session.get(AdminAgentRun, int(run.id))
+        run = await self.session.get(AdminAgentRun, resolved_run_id)
         assert run is not None
         await self.session.refresh(run)
 
@@ -1417,7 +1418,7 @@ class AdminAgentRunner:
             phase = str(run.workflow_phase or "")
             if phase == PHASE_GENERATION_INFLIGHT:
                 return await self._fail_draft_run(
-                    run_id=int(run.id),
+                    run_id=resolved_run_id,
                     error="generation outcome is ambiguous; create a new request",
                     reason="generation_outcome_ambiguous",
                     force_phase=PHASE_RESTART_REQUIRED,
@@ -1445,7 +1446,7 @@ class AdminAgentRunner:
             )
         except AgentResumeError:
             return await self._fail_draft_run(
-                run_id=int(run.id),
+                run_id=resolved_run_id,
                 error="admin-agent resume failed closed",
                 reason="resume_failed_closed",
                 force_phase=PHASE_FAILED_CLOSED,
@@ -1454,10 +1455,10 @@ class AdminAgentRunner:
             )
         except Exception:
             await self.session.rollback()
-            current = await self.session.get(AdminAgentRun, int(run.id))
+            current = await self.session.get(AdminAgentRun, resolved_run_id)
             assert current is not None
             return await self._fail_draft_run(
-                run_id=int(run.id),
+                run_id=resolved_run_id,
                 error="admin-agent resume execution failed",
                 reason="resume_execution_error",
                 force_phase=(
