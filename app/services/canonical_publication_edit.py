@@ -7,7 +7,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.content.models import ContentItem
-from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.publication_edit_autodelete import (
     PublicationEditAutodeleteSyncError,
@@ -92,7 +91,6 @@ class CanonicalPublicationEditCoordinator:
                     select(
                         Publication.status,
                         Publication.content_revision,
-                        Publication.legacy_post_task_id,
                         Publication.channel_id,
                         ScheduleEntry.status,
                         ScheduleEntry.content_revision,
@@ -119,34 +117,12 @@ class CanonicalPublicationEditCoordinator:
             (
                 publication_status,
                 publication_revision,
-                legacy_post_task_id,
                 publication_channel_id,
                 schedule_status,
                 schedule_revision,
                 current_revision,
                 content_kind,
             ) = lifecycle
-
-            if legacy_post_task_id is not None:
-                transport = (
-                    await session.execute(
-                        select(PostTask.status, PostTask.channel_id).where(
-                            PostTask.id == int(legacy_post_task_id)
-                        )
-                    )
-                ).one_or_none()
-                if transport is None:
-                    raise PublicationEditConflictError(
-                        "linked legacy transport is missing"
-                    )
-                transport_status, transport_channel_id = transport
-                if (
-                    str(transport_status or "") != "done"
-                    or int(transport_channel_id) != int(publication_channel_id)
-                ):
-                    raise PublicationEditConflictError(
-                        "linked legacy transport is not consistently published"
-                    )
 
         safe_expected_revision = int(expected_revision)
         if view.primary_message_id is None:
@@ -172,11 +148,6 @@ class CanonicalPublicationEditCoordinator:
         )
         try:
             validate_publication_edit_autodelete_execution(
-                legacy_post_task_id=(
-                    int(legacy_post_task_id)
-                    if legacy_post_task_id is not None
-                    else None
-                ),
                 runtime_options=runtime_options,
             )
         except PublicationEditAutodeleteSyncError as exc:
