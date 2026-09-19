@@ -275,6 +275,15 @@ describe('Assistant scenario rendering', () => {
     expect(html).not.toContain('Поставлено в план');
   });
 
+  it('rejected proposal renders an explicit textual terminal state', () => {
+    const html = renderToStaticMarkup(
+      <AssistantBrief run={draftRunView()} approvals={[approvalView('rejected')]} />,
+    );
+    expect(html).toContain('Отклонено');
+    expect(html).toContain('Создать предложение');
+    expect(html).not.toContain('Подтвердить постановку в план');
+  });
+
   it('stale proposal is textual, recoverable by a new proposal, and not color-only', () => {
     const html = renderToStaticMarkup(
       <AssistantBrief run={draftRunView()} approvals={[approvalView('stale')]} />,
