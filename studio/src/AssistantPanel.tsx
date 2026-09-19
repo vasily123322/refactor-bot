@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { StudioApiError, studioApi } from './api';
 import type {
   AssistantApprovalView,
+  AssistantContentSeriesOperatorInput,
   AssistantDraftReference,
   AssistantRunView,
   AssistantScenario,
@@ -43,7 +44,9 @@ function severityLabel(value: string): string {
 }
 
 function scenarioLabel(value: AssistantScenario): string {
-  return value === 'drafts_tomorrow' ? '3 черновика на завтра' : 'Внимание сегодня';
+  if (value === 'drafts_tomorrow') return '3 черновика на завтра';
+  if (value === 'prepare_content_series') return 'Серия постов';
+  return 'Внимание сегодня';
 }
 
 function approvalStateLabel(value: string): string {
@@ -285,6 +288,52 @@ export function AssistantBrief({
   }
   if (!result) return <div className="assistant-empty">Результат ещё не готов.</div>;
 
+  if (result.scenario === 'prepare_content_series') {
+    return (
+      <div className="assistant-brief">
+        <div className="assistant-summary">
+          <small>
+            Series plan · {result.requested_post_count} posts · fingerprint{' '}
+            {result.plan_fingerprint.slice(0, 12)}
+          </small>
+          <strong>{result.series_title}</strong>
+          <p>{result.series_summary}</p>
+          {result.editorial_context && (
+            <small>
+              Bounded context: {result.editorial_context.recent_count} recent ·{' '}
+              {result.editorial_context.scheduled_count} scheduled refs
+            </small>
+          )}
+        </div>
+        <div className="assistant-drafts">
+          {result.posts.map((post) => (
+            <article className="assistant-draft-card" key={post.content_item_id}>
+              <div className="assistant-item-heading">
+                <strong>{post.ordinal}. {post.title}</strong>
+                <span className="assistant-run-status assistant-run-status-completed">
+                  Черновик
+                </span>
+              </div>
+              <p><strong>Угол:</strong> {post.angle}</p>
+              <p><strong>Цель:</strong> {post.objective}</p>
+              <small>
+                Content #{post.content_item_id} · revision {post.content_revision}
+              </small>
+              <div className="assistant-refs">
+                <button
+                  className="link-button"
+                  onClick={() => onOpenContent?.(post.content_item_id)}
+                >
+                  Открыть в редакторе
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   if (result.scenario === 'drafts_tomorrow') {
     return (
       <div className="assistant-brief">
@@ -414,8 +463,20 @@ export function AssistantSkillCatalog({
   loading: boolean;
   errorMessage: string | null;
   runningScenario: AssistantScenario | null;
-  onRun?: (scenario: AssistantScenario) => void;
+  onRun?: (
+    scenario: AssistantScenario,
+    operatorInput?: AssistantContentSeriesOperatorInput,
+  ) => void;
 }) {
+  const [seriesBrief, setSeriesBrief] = useState('');
+  const [seriesPostCount, setSeriesPostCount] = useState(3);
+  const normalizedSeriesBrief = seriesBrief.trim();
+  const seriesInputValid = (
+    normalizedSeriesBrief.length >= 20
+    && normalizedSeriesBrief.length <= 2000
+    && seriesPostCount >= 2
+    && seriesPostCount <= 8
+  );
   const failed = Boolean(errorMessage);
   const empty = !loading && !failed && skills.length === 0;
 
@@ -488,16 +549,60 @@ export function AssistantSkillCatalog({
                   <dd>{operatorInputLabel(skill)}</dd>
                 </div>
               </dl>
-              <div className="assistant-refs">
-                <span>result: {skill.result_kind}</span>
-                <button
-                  className="button secondary"
-                  disabled={runningScenario !== null || !onRun}
-                  onClick={() => onRun?.(skill.scenario)}
-                >
-                  {runningScenario === skill.scenario ? 'Запускаю…' : 'Запустить'}
-                </button>
-              </div>
+              {skill.scenario === 'prepare_content_series' ? (
+                <div className="assistant-series-form">
+                  <label htmlFor="assistant-series-brief">Brief серии</label>
+                  <textarea
+                    id="assistant-series-brief"
+                    value={seriesBrief}
+                    minLength={20}
+                    maxLength={2000}
+                    required
+                    aria-describedby="assistant-series-brief-help"
+                    onChange={(event) => setSeriesBrief(event.target.value)}
+                    disabled={runningScenario !== null}
+                    rows={5}
+                  />
+                  <small id="assistant-series-brief-help">
+                    20–2000 символов после trim. Backend validation остаётся authoritative.
+                  </small>
+                  <label htmlFor="assistant-series-count">Количество постов</label>
+                  <select
+                    id="assistant-series-count"
+                    value={seriesPostCount}
+                    onChange={(event) => setSeriesPostCount(Number(event.target.value))}
+                    disabled={runningScenario !== null}
+                  >
+                    {[2, 3, 4, 5, 6, 7, 8].map((count) => (
+                      <option value={count} key={count}>{count}</option>
+                    ))}
+                  </select>
+                  <div className="assistant-refs">
+                    <span>result: {skill.result_kind}</span>
+                    <button
+                      className="button secondary"
+                      disabled={runningScenario !== null || !onRun || !seriesInputValid}
+                      onClick={() => onRun?.(
+                        skill.scenario,
+                        { brief: normalizedSeriesBrief, post_count: seriesPostCount },
+                      )}
+                    >
+                      {runningScenario === skill.scenario ? 'Запускаю…' : 'Подготовить серию'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="assistant-refs">
+                  <span>result: {skill.result_kind}</span>
+                  <button
+                    className="button secondary"
+                    disabled={runningScenario !== null || !onRun}
+                    onClick={() => onRun?.(skill.scenario)}
+                  >
+                    {runningScenario === skill.scenario ? 'Запускаю…' : 'Запустить'}
+                  </button>
+                </div>
+              )}
             </article>
           ))}
         </div>
@@ -633,7 +738,10 @@ export function AssistantPanel({
     void loadHistory();
   }, [loadCatalog, loadHistory]);
 
-  const runScenario = useCallback(async (scenario: AssistantScenario) => {
+  const runScenario = useCallback(async (
+    scenario: AssistantScenario,
+    operatorInput?: AssistantContentSeriesOperatorInput,
+  ) => {
     const channelId = channelIdRef.current;
     if (channelId === null) return;
     const result = await runExclusiveOperation(
@@ -645,8 +753,15 @@ export function AssistantPanel({
         setRunningScenario(scenario);
         setError(null);
         try {
-          const requestId = scenario === 'drafts_tomorrow' ? newRequestId('draft') : null;
-          const run = await studioApi.createAssistantRun(channelId, scenario, requestId);
+          const requestId = scenario === 'attention_today'
+            ? null
+            : newRequestId(scenario === 'prepare_content_series' ? 'series' : 'draft');
+          const run = await studioApi.createAssistantRun(
+            channelId,
+            scenario,
+            requestId,
+            operatorInput ?? null,
+          );
           if (!isCurrent()) return;
           setCurrentRun(run);
           setRuns((previous) => mergeAssistantRun(previous, run));
@@ -775,8 +890,8 @@ export function AssistantPanel({
           <small className="eyebrow">{channel.title || channel.tg_chat_id}</small>
           <h1>Assistant</h1>
           <p>
-            Bounded work panel: attention flow читает состояние, draft flow создаёт обычные
-            черновики, а постановка в план выполняется только через явное approval.
+            Bounded work panel: attention flow читает состояние, draft/series flows создают
+            обычные черновики, а постановка в план выполняется только через явное approval.
           </p>
         </div>
         <div className="top-actions">
@@ -800,6 +915,9 @@ export function AssistantPanel({
           {runningScenario === 'drafts_tomorrow' && (
             <InlineStatus>Готовлю три черновика в стиле канала…</InlineStatus>
           )}
+          {runningScenario === 'prepare_content_series' && (
+            <InlineStatus>Готовлю series plan и bounded набор черновиков…</InlineStatus>
+          )}
         </div>
       </header>
 
@@ -819,7 +937,7 @@ export function AssistantPanel({
             : null
         }
         runningScenario={runningScenario}
-        onRun={(scenario) => void runScenario(scenario)}
+        onRun={(scenario, operatorInput) => void runScenario(scenario, operatorInput)}
       />
 
       <section className="assistant-work-card">

@@ -218,7 +218,15 @@ export type SourceWorkerHealthView = {
   totals: SourceWorkerTotalsView;
 };
 
-export type AssistantScenario = 'attention_today' | 'drafts_tomorrow';
+export type AssistantScenario =
+  | 'attention_today'
+  | 'drafts_tomorrow'
+  | 'prepare_content_series';
+
+export type AssistantContentSeriesOperatorInput = {
+  brief: string;
+  post_count: number;
+};
 
 export type AssistantAttentionItem = {
   fact_id: string;
@@ -304,7 +312,32 @@ export type AssistantDraftRunResult = {
   execution_limits: AssistantExecutionLimits;
 };
 
-export type AssistantRunResult = AssistantAttentionRunResult | AssistantDraftRunResult;
+export type AssistantContentSeriesPost = {
+  ordinal: number;
+  title: string;
+  angle: string;
+  objective: string;
+  content_item_id: number;
+  content_revision: number;
+  status: 'draft' | string;
+};
+
+export type AssistantContentSeriesRunResult = {
+  scenario: 'prepare_content_series';
+  series_title: string;
+  series_summary: string;
+  requested_post_count: number;
+  plan_fingerprint: string;
+  editorial_context?: AssistantEditorialContextSummary;
+  posts: AssistantContentSeriesPost[];
+  write_capability: 'draft_write';
+  execution_limits: AssistantExecutionLimits;
+};
+
+export type AssistantRunResult =
+  | AssistantAttentionRunResult
+  | AssistantDraftRunResult
+  | AssistantContentSeriesRunResult;
 
 export type AssistantEventView = {
   id: number;
@@ -320,6 +353,7 @@ export type AssistantRunView = {
   channel_id: number;
   scenario: AssistantScenario;
   request_id: string | null;
+  operator_input: AssistantContentSeriesOperatorInput | null;
   skill_id: string | null;
   skill_version: string | null;
   workflow_phase: string | null;
@@ -541,12 +575,14 @@ export const studioApi = {
     channelId: number,
     scenario: AssistantScenario,
     requestId: string | null = null,
+    operatorInput: AssistantContentSeriesOperatorInput | null = null,
   ) =>
     request<AssistantRunView>(`/api/studio/channels/${channelId}/assistant/runs`, {
       method: 'POST',
       body: JSON.stringify({
         scenario,
         ...(requestId ? { request_id: requestId } : {}),
+        ...(operatorInput ? { operator_input: operatorInput } : {}),
       }),
     }),
   assistantRun: (channelId: number, runId: number) =>

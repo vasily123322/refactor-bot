@@ -96,9 +96,31 @@ def test_skill_registry_is_immutable_versioned_and_fails_closed() -> None:
     assert drafts.result_kind == "content_drafts"
     assert drafts.approval_requirement == APPROVAL_NONE
     assert "Draft-write" in drafts.capability_summary
+    series = SKILL_REGISTRY.current_for_scenario("prepare_content_series")
+    assert (series.skill_id, series.version, series.resume_policy) == (
+        "prepare_content_series",
+        "1",
+        RESUME_EXPLICIT,
+    )
+    assert series.allowed_capability_classes == (CAPABILITY_DRAFT_WRITE,)
+    assert series.context_profile == CONTEXT_EDITORIAL_V1
+    assert series.result_kind == "content_series"
+    assert series.approval_requirement == APPROVAL_NONE
+    assert series.execution_limits["max_llm_calls"] == 1
+    assert series.operator_input_schema["properties"]["brief"] == {
+        "type": "string",
+        "minLength": 20,
+        "maxLength": 2000,
+    }
+    assert series.operator_input_schema["properties"]["post_count"] == {
+        "type": "integer",
+        "minimum": 2,
+        "maximum": 8,
+    }
     assert [spec.skill_id for spec in SKILL_REGISTRY.current_specs] == [
         "attention_today",
         "drafts_tomorrow",
+        "prepare_content_series",
     ]
     with pytest.raises(TypeError):
         drafts.execution_limits["max_steps"] = 99

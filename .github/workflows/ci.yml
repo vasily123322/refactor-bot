@@ -50,10 +50,12 @@ jobs:
           pytest -q \
             tests/test_admin_agent.py \
             tests/test_admin_agent_drafts.py \
+            tests/test_admin_agent_content_series.py \
             tests/test_admin_agent_approvals.py \
             tests/test_admin_agent_resumable.py \
             tests/test_admin_agent_migration.py \
             tests/test_studio_admin_agent_api.py \
+            tests/test_studio_admin_agent_content_series_api.py \
             tests/test_studio_admin_agent_approval_api.py \
             tests/test_studio_admin_agent_resume_api.py \
             tests/test_ai_activity.py \

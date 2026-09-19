@@ -50,6 +50,7 @@ class AdminAgentRun(Base):
     )
     scenario: Mapped[str] = mapped_column(String(64), index=True)
     request_id: Mapped[str | None] = mapped_column(String(128))
+    operator_input: Mapped[dict | None] = mapped_column(JSON)
     skill_id: Mapped[str | None] = mapped_column(String(64))
     skill_version: Mapped[str | None] = mapped_column(String(32))
     workflow_phase: Mapped[str | None] = mapped_column(String(64))

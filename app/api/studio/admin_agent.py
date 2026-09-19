@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,12 +21,16 @@ from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
 from app.services.admin_agent import (
     DRAFT_SCENARIO_LIMITS,
+    SERIES_SCENARIO_LIMITS,
     AgentExecutionBusy,
+    AgentIdempotencyConflict,
     AgentResumeError,
     AdminAgentRunner,
     PHASE_DRAFTS_PERSISTED,
+    PHASE_SERIES_PERSISTED,
     SCENARIO_ATTENTION_TODAY,
     SCENARIO_DRAFTS_TOMORROW,
+    SCENARIO_PREPARE_CONTENT_SERIES,
     assistant_run_resume_state,
 )
 from app.services.admin_agent_approvals import (
@@ -55,22 +59,54 @@ SessionDep = Annotated[AsyncSession, Depends(_session_dependency)]
 PrincipalDep = Annotated[StudioPrincipal, Depends(require_studio_principal)]
 
 
+class ContentSeriesOperatorInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    brief: str = Field(min_length=20, max_length=2000)
+    post_count: int = Field(ge=2, le=8, strict=True)
+
+    @field_validator("brief", mode="before")
+    @classmethod
+    def normalize_brief(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
 class AssistantRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    scenario: Literal["attention_today", "drafts_tomorrow"] = SCENARIO_ATTENTION_TODAY
+    scenario: Literal[
+        "attention_today",
+        "drafts_tomorrow",
+        "prepare_content_series",
+    ] = SCENARIO_ATTENTION_TODAY
     request_id: str | None = Field(
         default=None,
         min_length=8,
         max_length=128,
         pattern=r"^[A-Za-z0-9._:-]+$",
     )
+    operator_input: ContentSeriesOperatorInput | None = None
+
+    @model_validator(mode="after")
+    def validate_scenario_input(self) -> "AssistantRunRequest":
+        if self.scenario == SCENARIO_PREPARE_CONTENT_SERIES:
+            if not self.request_id:
+                raise ValueError("request_id is required for prepare_content_series")
+            if self.operator_input is None:
+                raise ValueError("operator_input is required for prepare_content_series")
+        elif self.operator_input is not None:
+            raise ValueError("operator_input is not supported for this scenario")
+        return self
 
 
 class AssistantSkillResponse(BaseModel):
     skill_id: str
     version: str
-    scenario: Literal["attention_today", "drafts_tomorrow"]
+    scenario: Literal[
+        "attention_today",
+        "drafts_tomorrow",
+        "prepare_content_series",
+    ]
     display_title: str
     description: str
     category: str
@@ -144,6 +180,7 @@ class AssistantRunResponse(BaseModel):
     channel_id: int
     scenario: str
     request_id: str | None
+    operator_input: dict[str, Any] | None
     skill_id: str | None
     skill_version: str | None
     workflow_phase: str | None
@@ -237,7 +274,8 @@ async def _response(
         )
         events = [_event_response(event) for event in event_rows]
     resumable, resume_state = assistant_run_resume_state(row)
-    if resumable and str(row.workflow_phase or "") == PHASE_DRAFTS_PERSISTED:
+    persisted_phase = str(row.workflow_phase or "")
+    if resumable and persisted_phase in {PHASE_DRAFTS_PERSISTED, PHASE_SERIES_PERSISTED}:
         artifact_rows = list(
             (
                 await session.execute(
@@ -247,10 +285,20 @@ async def _response(
                 )
             ).scalars()
         )
+        if persisted_phase == PHASE_DRAFTS_PERSISTED:
+            expected_count = 3
+            expected_type = "content_draft"
+        else:
+            operator_input = row.operator_input if isinstance(row.operator_input, dict) else {}
+            raw_count = operator_input.get("post_count")
+            expected_count = int(raw_count) if isinstance(raw_count, int) else 0
+            expected_type = "series_draft"
         valid_artifacts = (
-            len(artifact_rows) == 3
-            and [int(value.ordinal) for value in artifact_rows] == [1, 2, 3]
-            and all(str(value.artifact_type) == "content_draft" for value in artifact_rows)
+            expected_count > 0
+            and len(artifact_rows) == expected_count
+            and [int(value.ordinal) for value in artifact_rows]
+            == list(range(1, expected_count + 1))
+            and all(str(value.artifact_type) == expected_type for value in artifact_rows)
         )
         if not valid_artifacts:
             resumable = False
@@ -261,6 +309,9 @@ async def _response(
         channel_id=int(row.channel_id),
         scenario=str(row.scenario),
         request_id=row.request_id,
+        operator_input=(
+            dict(row.operator_input) if isinstance(row.operator_input, dict) else None
+        ),
         skill_id=row.skill_id,
         skill_version=row.skill_version,
         workflow_phase=row.workflow_phase,
@@ -478,6 +529,25 @@ async def create_assistant_run(
             owner_tg_user_id=principal.tg_user_id,
             request_id=request.request_id,
         )
+    elif request.scenario == SCENARIO_PREPARE_CONTENT_SERIES:
+        if not request.request_id or request.operator_input is None:
+            raise HTTPException(
+                status_code=422,
+                detail="request_id and operator_input are required for prepare_content_series",
+            )
+        try:
+            run = await AdminAgentRunner(
+                session,
+                limits=SERIES_SCENARIO_LIMITS,
+            ).run_prepare_content_series(
+                channel_id=channel_id,
+                owner_tg_user_id=principal.tg_user_id,
+                request_id=request.request_id,
+                brief=request.operator_input.brief,
+                post_count=request.operator_input.post_count,
+            )
+        except AgentIdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     else:
         raise HTTPException(status_code=422, detail="Unsupported assistant scenario")
     return await _response(session, run, include_events=True)
@@ -505,14 +575,26 @@ async def resume_assistant_run(
     if existing is None:
         raise HTTPException(status_code=404, detail="Assistant run not found")
     try:
-        run = await AdminAgentRunner(
-            session,
-            limits=DRAFT_SCENARIO_LIMITS,
-        ).resume_drafts_tomorrow(
-            channel_id=channel_id,
-            owner_tg_user_id=principal.tg_user_id,
-            run_id=run_id,
-        )
+        if str(existing.scenario) == SCENARIO_DRAFTS_TOMORROW:
+            run = await AdminAgentRunner(
+                session,
+                limits=DRAFT_SCENARIO_LIMITS,
+            ).resume_drafts_tomorrow(
+                channel_id=channel_id,
+                owner_tg_user_id=principal.tg_user_id,
+                run_id=run_id,
+            )
+        elif str(existing.scenario) == SCENARIO_PREPARE_CONTENT_SERIES:
+            run = await AdminAgentRunner(
+                session,
+                limits=SERIES_SCENARIO_LIMITS,
+            ).resume_prepare_content_series(
+                channel_id=channel_id,
+                owner_tg_user_id=principal.tg_user_id,
+                run_id=run_id,
+            )
+        else:
+            raise HTTPException(status_code=409, detail="Assistant run is not resumable")
     except AgentExecutionBusy as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except AgentResumeError as exc:

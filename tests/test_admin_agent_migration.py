@@ -11,7 +11,7 @@ from app.core.db import Base
 
 
 PREVIOUS_HEAD = "20260919_0018"
-HEAD = "20260919_0019"
+HEAD = "20260919_0020"
 
 
 def _upgrade(repo_root: Path, database_path: Path, target: str) -> None:
@@ -91,6 +91,7 @@ def test_admin_agent_resumable_migration_upgrades_existing_0018_schema(tmp_path)
             "channel_id",
             "scenario",
             "request_id",
+            "operator_input",
             "skill_id",
             "skill_version",
             "workflow_phase",
@@ -155,7 +156,7 @@ def test_admin_agent_resumable_migration_upgrades_existing_0018_schema(tmp_path)
         } <= artifact_columns
         historical = connection.execute(
             """
-            SELECT request_id, skill_id, skill_version, workflow_phase, checkpoint
+            SELECT request_id, operator_input, skill_id, skill_version, workflow_phase, checkpoint
             FROM admin_agent_runs
             WHERE request_id IN (
                 'historical-a-run',
@@ -166,9 +167,9 @@ def test_admin_agent_resumable_migration_upgrades_existing_0018_schema(tmp_path)
             """
         ).fetchall()
         assert historical == [
-            ("historical-a-run", None, None, None, None),
-            ("historical-b-run", None, None, None, None),
-            ("historical-c-source-run", None, None, None, None),
+            ("historical-a-run", None, None, None, None, None),
+            ("historical-b-run", None, None, None, None, None),
+            ("historical-c-source-run", None, None, None, None, None),
         ]
         assert {
             row[1]
@@ -182,6 +183,47 @@ def test_admin_agent_resumable_migration_upgrades_existing_0018_schema(tmp_path)
             "payload",
             "created_at",
         }
+
+
+def test_admin_agent_operator_input_migration_upgrades_existing_0019_schema(tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    database_path = tmp_path / "existing-0019.db"
+    _upgrade(repo_root, database_path, "20260919_0019")
+
+    with sqlite3.connect(database_path) as connection:
+        before_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(admin_agent_runs)")
+        }
+        assert "operator_input" not in before_columns
+        connection.execute(
+            """
+            INSERT INTO admin_agent_runs
+                (owner_tg_user_id, channel_id, scenario, request_id, status, tokens_used)
+            VALUES
+                (?, ?, ?, ?, ?, ?)
+            """,
+            (778, 999998, "drafts_tomorrow", "historical-0019-run", "completed", 0),
+        )
+        connection.commit()
+
+    _upgrade(repo_root, database_path, "head")
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD,)
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(admin_agent_runs)")
+        }
+        assert "operator_input" in columns
+        historical = connection.execute(
+            """
+            SELECT operator_input
+            FROM admin_agent_runs
+            WHERE request_id = 'historical-0019-run'
+            """
+        ).fetchone()
+        assert historical == (None,)
 
 
 def test_fresh_head_contains_agent_tables_and_matches_registered_orm(tmp_path) -> None:

@@ -113,8 +113,9 @@ def test_studio_assistant_runs_are_owner_scoped_bounded_and_draft_idempotent(mon
                 assert [(row["skill_id"], row["version"]) for row in skills] == [
                     ("attention_today", "1"),
                     ("drafts_tomorrow", "1"),
+                    ("prepare_content_series", "1"),
                 ]
-                attention_skill, draft_skill = skills
+                attention_skill, draft_skill, series_skill = skills
                 assert attention_skill["capability_classes"] == ["read_only"]
                 assert attention_skill["resumable"] is False
                 assert attention_skill["approval_requirement"] == "none"
@@ -125,6 +126,14 @@ def test_studio_assistant_runs_are_owner_scoped_bounded_and_draft_idempotent(mon
                 assert draft_skill["execution_limits"]["max_llm_calls"] == 1
                 assert draft_skill["execution_limits"]["max_seconds"] == 30.0
                 assert "memory/profile" in draft_skill["context_requirements"]
+                assert series_skill["capability_classes"] == ["draft_write"]
+                assert series_skill["resumable"] is True
+                assert series_skill["result_kind"] == "content_series"
+                assert series_skill["operator_input_schema"]["required"] == [
+                    "brief",
+                    "post_count",
+                ]
+                assert series_skill["operator_input_schema"]["additionalProperties"] is False
 
                 denied_catalog = await client.get(
                     f"/api/studio/channels/{foreign.id}/assistant/skills",
