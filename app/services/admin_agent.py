@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from typing import Awaitable, Callable
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import to_user_tz
@@ -176,10 +176,7 @@ async def _publication_attention(ctx: AgentToolContext) -> dict:
                 select(Publication)
                 .where(
                     Publication.channel_id == int(ctx.channel_id),
-                    or_(
-                        Publication.status.in_(("failed", "error")),
-                        Publication.last_error.is_not(None),
-                    ),
+                    Publication.status.in_(("failed", "error")),
                 )
                 .order_by(Publication.updated_at.desc(), Publication.id.desc())
                 .limit(ctx.limit)
@@ -334,9 +331,9 @@ def _fallback_summary(facts: list[dict]) -> str:
 def _safe_llm_priority(text: str, facts: list[dict]) -> list[dict] | None:
     """Accept only an ordering of already supplied fact IDs; never model-authored facts."""
     clean = str(text or "").strip()
-    if clean.startswith("\`\`\`"):
+    if clean.startswith("```"):
         lines = clean.splitlines()
-        if len(lines) >= 3 and lines[-1].strip().startswith("\`\`\`"):
+        if len(lines) >= 3 and lines[-1].strip().startswith("```"):
             clean = "\n".join(lines[1:-1]).strip()
             if clean.lower().startswith("json"):
                 clean = clean[4:].strip()
