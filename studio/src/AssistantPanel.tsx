@@ -58,7 +58,7 @@ export function AssistantBrief({
   return (
     <div className="assistant-brief">
       <div className="assistant-summary">
-        <small>{result.timezone} · {result.generated_by === 'llm' ? 'AI summary' : 'deterministic summary'}</small>
+        <small>{result.timezone} · {result.generated_by === 'llm_priority' ? 'AI-prioritized facts' : 'deterministic facts'}</small>
         <p>{result.summary}</p>
       </div>
       {result.attention_items.length === 0 ? (
