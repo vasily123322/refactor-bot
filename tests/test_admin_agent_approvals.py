@@ -291,18 +291,23 @@ def test_approve_uses_canonical_facade_once_and_has_no_provider_side_effect(
                 owner, channel = await _setup_channel(session, tg_user_id=9914)
                 item = await _draft(
                     session,
-                    channel_id=channel.id,
-                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel_id,
+                    owner_tg_user_id=owner_id,
                 )
                 now = datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc)
                 service = AdminAgentApprovalService(session, now_utc=now)
                 approval = await service.create_schedule_draft_tomorrow(
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
                     content_item_id=item.id,
                     local_time_value="17:15",
                     request_id="approval-execute-0001",
                 )
+
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
+                item_id = int(item.id)
+                approval_id = int(approval.id)
 
                 original_queue = LegacyPublicationBridge.queue
                 calls: list[dict] = []
@@ -313,22 +318,22 @@ def test_approve_uses_canonical_facade_once_and_has_no_provider_side_effect(
 
                 monkeypatch.setattr(LegacyPublicationBridge, "queue", tracked_queue)
                 executed = await service.approve(
-                    approval_id=approval.id,
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
-                    reviewer_tg_user_id=owner.tg_user_id,
+                    approval_id=approval_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    reviewer_tg_user_id=owner_id,
                 )
                 assert executed is not None
                 assert executed.state == STATE_EXECUTED
                 assert len(calls) == 1
-                assert calls[0]["content_item_id"] == item.id
+                assert calls[0]["content_item_id"] == item_id
                 assert calls[0]["content_revision"] == 1
                 assert calls[0]["repeat_rule"] is None
                 assert calls[0]["runtime_options"] is None
-                assert calls[0]["metadata"]["admin_agent_approval_id"] == approval.id
+                assert calls[0]["metadata"]["admin_agent_approval_id"] == approval_id
                 assert calls[0]["metadata"]["admin_agent_execution_key"] == executed.execution_key
 
-                assert await _counts(session, channel.id) == (1, 1)
+                assert await _counts(session, channel_id) == (1, 1)
                 schedule = await session.get(ScheduleEntry, executed.schedule_entry_id)
                 publication = await session.get(Publication, executed.publication_id)
                 assert schedule is not None
@@ -350,16 +355,16 @@ def test_approve_uses_canonical_facade_once_and_has_no_provider_side_effect(
                 ).scalar_one() == 0
 
                 retry = await service.approve(
-                    approval_id=approval.id,
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
-                    reviewer_tg_user_id=owner.tg_user_id,
+                    approval_id=approval_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    reviewer_tg_user_id=owner_id,
                 )
                 assert retry is not None
                 assert retry.schedule_entry_id == executed.schedule_entry_id
                 assert retry.publication_id == executed.publication_id
                 assert len(calls) == 1
-                assert await _counts(session, channel.id) == (1, 1)
+                assert await _counts(session, channel_id) == (1, 1)
         finally:
             await engine.dispose()
 
@@ -468,18 +473,22 @@ def test_crash_after_canonical_commit_recovers_same_pair(monkeypatch) -> None:
                 owner, channel = await _setup_channel(session, tg_user_id=9916)
                 item = await _draft(
                     session,
-                    channel_id=channel.id,
-                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel_id,
+                    owner_tg_user_id=owner_id,
                 )
                 now = datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc)
                 service = AdminAgentApprovalService(session, now_utc=now)
                 approval = await service.create_schedule_draft_tomorrow(
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
                     content_item_id=item.id,
                     local_time_value="18:00",
                     request_id="approval-recovery-0001",
                 )
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
+                approval_id = int(approval.id)
+
                 original_finalize = service._finalize_executed
 
                 async def crash_after_queue(*args, **kwargs):
@@ -488,13 +497,13 @@ def test_crash_after_canonical_commit_recovers_same_pair(monkeypatch) -> None:
                 monkeypatch.setattr(service, "_finalize_executed", crash_after_queue)
                 with pytest.raises(ApprovalExecutionError, match="canonical scheduling attempt failed"):
                     await service.approve(
-                        approval_id=approval.id,
-                        owner_tg_user_id=owner.tg_user_id,
-                        channel_id=channel.id,
-                        reviewer_tg_user_id=owner.tg_user_id,
+                        approval_id=approval_id,
+                        owner_tg_user_id=owner_id,
+                        channel_id=channel_id,
+                        reviewer_tg_user_id=owner_id,
                     )
-                assert await _counts(session, channel.id) == (1, 1)
-                persisted = await session.get(AdminAgentApproval, approval.id)
+                assert await _counts(session, channel_id) == (1, 1)
+                persisted = await session.get(AdminAgentApproval, approval_id)
                 assert persisted is not None
                 assert persisted.state == STATE_EXECUTING
                 assert persisted.schedule_entry_id is None
@@ -503,17 +512,17 @@ def test_crash_after_canonical_commit_recovers_same_pair(monkeypatch) -> None:
 
                 monkeypatch.setattr(service, "_finalize_executed", original_finalize)
                 recovered = await service.approve(
-                    approval_id=approval.id,
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
-                    reviewer_tg_user_id=owner.tg_user_id,
+                    approval_id=approval_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    reviewer_tg_user_id=owner_id,
                 )
                 assert recovered is not None
                 assert recovered.state == STATE_EXECUTED
                 assert recovered.execution_key == execution_key
                 assert recovered.schedule_entry_id is not None
                 assert recovered.publication_id is not None
-                assert await _counts(session, channel.id) == (1, 1)
+                assert await _counts(session, channel_id) == (1, 1)
         finally:
             await engine.dispose()
 
