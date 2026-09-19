@@ -91,6 +91,8 @@ def test_skill_registry_is_immutable_versioned_and_fails_closed() -> None:
     )
     assert drafts.allowed_capability_classes == (CAPABILITY_DRAFT_WRITE,)
     assert drafts.context_profile == CONTEXT_EDITORIAL_V1
+    with pytest.raises(TypeError):
+        drafts.execution_limits["max_steps"] = 99
 
     with pytest.raises(KeyError, match="unknown admin-agent skill version"):
         SKILL_REGISTRY.resolve("drafts_tomorrow", "999")
