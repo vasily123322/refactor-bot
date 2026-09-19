@@ -669,7 +669,8 @@ describe('Assistant scenario rendering', () => {
     expect(html).toContain('4. Пост 4');
     expect(html).toContain('pending');
     expect(html).toContain('role="alert"');
-    expect(html).toContain('Создать предложение расписания');
+    expect(html).not.toContain('Создать предложение расписания');
+    expect(html).toContain('Открыть Planner');
   });
 
   it('rejected series review is terminal and offers a fresh explicit proposal surface', () => {
