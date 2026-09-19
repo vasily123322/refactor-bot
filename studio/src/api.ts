@@ -240,6 +240,26 @@ export type AssistantExecutionLimits = {
   max_tool_calls: number;
   max_llm_calls: number;
   max_seconds: number;
+  max_items_per_tool?: number;
+};
+
+export type AssistantSkillView = {
+  skill_id: string;
+  version: string;
+  scenario: AssistantScenario;
+  display_title: string;
+  description: string;
+  category: string;
+  operator_input_schema: Record<string, unknown>;
+  result_kind: string;
+  capability_classes: string[];
+  capability_summary: string;
+  context_profile: string;
+  context_requirements: string;
+  resume_policy: string;
+  resumable: boolean;
+  approval_requirement: string;
+  execution_limits: AssistantExecutionLimits;
 };
 
 export type AssistantAttentionRunResult = {
@@ -508,6 +528,10 @@ export const studioApi = {
     request<LocalBatchEnrichmentResult>(
       `/api/studio/channels/${channelId}/candidates/enrich/local-batch`,
       { method: 'POST', body: JSON.stringify({ limit }) },
+    ),
+  assistantSkills: (channelId: number) =>
+    request<AssistantSkillView[]>(
+      `/api/studio/channels/${channelId}/assistant/skills`,
     ),
   assistantRuns: (channelId: number, limit = 10) =>
     request<AssistantRunView[]>(

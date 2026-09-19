@@ -6,6 +6,7 @@ import type {
   AssistantDraftReference,
   AssistantRunView,
   AssistantScenario,
+  AssistantSkillView,
 } from './api';
 import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
 import {
@@ -380,6 +381,131 @@ export function AssistantBrief({
   );
 }
 
+function operatorInputLabel(skill: AssistantSkillView): string {
+  const properties = skill.operator_input_schema.properties;
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+    return 'Операторский ввод: схема недоступна';
+  }
+  const count = Object.keys(properties as Record<string, unknown>).length;
+  return count === 0 ? 'Операторский ввод: не требуется' : `Операторских полей: ${count}`;
+}
+
+function executionLimitLabel(skill: AssistantSkillView): string {
+  const limits = skill.execution_limits;
+  const itemLimit = limits.max_items_per_tool
+    ? ` · items/tool ≤ ${limits.max_items_per_tool}`
+    : '';
+  return [
+    `steps ≤ ${limits.max_steps}`,
+    `tools ≤ ${limits.max_tool_calls}`,
+    `LLM ≤ ${limits.max_llm_calls}`,
+    `time ≤ ${limits.max_seconds}s${itemLimit}`,
+  ].join(' · ');
+}
+
+export function AssistantSkillCatalog({
+  skills,
+  loading,
+  errorMessage,
+  runningScenario,
+  onRun,
+}: {
+  skills: AssistantSkillView[];
+  loading: boolean;
+  errorMessage: string | null;
+  runningScenario: AssistantScenario | null;
+  onRun?: (scenario: AssistantScenario) => void;
+}) {
+  const failed = Boolean(errorMessage);
+  const empty = !loading && !failed && skills.length === 0;
+
+  return (
+    <section className="assistant-history-card" aria-label="Каталог навыков Assistant">
+      <div className="panel-heading">
+        <div>
+          <h2>Skill catalog</h2>
+          <small>Только code-defined current skills; launcher не принимает skill id/version.</small>
+        </div>
+      </div>
+      <AsyncRegion
+        className="assistant-brief"
+        loading={loading}
+        error={failed}
+        empty={empty}
+        loadingLabel="Загружаю каталог навыков…"
+        loadingFallback={
+          <>
+            <SkeletonBlock height={12} width="52%" />
+            <SkeletonBlock height={72} />
+          </>
+        }
+        emptyFallback={<div className="assistant-empty">Каталог навыков пуст.</div>}
+        errorFallback={(
+          <div className="assistant-empty">
+            Каталог навыков не загружен. {errorMessage || 'Повторите позже.'}
+          </div>
+        )}
+      >
+        <div className="assistant-items">
+          {skills.map((skill) => (
+            <article className="assistant-item" key={`${skill.skill_id}@${skill.version}`}>
+              <div className="assistant-item-heading">
+                <div>
+                  <strong>{skill.display_title}</strong>
+                  <div>
+                    <small>{skill.skill_id}@{skill.version} · {skill.category}</small>
+                  </div>
+                </div>
+                <span className="assistant-run-status assistant-run-status-completed">
+                  {skill.capability_classes.includes('draft_write') ? 'draft-write' : 'read-only'}
+                </span>
+              </div>
+              <p>{skill.description}</p>
+              <small>{skill.capability_summary}</small>
+              <dl className="assistant-approval-facts">
+                <div>
+                  <dt>Context</dt>
+                  <dd>{skill.context_requirements}</dd>
+                </div>
+                <div>
+                  <dt>Resume</dt>
+                  <dd>{skill.resumable ? skill.resume_policy : 'не поддерживается'}</dd>
+                </div>
+                <div>
+                  <dt>Approval</dt>
+                  <dd>
+                    {skill.approval_requirement === 'none'
+                      ? 'для запуска не требуется'
+                      : skill.approval_requirement}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Limits</dt>
+                  <dd>{executionLimitLabel(skill)}</dd>
+                </div>
+                <div>
+                  <dt>Input</dt>
+                  <dd>{operatorInputLabel(skill)}</dd>
+                </div>
+              </dl>
+              <div className="assistant-refs">
+                <span>result: {skill.result_kind}</span>
+                <button
+                  className="button secondary"
+                  disabled={runningScenario !== null || !onRun}
+                  onClick={() => onRun?.(skill.scenario)}
+                >
+                  {runningScenario === skill.scenario ? 'Запускаю…' : 'Запустить'}
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      </AsyncRegion>
+    </section>
+  );
+}
+
 export function AssistantPanel({
   channel,
   onOpenPlanner,
@@ -389,6 +515,9 @@ export function AssistantPanel({
   onOpenPlanner?: VoidFunction;
   onOpenContent?: (contentId: number) => void;
 }) {
+  const [skills, setSkills] = useState<AssistantSkillView[]>([]);
+  const [catalogLoadState, setCatalogLoadState] = useState<ChannelLoadState | null>(null);
+  const [catalogError, setCatalogError] = useState<{ channelId: number; message: string } | null>(null);
   const [runs, setRuns] = useState<AssistantRunView[]>([]);
   const [approvals, setApprovals] = useState<AssistantApprovalView[]>([]);
   const [currentRun, setCurrentRun] = useState<AssistantRunView | null>(null);
@@ -397,16 +526,53 @@ export function AssistantPanel({
   const [runningScenario, setRunningScenario] = useState<AssistantScenario | null>(null);
   const [resumeRunId, setResumeRunId] = useState<number | null>(null);
   const [busyApprovalKeys, setBusyApprovalKeys] = useState<Set<string>>(() => new Set());
+  const catalogOwnershipRef = useRef(new ChannelRequestOwnership());
   const requestOwnershipRef = useRef(new ChannelRequestOwnership());
   const runOwnershipRef = useRef(new ChannelRequestOwnership());
   const operationLockRef = useRef(new ExclusiveOperationLock());
   const resumeLockRef = useRef(new ExclusiveOperationLock());
   const approvalLocksRef = useRef(new Map<string, ExclusiveOperationLock>());
+  const validCatalogChannelRef = useRef<number | null>(null);
   const validDataChannelRef = useRef<number | null>(null);
   const channelIdRef = useRef<number | null>(channel?.id ?? null);
   const currentRunIdRef = useRef<number | null>(currentRun?.id ?? null);
   channelIdRef.current = channel?.id ?? null;
   currentRunIdRef.current = currentRun?.id ?? null;
+
+  const loadCatalog = useCallback(async () => {
+    const channelId = channelIdRef.current;
+    if (channelId === null) {
+      catalogOwnershipRef.current.invalidate();
+      validCatalogChannelRef.current = null;
+      setSkills([]);
+      setCatalogLoadState(null);
+      setCatalogError(null);
+      return;
+    }
+    const token = catalogOwnershipRef.current.begin(channelId);
+    const hasValidData = validCatalogChannelRef.current === channelId;
+    const isCurrent = () => catalogOwnershipRef.current.isCurrent(token, channelIdRef.current);
+    if (!hasValidData) {
+      validCatalogChannelRef.current = null;
+      setSkills([]);
+      setCatalogLoadState({ channelId, phase: 'loading' });
+    }
+    setCatalogError(null);
+    try {
+      const rows = await studioApi.assistantSkills(channelId);
+      if (!isCurrent()) return;
+      validCatalogChannelRef.current = channelId;
+      setSkills(rows);
+      setCatalogLoadState({ channelId, phase: 'loaded' });
+    } catch (reason) {
+      if (!isCurrent()) return;
+      if (validCatalogChannelRef.current !== channelId) {
+        setSkills([]);
+        setCatalogLoadState({ channelId, phase: 'error-without-valid-data' });
+      }
+      setCatalogError({ channelId, message: errorMessage(reason) });
+    }
+  }, [channel?.id]);
 
   const loadHistory = useCallback(async () => {
     const channelId = channelIdRef.current;
@@ -457,13 +623,15 @@ export function AssistantPanel({
   }, [channel?.id]);
 
   useEffect(() => {
+    catalogOwnershipRef.current.invalidate();
     runOwnershipRef.current.invalidate();
     approvalLocksRef.current.clear();
     setBusyApprovalKeys(new Set());
     setRunningScenario(null);
     setResumeRunId(null);
+    void loadCatalog();
     void loadHistory();
-  }, [loadHistory]);
+  }, [loadCatalog, loadHistory]);
 
   const runScenario = useCallback(async (scenario: AssistantScenario) => {
     const channelId = channelIdRef.current;
@@ -591,6 +759,9 @@ export function AssistantPanel({
     return <div className="sources-empty-page">Выберите канал, чтобы открыть Assistant.</div>;
   }
 
+  const catalogView = resolveChannelDataView(catalogLoadState, channel.id, skills.length);
+  const catalogLoading = catalogView === 'loading';
+  const catalogFailed = catalogView === 'error-without-valid-data';
   const dataView = resolveChannelDataView(loadState, channel.id, runs.length);
   const initialLoading = dataView === 'loading';
   const loadFailed = dataView === 'error-without-valid-data';
@@ -638,6 +809,18 @@ export function AssistantPanel({
           <button onClick={() => setError(null)}>×</button>
         </div>
       )}
+
+      <AssistantSkillCatalog
+        skills={skills}
+        loading={catalogLoading}
+        errorMessage={
+          catalogFailed && catalogError?.channelId === channel.id
+            ? catalogError.message
+            : null
+        }
+        runningScenario={runningScenario}
+        onRun={(scenario) => void runScenario(scenario)}
+      />
 
       <section className="assistant-work-card">
         <div className="panel-heading">

@@ -34,6 +34,7 @@ from app.services.admin_agent_context import (
     EditorialContextService,
 )
 from app.services.admin_agent_skills import (
+    APPROVAL_NONE,
     CAPABILITY_DRAFT_WRITE,
     CAPABILITY_READ_ONLY,
     CONTEXT_EDITORIAL_V1,
@@ -91,8 +92,18 @@ def test_skill_registry_is_immutable_versioned_and_fails_closed() -> None:
     )
     assert drafts.allowed_capability_classes == (CAPABILITY_DRAFT_WRITE,)
     assert drafts.context_profile == CONTEXT_EDITORIAL_V1
+    assert drafts.display_title == "Создать 3 черновика на завтра"
+    assert drafts.result_kind == "content_drafts"
+    assert drafts.approval_requirement == APPROVAL_NONE
+    assert "Draft-write" in drafts.capability_summary
+    assert [spec.skill_id for spec in SKILL_REGISTRY.current_specs] == [
+        "attention_today",
+        "drafts_tomorrow",
+    ]
     with pytest.raises(TypeError):
         drafts.execution_limits["max_steps"] = 99
+    with pytest.raises(TypeError):
+        drafts.operator_input_schema["properties"]["brief"] = {"type": "string"}
 
     with pytest.raises(KeyError, match="unknown admin-agent skill version"):
         SKILL_REGISTRY.resolve("drafts_tomorrow", "999")
@@ -108,6 +119,18 @@ def test_skill_registry_is_immutable_versioned_and_fails_closed() -> None:
                     allowed_capability_classes=(CAPABILITY_DRAFT_WRITE,),
                     context_profile="none",
                     resume_policy=RESUME_NONE,
+                    display_title="Bad",
+                    description="Bad capability test",
+                    category="test",
+                    operator_input_schema={
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                    result_kind="test",
+                    approval_requirement=APPROVAL_NONE,
+                    capability_summary="Bad",
+                    context_requirements="None",
                 ),
             )
         )
