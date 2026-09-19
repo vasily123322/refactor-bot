@@ -1748,7 +1748,10 @@ class AdminAgentRunner:
         )
         if exact_skill.scenario != SCENARIO_ATTENTION_TODAY:
             raise ValueError("skill scenario mismatch for attention_today")
-        self.limits = AgentLimits(**dict(exact_skill.execution_limits))
+        if skill is not None:
+            if skill is not None:
+            if skill is not None:
+            self.limits = AgentLimits(**dict(exact_skill.execution_limits))
 
         if key is not None:
             existing = await _find_idempotent_run(
