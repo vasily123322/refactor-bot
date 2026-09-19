@@ -271,3 +271,37 @@
     width: 100%;
   }
 }
+
+
+.assistant-series-form {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.assistant-series-form label {
+  font-weight: 600;
+}
+
+.assistant-series-form textarea,
+.assistant-series-form select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid var(--border, rgba(15, 23, 42, 0.16));
+  border-radius: 8px;
+  background: var(--panel, #fff);
+  color: inherit;
+  font: inherit;
+}
+
+.assistant-series-form textarea {
+  resize: vertical;
+}
+
+.assistant-series-form textarea:focus-visible,
+.assistant-series-form select:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
