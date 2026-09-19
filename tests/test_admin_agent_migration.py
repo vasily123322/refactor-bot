@@ -11,7 +11,7 @@ from app.core.db import Base
 
 
 PREVIOUS_HEAD = "20260919_0018"
-HEAD = "20260919_0022"
+HEAD = "20260919_0023"
 
 
 def _upgrade(repo_root: Path, database_path: Path, target: str) -> None:
@@ -432,6 +432,10 @@ def test_recurring_automation_migration_upgrades_existing_0021_schema(tmp_path) 
             "weekday",
             "timezone",
             "enabled",
+            "disabled_reason",
+            "disabled_at",
+            "last_outcome",
+            "last_outcome_at",
             "next_run_at",
             "last_scheduled_for",
             "claim_token",
@@ -460,6 +464,73 @@ def test_recurring_automation_migration_upgrades_existing_0021_schema(tmp_path) 
             WHERE request_id = 'historical-0021-run'
             """
         ).fetchone() == (None, None)
+
+
+def test_automation_observability_migration_upgrades_0022_with_nullable_metadata(
+    tmp_path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    database_path = tmp_path / "existing-0022.db"
+    _upgrade(repo_root, database_path, "20260919_0022")
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO admin_agent_automations
+                (
+                    owner_tg_user_id, channel_id, skill_id, skill_version,
+                    operator_input, cadence_kind, local_time, weekday, timezone,
+                    enabled, next_run_at, last_scheduled_for, claim_token, claimed_at,
+                    request_id, definition_fingerprint
+                )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                780,
+                999996,
+                "attention_today",
+                "1",
+                "{}",
+                "daily",
+                "09:00",
+                None,
+                "UTC",
+                1,
+                "2026-09-20 09:00:00+00:00",
+                None,
+                None,
+                None,
+                "historical-0022-automation",
+                "a" * 64,
+            ),
+        )
+        connection.commit()
+
+    _upgrade(repo_root, database_path, "head")
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD,)
+        columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(admin_agent_automations)"
+            )
+        }
+        assert {
+            "disabled_reason",
+            "disabled_at",
+            "last_outcome",
+            "last_outcome_at",
+        } <= columns
+        assert connection.execute(
+            """
+            SELECT disabled_reason, disabled_at, last_outcome, last_outcome_at
+            FROM admin_agent_automations
+            WHERE request_id = 'historical-0022-automation'
+            """
+        ).fetchone() == (None, None, None, None)
 
 
 def test_fresh_head_contains_agent_tables_and_matches_registered_orm(tmp_path) -> None:
