@@ -405,7 +405,7 @@ def test_health_usage_and_migration_suggestion_are_derived_not_persisted() -> No
                 paused = await service.operational_snapshot(row, now_utc=now)
                 assert paused["health"] == HEALTH_PAUSED
 
-                row.disabled_reason = None
+                # A current safety blocker must outrank a historical manual pause.
                 row.skill_version = "999"
                 _refingerprint(row)
                 await session.commit()
