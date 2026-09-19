@@ -346,3 +346,150 @@ def test_studio_series_approval_api_is_owner_scoped_and_bounded(monkeypatch) -> 
             await engine.dispose()
 
     asyncio.run(run())
+
+def test_visible_series_run_approval_lookup_survives_newer_channel_batches(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            monkeypatch.setattr(studio_app_module, "AsyncSessionLocal", Session)
+            monkeypatch.setattr(admin_agent_api_module, "AsyncSessionLocal", Session)
+
+            async with Session() as session:
+                owner = await ClientsRepo(session).create_or_get(13201, "owner", "Owner")
+                channel = await ChannelsRepo(session).create(owner.id, -10013201, "Owned")
+                ai = await ChannelAISettingsRepo(session).get_or_create(channel.id)
+                ai.enabled = True
+                ai.model = "provider/model"
+                await session.commit()
+
+            async def generated(self, **kwargs):
+                return {
+                    "success": True,
+                    "text": _series_payload(3),
+                    "tokens_used": 15,
+                    "model": "provider/model",
+                    "error": None,
+                }
+
+            monkeypatch.setattr(AIGenerationService, "run_pipeline", generated)
+            headers = {"X-Telegram-Init-Data": _init_data(13201)}
+            app = create_studio_app(_config())
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://studio",
+            ) as client:
+                target_run_response = await client.post(
+                    f"/api/studio/channels/{channel.id}/assistant/runs",
+                    json={
+                        "scenario": "prepare_content_series",
+                        "request_id": "series-association-target-run",
+                        "operator_input": {
+                            "brief": "Подготовь три evergreen поста для target association.",
+                            "post_count": 3,
+                        },
+                    },
+                    headers=headers,
+                )
+                assert target_run_response.status_code == 201
+                target_run = target_run_response.json()
+
+                noise_run_response = await client.post(
+                    f"/api/studio/channels/{channel.id}/assistant/runs",
+                    json={
+                        "scenario": "prepare_content_series",
+                        "request_id": "series-association-noise-run",
+                        "operator_input": {
+                            "brief": "Подготовь три evergreen поста для newer approval cycles.",
+                            "post_count": 3,
+                        },
+                    },
+                    headers=headers,
+                )
+                assert noise_run_response.status_code == 201
+                noise_run = noise_run_response.json()
+
+                target_approval_response = await client.post(
+                    f"/api/studio/channels/{channel.id}/assistant/series-approvals",
+                    json={
+                        "source_run_id": target_run["id"],
+                        "request_id": "series-association-target-approval",
+                        "slots": _slots(),
+                    },
+                    headers=headers,
+                )
+                assert target_approval_response.status_code == 201
+                target_approval = target_approval_response.json()
+                assert target_approval["state"] == "pending_review"
+
+                latest_noise_id = None
+                for index in range(50):
+                    created = await client.post(
+                        f"/api/studio/channels/{channel.id}/assistant/series-approvals",
+                        json={
+                            "source_run_id": noise_run["id"],
+                            "request_id": f"series-association-noise-{index:04d}",
+                            "slots": _slots(),
+                        },
+                        headers=headers,
+                    )
+                    assert created.status_code == 201
+                    latest_noise_id = created.json()["id"]
+                    rejected = await client.post(
+                        (
+                            f"/api/studio/channels/{channel.id}/assistant/"
+                            f"series-approvals/{latest_noise_id}/reject"
+                        ),
+                        json={},
+                        headers=headers,
+                    )
+                    assert rejected.status_code == 200
+                    assert rejected.json()["state"] == "rejected"
+
+                listing = await client.get(
+                    f"/api/studio/channels/{channel.id}/assistant/series-approvals",
+                    headers=headers,
+                )
+                assert listing.status_code == 200
+                assert len(listing.json()) == 50
+                assert target_approval["id"] not in {row["id"] for row in listing.json()}
+
+                targeted = await client.get(
+                    (
+                        f"/api/studio/channels/{channel.id}/assistant/runs/"
+                        f"{target_run['id']}/series-approvals"
+                    ),
+                    headers=headers,
+                )
+                assert targeted.status_code == 200
+                assert [row["id"] for row in targeted.json()] == [target_approval["id"]]
+                assert targeted.json()[0]["source_run_id"] == target_run["id"]
+                assert targeted.json()[0]["state"] == "pending_review"
+
+                latest_noise = await client.get(
+                    (
+                        f"/api/studio/channels/{channel.id}/assistant/runs/"
+                        f"{noise_run['id']}/series-approvals"
+                    ),
+                    headers=headers,
+                )
+                assert latest_noise.status_code == 200
+                assert [row["id"] for row in latest_noise.json()] == [latest_noise_id]
+                assert latest_noise.json()[0]["state"] == "rejected"
+
+                missing_run = await client.get(
+                    (
+                        f"/api/studio/channels/{channel.id}/assistant/runs/"
+                        "999999/series-approvals"
+                    ),
+                    headers=headers,
+                )
+                assert missing_run.status_code == 404
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
