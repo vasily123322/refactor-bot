@@ -97,6 +97,7 @@ jobs:
             tests/test_studio_candidate_draft_api.py \
             tests/test_studio_candidate_enrichment_api.py \
             tests/test_studio_candidate_media.py \
+            tests/test_studio_media_asset_history_api.py \
             tests/test_studio_candidate_rewrite_api.py \
             tests/test_studio_channel_onboarding_request_concurrency.py \
             tests/test_studio_channel_onboarding_requests.py \

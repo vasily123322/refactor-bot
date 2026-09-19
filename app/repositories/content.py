@@ -325,10 +325,30 @@ class MediaAssetsRepo:
             await self.session.rollback()
             raise
 
-    async def list_by_channel(self, channel_id: int, *, limit: int = 100) -> list[MediaAsset]:
+    async def list_by_channel(
+        self,
+        channel_id: int,
+        *,
+        limit: int = 100,
+        before_created_at: datetime | None = None,
+        before_id: int | None = None,
+    ) -> list[MediaAsset]:
+        if (before_created_at is None) != (before_id is None):
+            raise ValueError("before_created_at and before_id must be provided together")
+
+        statement = select(MediaAsset).where(MediaAsset.channel_id == int(channel_id))
+        if before_created_at is not None and before_id is not None:
+            statement = statement.where(
+                or_(
+                    MediaAsset.created_at < before_created_at,
+                    and_(
+                        MediaAsset.created_at == before_created_at,
+                        MediaAsset.id < int(before_id),
+                    ),
+                )
+            )
         result = await self.session.execute(
-            select(MediaAsset)
-            .where(MediaAsset.channel_id == int(channel_id))
+            statement
             .order_by(MediaAsset.created_at.desc(), MediaAsset.id.desc())
             .limit(max(1, min(int(limit), 500)))
         )

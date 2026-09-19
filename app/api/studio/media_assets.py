@@ -134,11 +134,20 @@ async def list_media_assets(
     principal: PrincipalDep,
     session: SessionDep,
     limit: int = 100,
+    before_created_at: datetime | None = None,
+    before_id: int | None = None,
 ) -> list[MediaAssetResponse]:
     await _require_owned_channel(session, principal, channel_id)
+    if (before_created_at is None) != (before_id is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="before_created_at and before_id must be provided together",
+        )
     rows = await MediaAssetsRepo(session).list_by_channel(
         channel_id,
         limit=max(1, min(int(limit), 200)),
+        before_created_at=before_created_at,
+        before_id=before_id,
     )
     return [_response(row) for row in rows]
 
