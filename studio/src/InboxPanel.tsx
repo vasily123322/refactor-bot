@@ -12,6 +12,12 @@ import {
 } from './asyncControl';
 import { ChannelDMProvenance } from './ChannelDMProvenance';
 import {
+  INBOX_HISTORY_PAGE_SIZE,
+  inboxHistoryCursor,
+  mergeInboxHistoryPage,
+  splitInboxHistoryPage,
+} from './inboxCandidateHistory';
+import {
   INBOX_STATUS_OPTIONS,
   inboxStatusPresentation,
   inboxStatusScope,
@@ -102,6 +108,9 @@ export function InboxPanel({
   const [rewriteInstructions, setRewriteInstructions] = useState<Record<number, string>>({});
   const [busyKeys, setBusyKeys] = useState<Set<string>>(() => new Set());
   const [loadState, setLoadState] = useState<ScopedLoadState | null>(null);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
+  const [historyLoadMoreError, setHistoryLoadMoreError] = useState<string | null>(null);
   const [error, setError] = useState<{
     channelId: number;
     scopeKey: string;
@@ -116,6 +125,7 @@ export function InboxPanel({
     token: ChannelRequestToken | null;
   }>({ channelId: null, scopeKey: null, token: null });
   const operationLocksRef = useRef(new Map<number, ScopedExclusiveOperationLock>());
+  const loadMoreInFlightRef = useRef(new Set<string>());
   const validDataScopeRef = useRef<string | null>(null);
   const channelIdRef = useRef<number | null>(channel?.id ?? null);
   const statusRef = useRef<InboxCandidateStatus>(statusView);
@@ -155,6 +165,9 @@ export function InboxPanel({
       setCandidateMedia({});
       setRewritePreviews({});
       setRewriteInstructions({});
+      setHistoryHasMore(false);
+      setHistoryLoadingMore(false);
+      setHistoryLoadMoreError(null);
       setLoadState(null);
       return false;
     }
@@ -169,31 +182,38 @@ export function InboxPanel({
     );
 
     setError(null);
+    setHistoryLoadingMore(false);
+    setHistoryLoadMoreError(null);
     if (!hasValidData) {
       validDataScopeRef.current = null;
       setCandidates([]);
       setCandidateMedia({});
       setRewritePreviews({});
       setRewriteInstructions({});
+      setHistoryHasMore(false);
       setLoadState({ channelId, scopeKey, phase: 'loading' });
     }
 
     try {
       const [rows, mediaRows] = await Promise.all([
-        studioApi.candidates(channelId, status),
+        studioApi.candidates(channelId, status, {
+          limit: INBOX_HISTORY_PAGE_SIZE + 1,
+        }),
         status === 'new'
           ? loadCandidateMedia(channelId)
           : Promise.resolve<CandidateMediaView[]>([]),
       ]);
       if (!isCurrent()) return false;
+      const page = splitInboxHistoryPage(rows);
       const previews = status === 'new'
-        ? await loadCurrentStructuredRewritePreviews(channelId, rows)
+        ? await loadCurrentStructuredRewritePreviews(channelId, page.items)
         : {};
       if (!isCurrent()) return false;
 
-      setCandidates(rows);
+      setCandidates(page.items);
       setCandidateMedia(mediaMap(mediaRows));
       setRewritePreviews(previews);
+      setHistoryHasMore(page.hasMore);
       validDataScopeRef.current = dataScope;
       setLoadState({ channelId, scopeKey, phase: 'loaded' });
       return true;
@@ -203,6 +223,7 @@ export function InboxPanel({
         setCandidates([]);
         setCandidateMedia({});
         setRewritePreviews({});
+        setHistoryHasMore(false);
         setLoadState({ channelId, scopeKey, phase: 'error-without-valid-data' });
       }
       setError({ channelId, scopeKey, message: errorMessage(reason) });
@@ -215,6 +236,62 @@ export function InboxPanel({
     setNotice(null);
     void load();
   }, [channel?.id, statusView, load]);
+
+
+  const loadOlder = useCallback(async (): Promise<void> => {
+    const channelId = channelIdRef.current;
+    const status = statusRef.current;
+    const scopeKey = scopeKeyRef.current;
+    if (
+      channelId === null
+      || scopeKey === null
+      || !historyHasMore
+    ) return;
+
+    const dataScope = `${channelId}:${scopeKey}`;
+    if (loadMoreInFlightRef.current.has(dataScope)) return;
+
+    const cursor = inboxHistoryCursor(candidates);
+    if (!cursor) {
+      setHistoryHasMore(false);
+      return;
+    }
+
+    const token = requestOwnershipRef.current.begin(channelId, scopeKey);
+    const isCurrent = () => requestOwnershipRef.current.isCurrent(
+      token,
+      channelIdRef.current,
+      scopeKeyRef.current,
+    );
+
+    loadMoreInFlightRef.current.add(dataScope);
+    setHistoryLoadingMore(true);
+    setHistoryLoadMoreError(null);
+    try {
+      const rows = await studioApi.candidates(channelId, status, {
+        limit: INBOX_HISTORY_PAGE_SIZE + 1,
+        beforePublishedAt: cursor.publishedAt,
+        beforeId: cursor.id,
+      });
+      if (!isCurrent()) return;
+      const page = splitInboxHistoryPage(rows);
+      const previews = status === 'new'
+        ? await loadCurrentStructuredRewritePreviews(channelId, page.items)
+        : {};
+      if (!isCurrent()) return;
+
+      setCandidates((current) => mergeInboxHistoryPage(current, page.items));
+      if (status === 'new') {
+        setRewritePreviews((current) => ({ ...current, ...previews }));
+      }
+      setHistoryHasMore(page.hasMore);
+    } catch (reason) {
+      if (isCurrent()) setHistoryLoadMoreError(errorMessage(reason));
+    } finally {
+      loadMoreInFlightRef.current.delete(dataScope);
+      if (isCurrent()) setHistoryLoadingMore(false);
+    }
+  }, [candidates, historyHasMore]);
 
   const run = async (
     key: string,
@@ -626,7 +703,7 @@ export function InboxPanel({
                 ? 'Загружаю Inbox…'
                 : inboxLoadFailed
                   ? 'Inbox не загружен'
-                  : `${candidates.length} ${presentation.countSuffix}`}
+                  : `${candidates.length} ${presentation.countSuffix}${historyHasMore ? ' · есть более старые' : ''}`}
             </small>
           </div>
           <div className="inbox-status-switch" role="group" aria-label="Фильтр Inbox">
@@ -851,6 +928,31 @@ export function InboxPanel({
               </article>
             );
           })}
+          {(historyHasMore || historyLoadingMore || historyLoadMoreError) && (
+            <div className="inbox-history-controls">
+              {historyLoadMoreError && (
+                <div className="inbox-history-error" role="alert">
+                  Не удалось загрузить старые материалы: {historyLoadMoreError}
+                </div>
+              )}
+              {historyHasMore && (
+                <button
+                  className="button secondary compact"
+                  onClick={() => void loadOlder()}
+                  disabled={historyLoadingMore}
+                >
+                  {historyLoadingMore
+                    ? 'Загружаю старые…'
+                    : historyLoadMoreError
+                      ? 'Повторить загрузку'
+                      : 'Показать старые'}
+                </button>
+              )}
+              {historyLoadingMore && (
+                <InlineStatus>Загружаю более старые материалы…</InlineStatus>
+              )}
+            </div>
+          )}
         </AsyncRegion>
       </section>
     </div>
