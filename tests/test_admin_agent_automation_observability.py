@@ -107,6 +107,23 @@ def test_manual_pause_and_safe_reenable_recompute_future_occurrence() -> None:
                     now=now,
                 )
                 service = AdminAgentAutomationService(session)
+                original_next_run_at = row.next_run_at
+                row.claim_token = "live-claim-token"
+                row.claimed_at = now
+                await session.commit()
+                unchanged = await service.set_enabled(
+                    automation_id=row.id,
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    enabled=True,
+                    now_utc=now + timedelta(minutes=1),
+                )
+                assert unchanged is not None
+                assert unchanged.enabled is True
+                assert unchanged.next_run_at == original_next_run_at
+                assert unchanged.claim_token == "live-claim-token"
+                assert unchanged.claimed_at == now
+
                 paused = await service.set_enabled(
                     automation_id=row.id,
                     owner_tg_user_id=owner.tg_user_id,
