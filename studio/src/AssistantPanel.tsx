@@ -20,6 +20,7 @@ import {
   resolveChannelDataView,
   runExclusiveOperation,
   type ChannelLoadState,
+  type ChannelRequestToken,
 } from './asyncControl';
 import type { Channel } from './types';
 
@@ -920,6 +921,11 @@ export function AssistantPanel({
   const catalogOwnershipRef = useRef(new ChannelRequestOwnership());
   const requestOwnershipRef = useRef(new ChannelRequestOwnership());
   const runOwnershipRef = useRef(new ChannelRequestOwnership());
+  const operationContextOwnershipRef = useRef(new ChannelRequestOwnership());
+  const operationContextRef = useRef<{
+    channelId: number | null;
+    token: ChannelRequestToken | null;
+  }>({ channelId: null, token: null });
   const operationLockRef = useRef(new ExclusiveOperationLock());
   const resumeLockRef = useRef(new ExclusiveOperationLock());
   const approvalLocksRef = useRef(new Map<string, ExclusiveOperationLock>());
@@ -927,8 +933,26 @@ export function AssistantPanel({
   const validDataChannelRef = useRef<number | null>(null);
   const channelIdRef = useRef<number | null>(channel?.id ?? null);
   const currentRunIdRef = useRef<number | null>(currentRun?.id ?? null);
-  channelIdRef.current = channel?.id ?? null;
+  const currentChannelId = channel?.id ?? null;
+  if (operationContextRef.current.channelId !== currentChannelId) {
+    operationContextRef.current.channelId = currentChannelId;
+    if (currentChannelId === null) {
+      operationContextOwnershipRef.current.invalidate();
+      operationContextRef.current.token = null;
+    } else {
+      operationContextRef.current.token = operationContextOwnershipRef.current.begin(currentChannelId);
+    }
+  }
+  channelIdRef.current = currentChannelId;
   currentRunIdRef.current = currentRun?.id ?? null;
+  const approvalBusyPrefix = currentChannelId === null ? null : `${currentChannelId}:`;
+  const currentApprovalBusyKeys = new Set(
+    approvalBusyPrefix === null
+      ? []
+      : Array.from(busyApprovalKeys)
+        .filter((key) => key.startsWith(approvalBusyPrefix))
+        .map((key) => key.slice(approvalBusyPrefix.length)),
+  );
 
   const loadCatalog = useCallback(async () => {
     const channelId = channelIdRef.current;
@@ -1021,8 +1045,6 @@ export function AssistantPanel({
   useEffect(() => {
     catalogOwnershipRef.current.invalidate();
     runOwnershipRef.current.invalidate();
-    approvalLocksRef.current.clear();
-    setBusyApprovalKeys(new Set());
     setRunningScenario(null);
     setResumeRunId(null);
     void loadCatalog();
@@ -1108,7 +1130,12 @@ export function AssistantPanel({
     operation: (channelId: number) => Promise<AssistantApprovalView>,
   ) => {
     const channelId = channelIdRef.current;
-    if (channelId === null) return;
+    const operationContextToken = operationContextRef.current.token;
+    if (channelId === null || operationContextToken === null) return;
+    const isCurrent = () => operationContextOwnershipRef.current.isCurrent(
+      operationContextToken,
+      channelIdRef.current,
+    );
     const scopedKey = `${channelId}:${key}`;
     let lock = approvalLocksRef.current.get(scopedKey);
     if (!lock) {
@@ -1116,26 +1143,24 @@ export function AssistantPanel({
       approvalLocksRef.current.set(scopedKey, lock);
     }
     const result = await runExclusiveOperation(lock, scopedKey, async () => {
-      setBusyApprovalKeys((previous) => new Set(previous).add(key));
+      setBusyApprovalKeys((previous) => new Set(previous).add(scopedKey));
       setError(null);
       try {
         const approval = await operation(channelId);
-        if (channelIdRef.current !== channelId) return approval;
+        if (!isCurrent()) return approval;
         setApprovals((previous) => mergeAssistantApproval(previous, approval));
         return approval;
       } catch (reason) {
-        if (channelIdRef.current === channelId) {
+        if (isCurrent()) {
           setError({ channelId, message: errorMessage(reason) });
         }
         return null;
       } finally {
-        if (channelIdRef.current === channelId) {
-          setBusyApprovalKeys((previous) => {
-            const next = new Set(previous);
-            next.delete(key);
-            return next;
-          });
-        }
+        setBusyApprovalKeys((previous) => {
+          const next = new Set(previous);
+          next.delete(scopedKey);
+          return next;
+        });
       }
     });
     if (!result.started) return;
@@ -1167,7 +1192,12 @@ export function AssistantPanel({
     operation: (channelId: number) => Promise<AssistantSeriesApprovalView>,
   ) => {
     const channelId = channelIdRef.current;
-    if (channelId === null) return;
+    const operationContextToken = operationContextRef.current.token;
+    if (channelId === null || operationContextToken === null) return;
+    const isCurrent = () => operationContextOwnershipRef.current.isCurrent(
+      operationContextToken,
+      channelIdRef.current,
+    );
     const scopedKey = `${channelId}:${key}`;
     let lock = approvalLocksRef.current.get(scopedKey);
     if (!lock) {
@@ -1175,26 +1205,24 @@ export function AssistantPanel({
       approvalLocksRef.current.set(scopedKey, lock);
     }
     const result = await runExclusiveOperation(lock, scopedKey, async () => {
-      setBusyApprovalKeys((previous) => new Set(previous).add(key));
+      setBusyApprovalKeys((previous) => new Set(previous).add(scopedKey));
       setError(null);
       try {
         const approval = await operation(channelId);
-        if (channelIdRef.current !== channelId) return approval;
+        if (!isCurrent()) return approval;
         setSeriesApprovals((previous) => mergeAssistantSeriesApproval(previous, approval));
         return approval;
       } catch (reason) {
-        if (channelIdRef.current === channelId) {
+        if (isCurrent()) {
           setError({ channelId, message: errorMessage(reason) });
         }
         return null;
       } finally {
-        if (channelIdRef.current === channelId) {
-          setBusyApprovalKeys((previous) => {
-            const next = new Set(previous);
-            next.delete(key);
-            return next;
-          });
-        }
+        setBusyApprovalKeys((previous) => {
+          const next = new Set(previous);
+          next.delete(scopedKey);
+          return next;
+        });
       }
     });
     if (!result.started) return;
@@ -1332,7 +1360,7 @@ export function AssistantPanel({
             run={currentRun}
             approvals={approvals}
             seriesApprovals={seriesApprovals}
-            busyKeys={busyApprovalKeys}
+            busyKeys={currentApprovalBusyKeys}
             onOpenPlanner={onOpenPlanner}
             onOpenContent={onOpenContent}
             onCreateProposal={createProposal}
