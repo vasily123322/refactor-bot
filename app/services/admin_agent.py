@@ -1165,6 +1165,7 @@ class AdminAgentRunner:
             update(AdminAgentRun)
             .where(
                 AdminAgentRun.id == int(run_id),
+                AdminAgentRun.status != RUN_COMPLETED,
                 or_(
                     AdminAgentRun.execution_claim_token.is_(None),
                     AdminAgentRun.execution_claimed_at.is_(None),
@@ -1354,7 +1355,13 @@ class AdminAgentRunner:
         self._reset_execution_state()
         await self._load_resume_sequence(int(run.id))
         claim_token = uuid4().hex
-        await self._acquire_resume_claim(int(run.id), claim_token)
+        try:
+            await self._acquire_resume_claim(int(run.id), claim_token)
+        except AgentExecutionBusy:
+            current = await self.session.get(AdminAgentRun, int(run.id))
+            if current is not None and str(current.status) == RUN_COMPLETED:
+                return current
+            raise
         run = await self.session.get(AdminAgentRun, int(run.id))
         assert run is not None
         await self._event(
