@@ -40,6 +40,7 @@ from app.services.admin_agent_series_approvals import (
 )
 from app.services.ai_generation import AIGenerationService
 from app.services.publication_bridge import LegacyPublicationBridge
+from app.services.scheduling import as_utc
 
 
 NOW = datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc)
@@ -286,7 +287,7 @@ def test_series_proposal_rejects_dst_invalid_slots_atomically(monkeypatch) -> No
                 )
                 assert valid.timezone == "Europe/Berlin"
                 items = await gap_service.items_for_batch(valid.id)
-                assert items[0].resolved_scheduled_at == datetime(
+                assert as_utc(items[0].resolved_scheduled_at) == datetime(
                     2026,
                     3,
                     29,
