@@ -115,7 +115,7 @@ def assistant_run_resume_state(
     if spec.resume_policy != RESUME_EXPLICIT:
         return False, "not_supported"
     phase = str(run.workflow_phase or "")
-    if phase == PHASE_GENERATION_INFLIGHT:
+    if phase in {PHASE_GENERATION_INFLIGHT, PHASE_RESTART_REQUIRED}:
         return False, "restart_required"
 
     scenario = str(run.scenario)
