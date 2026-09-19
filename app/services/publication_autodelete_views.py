@@ -92,7 +92,6 @@ class _Candidate:
     content_item_id: int
     content_revision: int
     schedule_entry_id: int
-    legacy_post_task_id: int | None
     threshold: int
     telegram_message_ids: tuple[int, ...]
     report_enabled: bool
@@ -324,11 +323,6 @@ class PublicationAutodeleteViewsService:
                 "schedule_entry_id": int(schedule.id),
                 "schedule_scheduled_at": _utc(schedule.scheduled_at).isoformat(),
                 "schedule_timezone": schedule.timezone,
-                "legacy_post_task_id": (
-                    int(publication.legacy_post_task_id)
-                    if publication.legacy_post_task_id is not None
-                    else None
-                ),
                 "threshold": int(threshold),
                 "report_enabled": bool(report_enabled),
                 "telegram_message_ids": list(telegram_message_ids),
@@ -498,11 +492,6 @@ class PublicationAutodeleteViewsService:
             content_item_id=int(item.id),
             content_revision=int(publication.content_revision),
             schedule_entry_id=int(schedule.id),
-            legacy_post_task_id=(
-                int(publication.legacy_post_task_id)
-                if publication.legacy_post_task_id is not None
-                else None
-            ),
             threshold=threshold,
             telegram_message_ids=ids,
             report_enabled=report_enabled,
@@ -588,14 +577,6 @@ class PublicationAutodeleteViewsService:
         ids = tuple(normalize_telegram_message_ids(publication.telegram_message_ids))
         if ids != candidate.telegram_message_ids:
             raise PublicationAutodeleteViewsSyncConflict()
-        current_legacy_id = (
-            int(publication.legacy_post_task_id)
-            if publication.legacy_post_task_id is not None
-            else None
-        )
-        if current_legacy_id != candidate.legacy_post_task_id:
-            raise PublicationAutodeleteViewsSyncConflict()
-
         meta = _mapping(publication.meta)
         runtime_safe, already_deleted = (
             _runtime_status(meta) if meta is not None else (False, False)
