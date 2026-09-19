@@ -190,7 +190,7 @@ def test_closed_operator_input_and_local_wall_clock_cadence() -> None:
             },
         )
 
-    before_dst = datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
+    before_dst = datetime(2026, 3, 27, 12, 0, tzinfo=timezone.utc)
     first = next_occurrence_utc(
         cadence_kind="daily",
         local_time_value="09:30",
