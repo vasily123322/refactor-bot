@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
+from app.core.timezone import localize_wall_clock_strict
 from app.domain.admin_agent import AdminAgentApproval, AdminAgentRun
 from app.domain.content import PostDocument
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
@@ -84,6 +85,173 @@ async def _counts(session, channel_id: int) -> tuple[int, int]:
         ).scalar_one()
     )
     return schedule_count, publication_count
+
+
+def test_strict_wall_clock_rejects_dst_gap_and_overlap() -> None:
+    with pytest.raises(ValueError, match="does not exist"):
+        localize_wall_clock_strict(
+            datetime(2026, 3, 29, 2, 30),
+            "Europe/Berlin",
+        )
+    with pytest.raises(ValueError, match="ambiguous"):
+        localize_wall_clock_strict(
+            datetime(2026, 10, 25, 2, 30),
+            "Europe/Berlin",
+        )
+
+    normal = localize_wall_clock_strict(
+        datetime(2026, 3, 29, 3, 30),
+        "Europe/Berlin",
+    )
+    assert normal.astimezone(timezone.utc) == datetime(
+        2026,
+        3,
+        29,
+        1,
+        30,
+        tzinfo=timezone.utc,
+    )
+
+    fixed = localize_wall_clock_strict(
+        datetime(2026, 3, 29, 2, 30),
+        "UTC+3",
+    )
+    assert fixed.astimezone(timezone.utc) == datetime(
+        2026,
+        3,
+        28,
+        23,
+        30,
+        tzinfo=timezone.utc,
+    )
+
+
+def test_draft_approval_dst_invalid_wall_clock_fails_closed() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                owner, channel = await _setup_channel(session, tg_user_id=9921)
+                anchor_item = await _draft(
+                    session,
+                    channel_id=channel.id,
+                    owner_tg_user_id=owner.tg_user_id,
+                    title="DST timezone anchor",
+                )
+                session.add(
+                    ScheduleEntry(
+                        content_item_id=anchor_item.id,
+                        content_revision=anchor_item.current_revision,
+                        channel_id=channel.id,
+                        scheduled_at=datetime(2026, 3, 28, 14, 0, tzinfo=timezone.utc),
+                        timezone="Europe/Berlin",
+                        status="completed",
+                        repeat_rule={},
+                        meta={},
+                    )
+                )
+                await session.commit()
+
+                gap_item = await _draft(
+                    session,
+                    channel_id=channel.id,
+                    owner_tg_user_id=owner.tg_user_id,
+                    title="DST gap",
+                )
+                gap_service = AdminAgentApprovalService(
+                    session,
+                    now_utc=datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc),
+                )
+                with pytest.raises(ApprovalInputError, match="does not exist"):
+                    await gap_service.create_schedule_draft_tomorrow(
+                        owner_tg_user_id=owner.tg_user_id,
+                        channel_id=channel.id,
+                        content_item_id=gap_item.id,
+                        local_time_value="02:30",
+                        request_id="approval-dst-gap-0001",
+                    )
+                assert (
+                    await session.execute(
+                        select(func.count(AdminAgentApproval.id)).where(
+                            AdminAgentApproval.channel_id == channel.id
+                        )
+                    )
+                ).scalar_one() == 0
+
+                valid = await gap_service.create_schedule_draft_tomorrow(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    content_item_id=gap_item.id,
+                    local_time_value="03:30",
+                    request_id="approval-dst-revalidate-0001",
+                )
+                valid.local_time = "02:30"
+                await session.commit()
+                stale = await gap_service.approve(
+                    approval_id=valid.id,
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    reviewer_tg_user_id=owner.tg_user_id,
+                )
+                assert stale is not None
+                assert stale.state == STATE_STALE
+                assert stale.failure_reason == "local time does not exist in timezone"
+
+                overlap_owner, overlap_channel = await _setup_channel(
+                    session,
+                    tg_user_id=9922,
+                )
+                overlap_anchor = await _draft(
+                    session,
+                    channel_id=overlap_channel.id,
+                    owner_tg_user_id=overlap_owner.tg_user_id,
+                    title="DST overlap timezone anchor",
+                )
+                session.add(
+                    ScheduleEntry(
+                        content_item_id=overlap_anchor.id,
+                        content_revision=overlap_anchor.current_revision,
+                        channel_id=overlap_channel.id,
+                        scheduled_at=datetime(2026, 10, 24, 14, 0, tzinfo=timezone.utc),
+                        timezone="Europe/Berlin",
+                        status="completed",
+                        repeat_rule={},
+                        meta={},
+                    )
+                )
+                await session.commit()
+                overlap_item = await _draft(
+                    session,
+                    channel_id=overlap_channel.id,
+                    owner_tg_user_id=overlap_owner.tg_user_id,
+                    title="DST overlap",
+                )
+                overlap_service = AdminAgentApprovalService(
+                    session,
+                    now_utc=datetime(2026, 10, 24, 12, 0, tzinfo=timezone.utc),
+                )
+                with pytest.raises(ApprovalInputError, match="ambiguous"):
+                    await overlap_service.create_schedule_draft_tomorrow(
+                        owner_tg_user_id=overlap_owner.tg_user_id,
+                        channel_id=overlap_channel.id,
+                        content_item_id=overlap_item.id,
+                        local_time_value="02:30",
+                        request_id="approval-dst-overlap-0001",
+                    )
+                assert (
+                    await session.execute(
+                        select(func.count(AdminAgentApproval.id)).where(
+                            AdminAgentApproval.channel_id == overlap_channel.id
+                        )
+                    )
+                ).scalar_one() == 0
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
 
 
 def test_proposal_captures_server_authority_tomorrow_and_is_idempotent() -> None:
