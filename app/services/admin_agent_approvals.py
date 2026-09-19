@@ -9,7 +9,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.timezone import localize_dt, to_user_tz
+from app.core.timezone import localize_wall_clock_strict, to_user_tz
 from app.domain.admin_agent import AdminAgentApproval, AdminAgentRun
 from app.domain.content import PostDocument, validate_native_document_capabilities
 from app.domain.content.models import ContentItem, ContentRevision
@@ -323,7 +323,13 @@ class AdminAgentApprovalService:
         local_now = to_user_tz(self.now_utc, timezone_name)
         target_date = local_now.date() + timedelta(days=1)
         local_naive = datetime.combine(target_date, parsed_time)
-        scheduled_at = localize_dt(local_naive, timezone_name).astimezone(timezone.utc)
+        try:
+            scheduled_at = localize_wall_clock_strict(
+                local_naive,
+                timezone_name,
+            ).astimezone(timezone.utc)
+        except ValueError as exc:
+            raise ApprovalInputError(str(exc)) from exc
         if scheduled_at <= self.now_utc:
             raise ApprovalInputError("target schedule time is not in the future")
 
@@ -415,10 +421,13 @@ class AdminAgentApprovalService:
         current_tomorrow = to_user_tz(self.now_utc, timezone_name).date() + timedelta(days=1)
         if current_tomorrow != approval.target_local_date:
             return "proposal no longer targets tomorrow in channel timezone"
-        recomputed = localize_dt(
-            datetime.combine(approval.target_local_date, parsed_time),
-            timezone_name,
-        ).astimezone(timezone.utc)
+        try:
+            recomputed = localize_wall_clock_strict(
+                datetime.combine(approval.target_local_date, parsed_time),
+                timezone_name,
+            ).astimezone(timezone.utc)
+        except ValueError as exc:
+            return str(exc)
         if recomputed <= self.now_utc:
             return "target schedule time is no longer in the future"
         if as_utc(approval.resolved_scheduled_at) != as_utc(recomputed):
