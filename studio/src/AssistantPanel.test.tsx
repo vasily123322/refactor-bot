@@ -22,6 +22,11 @@ function attentionRunView(summary: string): AssistantRunView {
     channel_id: 7,
     scenario: 'attention_today',
     request_id: null,
+    skill_id: 'attention_today',
+    skill_version: '1',
+    workflow_phase: 'completed',
+    resumable: false,
+    resume_state: 'completed',
     status: 'completed',
     model: 'provider/model',
     tokens_used: 12,
@@ -64,6 +69,11 @@ function draftRunView(): AssistantRunView {
     channel_id: 7,
     scenario: 'drafts_tomorrow',
     request_id: 'draft-request-22',
+    skill_id: 'drafts_tomorrow',
+    skill_version: '1',
+    workflow_phase: 'completed',
+    resumable: false,
+    resume_state: 'completed',
     status: 'completed',
     model: 'provider/model',
     tokens_used: 101,
@@ -98,6 +108,14 @@ function draftRunView(): AssistantRunView {
         },
       ],
       write_capability: 'draft_write',
+      editorial_context: {
+        recent_count: 5,
+        scheduled_count: 2,
+        item_count: 7,
+        total_excerpt_chars: 1200,
+        fingerprint: 'c'.repeat(64),
+        refs: [{ content_item_id: 91, revision: 2 }],
+      },
       execution_limits: {
         max_steps: 4,
         max_tool_calls: 0,
@@ -249,6 +267,7 @@ describe('Assistant scenario rendering', () => {
     expect(html).toContain('Content #103');
     expect(html).toContain('2026-09-20');
     expect(html).toContain('Очень длинный русский заголовок');
+    expect(html).toContain('Bounded context: 5 recent · 2 scheduled refs');
   });
 
   it('proposal form is explicit and does not claim scheduled state before review', () => {
