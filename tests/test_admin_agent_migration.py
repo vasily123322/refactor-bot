@@ -11,7 +11,7 @@ from app.core.db import Base
 
 
 PREVIOUS_HEAD = "20260919_0018"
-HEAD = "20260919_0021"
+HEAD = "20260919_0022"
 
 
 def _upgrade(repo_root: Path, database_path: Path, target: str) -> None:
