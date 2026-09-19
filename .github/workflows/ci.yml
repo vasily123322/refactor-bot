@@ -48,6 +48,10 @@ jobs:
       - name: Run stabilization regression gate
         run: |
           pytest -q \
+            tests/test_admin_agent.py \
+            tests/test_admin_agent_drafts.py \
+            tests/test_admin_agent_migration.py \
+            tests/test_studio_admin_agent_api.py \
             tests/test_ai_activity.py \
             tests/test_ai_run_lease_recovery.py \
             tests/test_ai_run_retention.py \
