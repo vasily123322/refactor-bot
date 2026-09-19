@@ -633,10 +633,25 @@ export const studioApi = {
       `/api/studio/channels/${channelId}/planner/${scheduleId}/cancel`,
       { method: 'POST', body: JSON.stringify({}) },
     ),
-  mediaAssets: (channelId: number, limit = 100) =>
-    request<MediaAssetView[]>(
-      `/api/studio/channels/${channelId}/media-assets?limit=${encodeURIComponent(String(limit))}`,
-    ),
+  mediaAssets: (
+    channelId: number,
+    options: {
+      limit?: number;
+      beforeCreatedAt?: string;
+      beforeId?: number;
+    } = {},
+  ) => {
+    const query = new URLSearchParams({
+      limit: String(options.limit ?? 100),
+    });
+    if (options.beforeCreatedAt !== undefined && options.beforeId !== undefined) {
+      query.set('before_created_at', options.beforeCreatedAt);
+      query.set('before_id', String(options.beforeId));
+    }
+    return request<MediaAssetView[]>(
+      `/api/studio/channels/${channelId}/media-assets?${query}`,
+    );
+  },
   createMediaAsset: (channelId: number, input: CreateMediaAssetInput) =>
     request<MediaAssetView>(`/api/studio/channels/${channelId}/media-assets`, {
       method: 'POST',
