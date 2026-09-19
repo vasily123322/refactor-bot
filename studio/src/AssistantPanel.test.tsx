@@ -431,6 +431,56 @@ describe('Assistant async ownership', () => {
     expect(retry[0].id).toBe(approval.id);
   });
 
+  it('coalesces repeated series proposal and approve clicks independently', async () => {
+    const proposalLock = new ExclusiveOperationLock();
+    const approveLock = new ExclusiveOperationLock();
+    let releaseProposal!: () => void;
+    let releaseApprove!: () => void;
+    const proposalGate = new Promise<void>((resolve) => { releaseProposal = resolve; });
+    const approveGate = new Promise<void>((resolve) => { releaseApprove = resolve; });
+    let proposalCalls = 0;
+    let approveCalls = 0;
+
+    const firstProposal = runExclusiveOperation(
+      proposalLock,
+      'series-proposal:33',
+      async () => {
+        proposalCalls += 1;
+        await proposalGate;
+      },
+    );
+    const duplicateProposal = await runExclusiveOperation(
+      proposalLock,
+      'series-proposal:33',
+      async () => {
+        proposalCalls += 1;
+      },
+    );
+    const firstApprove = runExclusiveOperation(
+      approveLock,
+      'series-approval:81',
+      async () => {
+        approveCalls += 1;
+        await approveGate;
+      },
+    );
+    const duplicateApprove = await runExclusiveOperation(
+      approveLock,
+      'series-approval:81',
+      async () => {
+        approveCalls += 1;
+      },
+    );
+
+    expect(duplicateProposal.started).toBe(false);
+    expect(duplicateApprove.started).toBe(false);
+    expect(proposalCalls).toBe(1);
+    expect(approveCalls).toBe(1);
+    releaseProposal();
+    releaseApprove();
+    await Promise.all([firstProposal, firstApprove]);
+  });
+
   it('locks one approval operation without globally blocking an unrelated draft', async () => {
     const firstDraftLock = new ExclusiveOperationLock();
     const secondDraftLock = new ExclusiveOperationLock();
