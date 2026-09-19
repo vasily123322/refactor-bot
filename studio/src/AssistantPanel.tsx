@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
-import type { AssistantRunView } from './api';
+import type { AssistantRunView, AssistantScenario } from './api';
 import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
 import {
   ChannelRequestOwnership,
@@ -36,6 +36,24 @@ function severityLabel(value: string): string {
   return 'Инфо';
 }
 
+function scenarioLabel(value: AssistantScenario): string {
+  return value === 'drafts_tomorrow' ? '3 черновика на завтра' : 'Внимание сегодня';
+}
+
+function newDraftRequestId(): string {
+  const randomUUID = globalThis.crypto?.randomUUID?.bind(globalThis.crypto);
+  if (randomUUID) return randomUUID();
+  return `draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+}
+
+export function mergeAssistantRun(
+  previous: AssistantRunView[],
+  run: AssistantRunView,
+  limit = 10,
+): AssistantRunView[] {
+  return [run, ...previous.filter((item) => item.id !== run.id)].slice(0, limit);
+}
+
 export function AssistantBrief({
   run,
   onOpenPlanner,
@@ -54,6 +72,38 @@ export function AssistantBrief({
     );
   }
   if (!result) return <div className="assistant-empty">Результат ещё не готов.</div>;
+
+  if (result.scenario === 'drafts_tomorrow') {
+    return (
+      <div className="assistant-brief">
+        <div className="assistant-summary">
+          <small>{result.timezone} · редакционный день {result.target_local_date}</small>
+          <p>Создано {result.draft_count} обычных черновика Content domain. Расписание и публикация не создавались.</p>
+        </div>
+        <div className="assistant-drafts">
+          {result.drafts.map((draft) => (
+            <article className="assistant-draft-card" key={draft.content_item_id}>
+              <div className="assistant-item-heading">
+                <strong>{draft.title}</strong>
+                <span className="assistant-run-status assistant-run-status-completed">Черновик</span>
+              </div>
+              <small>
+                {result.target_local_date} · Content #{draft.content_item_id} · revision {draft.content_revision}
+              </small>
+              <div className="assistant-refs">
+                <button
+                  className="link-button"
+                  onClick={() => onOpenContent?.(draft.content_item_id)}
+                >
+                  Открыть в редакторе
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="assistant-brief">
@@ -117,7 +167,7 @@ export function AssistantPanel({
   const [currentRun, setCurrentRun] = useState<AssistantRunView | null>(null);
   const [loadState, setLoadState] = useState<ChannelLoadState | null>(null);
   const [error, setError] = useState<{ channelId: number; message: string } | null>(null);
-  const [running, setRunning] = useState(false);
+  const [runningScenario, setRunningScenario] = useState<AssistantScenario | null>(null);
   const requestOwnershipRef = useRef(new ChannelRequestOwnership());
   const runOwnershipRef = useRef(new ChannelRequestOwnership());
   const operationLockRef = useRef(new ExclusiveOperationLock());
@@ -168,25 +218,27 @@ export function AssistantPanel({
 
   useEffect(() => {
     runOwnershipRef.current.invalidate();
+    setRunningScenario(null);
     void loadHistory();
   }, [loadHistory]);
 
-  const runAttention = useCallback(async () => {
+  const runScenario = useCallback(async (scenario: AssistantScenario) => {
     const channelId = channelIdRef.current;
     if (channelId === null) return;
-    const token = runOwnershipRef.current.begin(channelId);
-    const isCurrent = () => runOwnershipRef.current.isCurrent(token, channelIdRef.current);
     const result = await runExclusiveOperation(
       operationLockRef.current,
-      'attention_today',
+      scenario,
       async () => {
-        setRunning(true);
+        const token = runOwnershipRef.current.begin(channelId);
+        const isCurrent = () => runOwnershipRef.current.isCurrent(token, channelIdRef.current);
+        setRunningScenario(scenario);
         setError(null);
         try {
-          const run = await studioApi.createAssistantRun(channelId, 'attention_today');
+          const requestId = scenario === 'drafts_tomorrow' ? newDraftRequestId() : null;
+          const run = await studioApi.createAssistantRun(channelId, scenario, requestId);
           if (!isCurrent()) return;
           setCurrentRun(run);
-          setRuns((previous) => [run, ...previous.filter((item) => item.id !== run.id)].slice(0, 10));
+          setRuns((previous) => mergeAssistantRun(previous, run));
           validDataChannelRef.current = channelId;
           setLoadState({ channelId, phase: 'loaded' });
         } catch (reason) {
@@ -194,7 +246,7 @@ export function AssistantPanel({
             setError({ channelId, message: errorMessage(reason) });
           }
         } finally {
-          if (isCurrent()) setRunning(false);
+          if (isCurrent()) setRunningScenario(null);
         }
       },
     );
@@ -209,6 +261,7 @@ export function AssistantPanel({
   const initialLoading = dataView === 'loading';
   const loadFailed = dataView === 'error-without-valid-data';
   const loadedEmpty = dataView === 'loaded-empty';
+  const running = runningScenario !== null;
 
   return (
     <div className="assistant-page">
@@ -216,13 +269,29 @@ export function AssistantPanel({
         <div>
           <small className="eyebrow">{channel.title || channel.tg_chat_id}</small>
           <h1>Assistant</h1>
-          <p>Bounded operational work panel. MVP A только читает состояние канала и ничего не публикует.</p>
+          <p>Bounded work panel: attention flow читает состояние, draft flow создаёт только обычные черновики без расписания и публикации.</p>
         </div>
         <div className="top-actions">
-          <button className="button primary" onClick={() => void runAttention()} disabled={running}>
+          <button
+            className="button primary"
+            onClick={() => void runScenario('attention_today')}
+            disabled={running}
+          >
             Что сегодня требует внимания?
           </button>
-          {running && <InlineStatus>Собираю проверяемый snapshot…</InlineStatus>}
+          <button
+            className="button secondary"
+            onClick={() => void runScenario('drafts_tomorrow')}
+            disabled={running}
+          >
+            Создать 3 черновика на завтра
+          </button>
+          {runningScenario === 'attention_today' && (
+            <InlineStatus>Собираю проверяемый snapshot…</InlineStatus>
+          )}
+          {runningScenario === 'drafts_tomorrow' && (
+            <InlineStatus>Готовлю три черновика в стиле канала…</InlineStatus>
+          )}
         </div>
       </header>
 
@@ -236,8 +305,12 @@ export function AssistantPanel({
       <section className="assistant-work-card">
         <div className="panel-heading">
           <div>
-            <h2>Operational brief</h2>
-            <small>{currentRun ? `run #${currentRun.id} · ${currentRun.status}` : 'Запустите read-only проверку'}</small>
+            <h2>Assistant result</h2>
+            <small>
+              {currentRun
+                ? `run #${currentRun.id} · ${scenarioLabel(currentRun.scenario)} · ${currentRun.status}`
+                : 'Запустите один из bounded сценариев'}
+            </small>
           </div>
         </div>
         {running && !currentRun ? (
@@ -249,7 +322,7 @@ export function AssistantPanel({
         ) : currentRun ? (
           <AssistantBrief run={currentRun} onOpenPlanner={onOpenPlanner} onOpenContent={onOpenContent} />
         ) : (
-          <div className="assistant-empty">Результата пока нет. CTA запускает один bounded request.</div>
+          <div className="assistant-empty">Результата пока нет. Каждый CTA запускает один bounded request.</div>
         )}
       </section>
 
@@ -286,7 +359,7 @@ export function AssistantPanel({
               onClick={() => setCurrentRun(run)}
             >
               <span>
-                <strong>run #{run.id}</strong>
+                <strong>{scenarioLabel(run.scenario)} · run #{run.id}</strong>
                 <small>{dateLabel(run.finished_at || run.created_at)}</small>
               </span>
               <span className={`assistant-run-status assistant-run-status-${run.status}`}>{run.status}</span>
