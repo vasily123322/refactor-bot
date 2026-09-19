@@ -439,6 +439,7 @@ class AdminAgentRunner:
         summary = _fallback_summary(facts)
         generated_by = "deterministic"
         model = ai_meta.get("model")
+        used_model: str | None = None
         tokens_used = 0
 
         ai_enabled = bool(ai_meta.get("ai_configured") and ai_meta.get("ai_enabled"))
@@ -452,7 +453,9 @@ class AdminAgentRunner:
             self._llm_calls += 1
             if self._llm_calls > self.limits.max_llm_calls:
                 raise AgentExecutionLimit("admin agent LLM-call limit exceeded")
-            await self._event(run, "model_started", payload={"model": model})
+            used_model = str(model) if model else None
+            run.model = used_model
+            await self._event(run, "model_started", payload={"model": used_model})
             prompt_payload = {
                 "timezone": timezone_name,
                 "facts": facts,
@@ -501,7 +504,7 @@ class AdminAgentRunner:
                 "max_llm_calls": self.limits.max_llm_calls,
                 "max_seconds": self.limits.max_seconds,
             },
-            "_model": model,
+            "_model": used_model,
             "_tokens_used": tokens_used,
         }
 
