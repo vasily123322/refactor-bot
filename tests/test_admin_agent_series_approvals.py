@@ -1097,3 +1097,149 @@ def test_claim_ownership_check_bypasses_stale_identity_map(
             await engine.dispose()
 
     asyncio.run(run())
+
+
+
+def test_batch_load_refreshes_concurrent_terminal_state(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    async def run() -> None:
+        database_path = tmp_path / "series-load-refresh.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as setup:
+                owner, channel = await _setup_channel(setup, 13008)
+                source = await _source_run(
+                    setup,
+                    monkeypatch,
+                    owner=owner,
+                    channel=channel,
+                    count=2,
+                    request_id="series-source-load-refresh-0001",
+                )
+                proposal = await AdminAgentSeriesApprovalService(
+                    setup,
+                    now_utc=NOW,
+                ).create(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    source_run_id=source.id,
+                    request_id="series-load-refresh-0001",
+                    slots=_slots(2),
+                )
+                batch_id = int(proposal.id)
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
+
+            async with Session() as first_session:
+                service = AdminAgentSeriesApprovalService(first_session, now_utc=NOW)
+                cached = await service.get(
+                    batch_id=batch_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                )
+                assert cached is not None
+                assert cached.state == STATE_PENDING_REVIEW
+
+                async with Session() as second_session:
+                    current = await second_session.get(
+                        AdminAgentApprovalBatch,
+                        batch_id,
+                    )
+                    assert current is not None
+                    current.state = STATE_REJECTED
+                    current.reviewer_tg_user_id = owner_id
+                    current.reviewed_at = NOW
+                    await second_session.commit()
+
+                # The first session still owns the old mapped instance. A new
+                # service load must overwrite its cached attributes from the DB.
+                assert cached.state == STATE_PENDING_REVIEW
+                refreshed = await service.get(
+                    batch_id=batch_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                )
+                assert refreshed is cached
+                assert refreshed.state == STATE_REJECTED
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_item_revalidation_refreshes_cross_session_content_revision(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    async def run() -> None:
+        database_path = tmp_path / "series-content-refresh.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as setup:
+                owner, channel = await _setup_channel(setup, 13009)
+                source = await _source_run(
+                    setup,
+                    monkeypatch,
+                    owner=owner,
+                    channel=channel,
+                    count=2,
+                    request_id="series-source-content-refresh-0001",
+                )
+                proposal = await AdminAgentSeriesApprovalService(
+                    setup,
+                    now_utc=NOW,
+                ).create(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    source_run_id=source.id,
+                    request_id="series-content-refresh-0001",
+                    slots=_slots(2),
+                )
+                batch_id = int(proposal.id)
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
+
+            async with Session() as first_session:
+                service = AdminAgentSeriesApprovalService(first_session, now_utc=NOW)
+                batch = await service.get(
+                    batch_id=batch_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                )
+                assert batch is not None
+                items = await service.items_for_batch(batch_id)
+                first_item = items[0]
+                assert await service._item_stale_reason(batch, first_item) is None
+
+                async with Session() as second_session:
+                    await ContentRepo(second_session).append_revision(
+                        first_item.content_item_id,
+                        PostDocument(
+                            blocks=[
+                                {
+                                    "id": "cross-session-edit",
+                                    "type": "text",
+                                    "text": "Changed in another Studio request.",
+                                }
+                            ]
+                        ),
+                        created_by_tg_user_id=owner_id,
+                        source="studio",
+                        status="draft",
+                    )
+
+                reason = await service._item_stale_reason(batch, first_item)
+                assert reason == "content revision changed"
+                assert await _counts(first_session, channel_id) == (0, 0, 0)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
