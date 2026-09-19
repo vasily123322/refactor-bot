@@ -352,6 +352,84 @@ def test_resume_after_atomic_persistence_reconstructs_exact_artifacts(monkeypatc
     asyncio.run(run())
 
 
+def test_partial_persisted_artifact_set_fails_closed_without_new_drafts() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        now = datetime.now(timezone.utc)
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                owner, channel = await _setup_channel(session, tg_user_id=9939)
+                item = await ContentRepo(session).create(
+                    channel_id=channel.id,
+                    title="Existing owned draft",
+                    document=PostDocument(
+                        blocks=[{"id": "existing", "type": "text", "text": "Canonical draft"}]
+                    ),
+                    created_by_tg_user_id=owner.tg_user_id,
+                    source="admin_agent",
+                )
+                run_row = AdminAgentRun(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    scenario="drafts_tomorrow",
+                    request_id="partial-artifacts-0001",
+                    skill_id="drafts_tomorrow",
+                    skill_version="1",
+                    workflow_phase=PHASE_DRAFTS_PERSISTED,
+                    checkpoint={
+                        "checkpoint_version": 1,
+                        "state": PHASE_DRAFTS_PERSISTED,
+                        "target_local_date": "2026-09-20",
+                        "timezone": "UTC",
+                        "context_summary": {
+                            "recent_count": 0,
+                            "scheduled_count": 0,
+                            "item_count": 0,
+                            "total_excerpt_chars": 0,
+                            "fingerprint": "0" * 64,
+                            "refs": [],
+                        },
+                    },
+                    status="failed",
+                    started_at=now,
+                )
+                session.add(run_row)
+                await session.flush()
+                session.add(
+                    AdminAgentRunArtifact(
+                        run_id=run_row.id,
+                        artifact_type="content_draft",
+                        ordinal=1,
+                        content_item_id=item.id,
+                        content_revision=1,
+                    )
+                )
+                await session.commit()
+                before = await _count(session, ContentItem, channel_id=channel.id)
+
+                resumed = await AdminAgentRunner(
+                    session,
+                    limits=DRAFT_SCENARIO_LIMITS,
+                    now_utc=now,
+                ).resume_drafts_tomorrow(
+                    channel_id=channel.id,
+                    owner_tg_user_id=owner.tg_user_id,
+                    run_id=run_row.id,
+                )
+                assert resumed.status == "failed"
+                assert resumed.workflow_phase == PHASE_FAILED_CLOSED
+                assert resumed.checkpoint is None
+                assert await _count(session, ContentItem, channel_id=channel.id) == before
+                assert await _count(session, AdminAgentRunArtifact) == 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_resume_claim_and_fail_closed_states() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
