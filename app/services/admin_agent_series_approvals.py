@@ -224,10 +224,14 @@ class AdminAgentSeriesApprovalService:
         channel_id: int,
         for_update: bool = False,
     ) -> AdminAgentApprovalBatch | None:
-        stmt = select(AdminAgentApprovalBatch).where(
-            AdminAgentApprovalBatch.id == int(batch_id),
-            AdminAgentApprovalBatch.owner_tg_user_id == int(owner_tg_user_id),
-            AdminAgentApprovalBatch.channel_id == int(channel_id),
+        stmt = (
+            select(AdminAgentApprovalBatch)
+            .where(
+                AdminAgentApprovalBatch.id == int(batch_id),
+                AdminAgentApprovalBatch.owner_tg_user_id == int(owner_tg_user_id),
+                AdminAgentApprovalBatch.channel_id == int(channel_id),
+            )
+            .execution_options(populate_existing=True)
         )
         if for_update:
             stmt = stmt.with_for_update()
@@ -278,6 +282,7 @@ class AdminAgentSeriesApprovalService:
                     select(AdminAgentApprovalBatchItem)
                     .where(AdminAgentApprovalBatchItem.batch_id == int(batch_id))
                     .order_by(AdminAgentApprovalBatchItem.ordinal.asc())
+                    .execution_options(populate_existing=True)
                 )
             ).scalars()
         )
@@ -323,7 +328,13 @@ class AdminAgentSeriesApprovalService:
         owner_tg_user_id: int,
         channel_id: int,
     ) -> dict[str, object]:
-        run = await self.session.get(AdminAgentRun, int(source_run_id))
+        run = (
+            await self.session.execute(
+                select(AdminAgentRun)
+                .where(AdminAgentRun.id == int(source_run_id))
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
         if (
             run is None
             or int(run.owner_tg_user_id) != int(owner_tg_user_id)
@@ -817,7 +828,13 @@ class AdminAgentSeriesApprovalService:
         batch: AdminAgentApprovalBatch,
         items: list[AdminAgentApprovalBatchItem],
     ) -> str | None:
-        run = await self.session.get(AdminAgentRun, int(batch.source_run_id))
+        run = (
+            await self.session.execute(
+                select(AdminAgentRun)
+                .where(AdminAgentRun.id == int(batch.source_run_id))
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
         if run is None:
             return "source run was removed"
         if (
@@ -848,6 +865,7 @@ class AdminAgentSeriesApprovalService:
                     select(AdminAgentRunArtifact)
                     .where(AdminAgentRunArtifact.run_id == int(batch.source_run_id))
                     .order_by(AdminAgentRunArtifact.ordinal.asc())
+                    .execution_options(populate_existing=True)
                 )
             ).scalars()
         )
@@ -924,18 +942,26 @@ class AdminAgentSeriesApprovalService:
     ) -> str | None:
         artifact = (
             await self.session.execute(
-                select(AdminAgentRunArtifact).where(
+                select(AdminAgentRunArtifact)
+                .where(
                     AdminAgentRunArtifact.run_id == int(batch.source_run_id),
                     AdminAgentRunArtifact.artifact_type == SOURCE_ARTIFACT_TYPE,
                     AdminAgentRunArtifact.ordinal == int(item.ordinal),
                     AdminAgentRunArtifact.content_item_id == int(item.content_item_id),
                 )
+                .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
         if artifact is None:
             return "source artifact no longer exists"
 
-        content = await self.session.get(ContentItem, int(item.content_item_id))
+        content = (
+            await self.session.execute(
+                select(ContentItem)
+                .where(ContentItem.id == int(item.content_item_id))
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
         if content is None:
             return "content item was removed"
         if int(content.channel_id) != int(batch.channel_id):
