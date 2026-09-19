@@ -5,7 +5,9 @@ import { StudioApiError, studioApi, type CreateSourceInput } from './api';
 import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
 import {
   ChannelRequestOwnership,
+  ExclusiveOperationLock,
   resolveChannelDataView,
+  runExclusiveOperation,
   type ChannelLoadState,
 } from './asyncControl';
 import {
@@ -62,7 +64,7 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
   const [sources, setSources] = useState<SourceConnectorView[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loadState, setLoadState] = useState<ChannelLoadState | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [busyKeys, setBusyKeys] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState<{ channelId: number; message: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -73,6 +75,7 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
   const [citationEnabled, setCitationEnabled] = useState(true);
   const kindTouchedRef = useRef(false);
   const requestOwnershipRef = useRef(new ChannelRequestOwnership());
+  const operationLocksRef = useRef(new Map<string, ExclusiveOperationLock>());
   const validDataChannelRef = useRef<number | null>(null);
   const channelIdRef = useRef<number | null>(channel?.id ?? null);
   channelIdRef.current = channel?.id ?? null;
@@ -156,19 +159,58 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
     [],
   );
 
-  const run = async (key: string, action: () => Promise<void>) => {
+  const isBusy = (key: string): boolean => {
+    const channelId = channelIdRef.current;
+    return channelId !== null && busyKeys.has(`${channelId}:${key}`);
+  };
+
+  const sourceBusy = (sourceId: number): boolean => (
+    isBusy(`doctor:${sourceId}`)
+    || isBusy(`ingest:${sourceId}`)
+    || isBusy(`settings:${sourceId}`)
+  );
+
+  const run = async (
+    resourceKey: string,
+    operationKey: string,
+    action: (channelId: number, isCurrent: () => boolean) => Promise<void>,
+  ): Promise<boolean> => {
     const operationChannelId = channelIdRef.current;
-    setBusyId(key);
-    setError(null);
-    try {
-      await action();
-    } catch (reason) {
-      if (operationChannelId !== null && channelIdRef.current === operationChannelId) {
-        setError({ channelId: operationChannelId, message: errorMessage(reason) });
-      }
-    } finally {
-      setBusyId(null);
+    if (operationChannelId === null) return false;
+
+    const scopedResourceKey = `${operationChannelId}:${resourceKey}`;
+    const busyKey = `${operationChannelId}:${operationKey}`;
+    let lock = operationLocksRef.current.get(scopedResourceKey);
+    if (!lock) {
+      lock = new ExclusiveOperationLock();
+      operationLocksRef.current.set(scopedResourceKey, lock);
     }
+
+    const result = await runExclusiveOperation(lock, busyKey, async () => {
+      const isCurrent = () => channelIdRef.current === operationChannelId;
+      setBusyKeys((current) => {
+        const next = new Set(current);
+        next.add(busyKey);
+        return next;
+      });
+      if (isCurrent()) setError(null);
+      try {
+        await action(operationChannelId, isCurrent);
+      } catch (reason) {
+        if (isCurrent()) {
+          setError({ channelId: operationChannelId, message: errorMessage(reason) });
+        }
+      } finally {
+        setBusyKeys((current) => {
+          const next = new Set(current);
+          next.delete(busyKey);
+          return next;
+        });
+      }
+    });
+
+    if (!lock.isLocked()) operationLocksRef.current.delete(scopedResourceKey);
+    return result.started;
   };
 
   const channelDMSourceExists = hasChannelDMSource(sources.map((source) => source.kind));
@@ -194,8 +236,9 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
     });
     if (!input) return;
 
-    await run('create', async () => {
-      const created = await studioApi.createSource(channel.id, input);
+    await run('create', 'create', async (channelId, isCurrent) => {
+      const created = await studioApi.createSource(channelId, input);
+      if (!isCurrent()) return;
       kindTouchedRef.current = true;
       void persistSourceKindPreference(kind);
       setValue('');
@@ -206,8 +249,9 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
   };
 
   const doctor = (source: SourceConnectorView) =>
-    run(`doctor:${source.id}`, async () => {
-      const checked = await studioApi.sourceDoctor(channel!.id, source.id);
+    run(`source:${source.id}`, `doctor:${source.id}`, async (channelId, isCurrent) => {
+      const checked = await studioApi.sourceDoctor(channelId, source.id);
+      if (!isCurrent()) return;
       setSources((current) =>
         current.map((row) => (row.id === checked.id ? checked : row)),
       );
@@ -219,26 +263,36 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
     });
 
   const ingest = (source: SourceConnectorView) =>
-    run(`ingest:${source.id}`, async () => {
-      const result = await studioApi.ingestSource(channel!.id, source.id);
+    run(`source:${source.id}`, `ingest:${source.id}`, async (channelId, isCurrent) => {
+      const result = await studioApi.ingestSource(channelId, source.id);
+      if (!isCurrent()) return;
       setNotice(
         `Источник #${source.id}: ${result.documents_created} новых документов, ${result.candidates_created} кандидатов отправлено в Inbox`,
       );
       await load();
     });
 
-  const saveSettings = (source: SourceConnectorView, patch: SourceSettingsPatch) =>
-    run(`settings:${source.id}`, async () => {
-      const updated = await updateSourceSettings(channel!.id, source.id, patch);
-      setSources((current) =>
-        current.map((row) => (row.id === updated.id ? updated : row)),
-      );
-      setNotice(
-        updated.enabled
-          ? `Источник #${updated.id}: настройки сохранены`
-          : `Источник #${updated.id}: выключен`,
-      );
-    });
+  const saveSettings = async (
+    source: SourceConnectorView,
+    patch: SourceSettingsPatch,
+  ): Promise<void> => {
+    await run(
+      `source:${source.id}`,
+      `settings:${source.id}`,
+      async (channelId, isCurrent) => {
+        const updated = await updateSourceSettings(channelId, source.id, patch);
+        if (!isCurrent()) return;
+        setSources((current) =>
+          current.map((row) => (row.id === updated.id ? updated : row)),
+        );
+        setNotice(
+          updated.enabled
+            ? `Источник #${updated.id}: настройки сохранены`
+            : `Источник #${updated.id}: выключен`,
+        );
+      },
+    );
+  };
 
   if (!channel) {
     return <div className="sources-empty-page">Выберите канал, чтобы настроить источники.</div>;
@@ -256,7 +310,7 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
           <button
             className="button secondary"
             onClick={() => void load()}
-            disabled={refreshing || busyId !== null}
+            disabled={refreshing}
           >
             ↻ Обновить
           </button>
@@ -271,7 +325,12 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
           <button aria-label="Закрыть ошибку" onClick={() => setError(null)}>×</button>
         </div>
       )}
-      {notice && <div className="banner success">{notice}<button onClick={() => setNotice(null)}>×</button></div>}
+      {notice && (
+        <InlineStatus className="banner success">
+          {notice}
+          <button aria-label="Закрыть уведомление" onClick={() => setNotice(null)}>×</button>
+        </InlineStatus>
+      )}
 
       <SourceWorkerHealthCard />
 
@@ -342,7 +401,7 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
             <button
               type="submit"
               className="button primary"
-              disabled={busyId !== null || !sourceValueReady || duplicateChannelDMSource}
+              disabled={isBusy('create') || !sourceValueReady || duplicateChannelDMSource}
             >
               Добавить
             </button>
@@ -432,7 +491,7 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
                 {lifecycleEditable ? (
                   <SourceSettingsControls
                     source={source}
-                    busy={busyId === `settings:${source.id}` || source.ingestion_busy}
+                    busy={sourceBusy(source.id) || source.ingestion_busy}
                     onSave={(patch) => saveSettings(source, patch)}
                   />
                 ) : (
@@ -443,14 +502,14 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
                 <div className="source-actions">
                   <button
                     className="button secondary compact"
-                    disabled={busyId !== null}
+                    disabled={sourceBusy(source.id)}
                     onClick={() => void doctor(source)}
                   >
-                    {busyId === `doctor:${source.id}` ? 'Проверяю…' : 'Doctor'}
+                    {isBusy(`doctor:${source.id}`) ? 'Проверяю…' : 'Doctor'}
                   </button>
                   <button
                     className="button secondary compact"
-                    disabled={busyId !== null || !canIngest}
+                    disabled={sourceBusy(source.id) || !canIngest}
                     title={
                       !source.enabled
                         ? 'Сначала включите источник'
@@ -466,7 +525,7 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
                     }
                     onClick={() => void ingest(source)}
                   >
-                    {busyId === `ingest:${source.id}` ? 'Читаю…' : ingestLabel}
+                    {isBusy(`ingest:${source.id}`) ? 'Читаю…' : ingestLabel}
                   </button>
                 </div>
               </article>
