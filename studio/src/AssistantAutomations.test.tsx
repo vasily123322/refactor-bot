@@ -178,7 +178,7 @@ describe('Assistant automations', () => {
 
   it('keeps a single create operation in flight', async () => {
     const lock = new ExclusiveOperationLock();
-    let release: (() => void) | null = null;
+    let release: () => void = () => undefined;
     const first = runExclusiveOperation(lock, 'create:7', async () => {
       await new Promise<void>((resolve) => {
         release = resolve;
@@ -188,7 +188,7 @@ describe('Assistant automations', () => {
     await Promise.resolve();
     const second = await runExclusiveOperation(lock, 'create:7', async () => 2);
     expect(second.started).toBe(false);
-    release?.();
+    release();
     expect((await first).started).toBe(true);
   });
 
