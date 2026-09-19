@@ -119,13 +119,36 @@ async def list_candidate_media(
     principal: PrincipalDep,
     session: SessionDep,
     limit: int = 100,
+    candidate_ids: str | None = None,
 ) -> list[CandidateMediaResponse]:
     await _require_owned_channel(session, principal, channel_id)
-    rows = await SourcesRepo(session).list_candidate_rows(
-        channel_id,
-        status="new",
-        limit=max(1, min(int(limit), 500)),
-    )
+    repo = SourcesRepo(session)
+    if candidate_ids is None:
+        rows = await repo.list_candidate_rows(
+            channel_id,
+            status="new",
+            limit=max(1, min(int(limit), 500)),
+        )
+    else:
+        try:
+            ids = [
+                int(value.strip())
+                for value in candidate_ids.split(",")
+                if value.strip()
+            ]
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid candidate_ids") from exc
+        ids = list(dict.fromkeys(ids))
+        if not ids or len(ids) > 100 or any(candidate_id <= 0 for candidate_id in ids):
+            raise HTTPException(
+                status_code=422,
+                detail="candidate_ids must contain 1..100 positive ids",
+            )
+        rows = await repo.list_candidate_rows_by_ids(
+            channel_id,
+            ids,
+            status="new",
+        )
     pending: list[tuple[CandidateMediaResponse, int | None]] = []
     requested_asset_ids: set[int] = set()
     for candidate, document in rows:
