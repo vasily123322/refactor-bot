@@ -228,8 +228,7 @@ export function AssistantAutomations({
   const loadOwnershipRef = useRef(new ChannelRequestOwnership());
   const createOwnershipRef = useRef(new ChannelRequestOwnership());
   const createLockRef = useRef(new ExclusiveOperationLock());
-  const toggleLocksRef = useRef(new Map<number, ExclusiveOperationLock>());
-  const resumeLocksRef = useRef(new Map<number, ExclusiveOperationLock>());
+  const automationLocksRef = useRef(new Map<number, ExclusiveOperationLock>());
   const historyOwnershipRef = useRef(new ChannelRequestOwnership());
   const historyScopeRef = useRef<string | null>(null);
   const replacementRequestIdsRef = useRef(new Map<number, string>());
@@ -295,6 +294,7 @@ export function AssistantAutomations({
     setToggleBusyIds(new Set());
     setResumeBusyIds(new Set());
     setReplacementBusyIds(new Set());
+    automationLocksRef.current.clear();
     historyOwnershipRef.current.invalidate();
     historyScopeRef.current = null;
     setHistoryAutomationId(null);
@@ -402,10 +402,10 @@ export function AssistantAutomations({
     automation: AssistantAutomationView,
   ) => {
     const channelId = channelIdRef.current;
-    let lock = toggleLocksRef.current.get(automation.id);
+    let lock = automationLocksRef.current.get(automation.id);
     if (!lock) {
       lock = new ExclusiveOperationLock();
-      toggleLocksRef.current.set(automation.id, lock);
+      automationLocksRef.current.set(automation.id, lock);
     }
     const result = await runExclusiveOperation(
       lock,
@@ -473,10 +473,10 @@ export function AssistantAutomations({
     const run = automation.latest_run;
     if (!run?.resumable) return;
     const channelId = channelIdRef.current;
-    let lock = resumeLocksRef.current.get(automation.id);
+    let lock = automationLocksRef.current.get(automation.id);
     if (!lock) {
       lock = new ExclusiveOperationLock();
-      resumeLocksRef.current.set(automation.id, lock);
+      automationLocksRef.current.set(automation.id, lock);
     }
     await runExclusiveOperation(lock, `resume:${automation.id}`, async () => {
       setResumeBusyIds((previous) => new Set(previous).add(automation.id));
@@ -512,16 +512,16 @@ export function AssistantAutomations({
     const existingRequestId = replacementRequestIdsRef.current.get(automation.id);
     const requestId = existingRequestId ?? automationRequestId();
     replacementRequestIdsRef.current.set(automation.id, requestId);
+    let lock = automationLocksRef.current.get(automation.id);
+    if (!lock) {
+      lock = new ExclusiveOperationLock();
+      automationLocksRef.current.set(automation.id, lock);
+    }
     await runExclusiveOperation(
-      createLockRef.current,
+      lock,
       `replacement:${automation.id}`,
       async () => {
-        const token = createOwnershipRef.current.begin(channelId, `replacement:${automation.id}`);
-        const isCurrent = () => createOwnershipRef.current.isCurrent(
-          token,
-          channelIdRef.current,
-          `replacement:${automation.id}`,
-        );
+        const isCurrent = () => channelIdRef.current === channelId;
         setReplacementBusyIds((previous) => new Set(previous).add(automation.id));
         setError(null);
         try {
@@ -725,6 +725,9 @@ export function AssistantAutomations({
           const controls = automationAvailableControls(automation);
           const canEnable = controls.includes('enable');
           const canPause = controls.includes('pause');
+          const automationBusy = toggleBusyIds.has(automation.id)
+            || resumeBusyIds.has(automation.id)
+            || replacementBusyIds.has(automation.id);
           return (
             <article className="assistant-automation-row assistant-automation-row-e5" key={automation.id}>
               <div className="assistant-automation-main">
@@ -760,7 +763,7 @@ export function AssistantAutomations({
                   {(canPause || canEnable) && (
                     <button
                       className="button secondary"
-                      disabled={toggleBusyIds.has(automation.id)}
+                      disabled={automationBusy}
                       onClick={() => void toggleEnabled(automation)}
                     >
                       {toggleBusyIds.has(automation.id)
@@ -771,7 +774,7 @@ export function AssistantAutomations({
                   {controls.includes('resume') && automation.latest_run?.resumable && (
                     <button
                       className="button secondary"
-                      disabled={resumeBusyIds.has(automation.id)}
+                      disabled={automationBusy}
                       onClick={() => void resumeLatest(automation)}
                     >
                       {resumeBusyIds.has(automation.id) ? 'Продолжаю…' : 'Продолжить'}
@@ -799,7 +802,7 @@ export function AssistantAutomations({
                     && automation.suggested_skill_version && (
                     <button
                       className="button secondary"
-                      disabled={replacementBusyIds.has(automation.id)}
+                      disabled={automationBusy}
                       onClick={() => void createReplacement(automation)}
                     >
                       {replacementBusyIds.has(automation.id)
