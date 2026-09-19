@@ -229,6 +229,40 @@ describe('Assistant automations', () => {
     expect((await first).started).toBe(true);
   });
 
+  it('serializes conflicting controls per automation without blocking unrelated work', async () => {
+    const automationOne = new ExclusiveOperationLock();
+    const automationTwo = new ExclusiveOperationLock();
+    const create = new ExclusiveOperationLock();
+    let releaseResume!: () => void;
+    const resumeGate = new Promise<void>((resolve) => { releaseResume = resolve; });
+    let sameAutomationToggle = 0;
+    let unrelatedToggle = 0;
+    let unrelatedCreate = 0;
+
+    const resume = runExclusiveOperation(automationOne, 'resume:10', async () => {
+      await resumeGate;
+    });
+    const toggleSame = await runExclusiveOperation(automationOne, 'toggle:10', async () => {
+      sameAutomationToggle += 1;
+    });
+    const toggleOther = await runExclusiveOperation(automationTwo, 'toggle:11', async () => {
+      unrelatedToggle += 1;
+    });
+    const createNew = await runExclusiveOperation(create, 'create:7', async () => {
+      unrelatedCreate += 1;
+    });
+
+    expect(toggleSame.started).toBe(false);
+    expect(sameAutomationToggle).toBe(0);
+    expect(toggleOther.started).toBe(true);
+    expect(unrelatedToggle).toBe(1);
+    expect(createNew.started).toBe(true);
+    expect(unrelatedCreate).toBe(1);
+
+    releaseResume();
+    await resume;
+  });
+
 
   it('derives health labels and bounded controls without any retry action', () => {
     const active = automation(10);
