@@ -150,6 +150,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
             "source_kinds": ["telegram", "rss", "url", "telegram_channel_dms"],
             "candidate_to_draft": True,
             "assistant_attention_today": True,
+            "assistant_schedule_draft_tomorrow": True,
         }
 
     @app.get("/api/studio/me", response_model=StudioUserResponse)

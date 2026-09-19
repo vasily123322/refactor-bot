@@ -296,6 +296,38 @@ export type AssistantRunView = {
   events: AssistantEventView[];
 };
 
+export type AssistantApprovalState =
+  | 'pending_review'
+  | 'executing'
+  | 'executed'
+  | 'rejected'
+  | 'stale'
+  | 'failed';
+
+export type AssistantApprovalView = {
+  id: number;
+  channel_id: number;
+  source_admin_agent_run_id: number | null;
+  action_type: 'schedule_draft_tomorrow' | string;
+  state: AssistantApprovalState | string;
+  content_item_id: number;
+  content_revision: number;
+  timezone: string;
+  target_local_date: string;
+  local_time: string;
+  resolved_scheduled_at: string;
+  action_fingerprint: string;
+  execution_key: string | null;
+  request_id: string;
+  schedule_entry_id: number | null;
+  publication_id: number | null;
+  reviewer_tg_user_id: number | null;
+  failure_reason: string | null;
+  reviewed_at: string | null;
+  executed_at: string | null;
+  created_at: string | null;
+};
+
 export const studioApi = {
   me: () => request<StudioUser>('/api/studio/me'),
   channels: () => request<Channel[]>('/api/studio/channels'),
@@ -476,6 +508,37 @@ export const studioApi = {
   assistantRun: (channelId: number, runId: number) =>
     request<AssistantRunView>(
       `/api/studio/channels/${channelId}/assistant/runs/${runId}`,
+    ),
+  assistantApprovals: (channelId: number, limit = 50) =>
+    request<AssistantApprovalView[]>(
+      `/api/studio/channels/${channelId}/assistant/approvals?limit=${encodeURIComponent(String(limit))}`,
+    ),
+  createAssistantApproval: (
+    channelId: number,
+    contentItemId: number,
+    localTime: string,
+    requestId: string,
+  ) =>
+    request<AssistantApprovalView>(
+      `/api/studio/channels/${channelId}/assistant/approvals`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          content_item_id: contentItemId,
+          local_time: localTime,
+          request_id: requestId,
+        }),
+      },
+    ),
+  approveAssistantApproval: (channelId: number, approvalId: number) =>
+    request<AssistantApprovalView>(
+      `/api/studio/channels/${channelId}/assistant/approvals/${approvalId}/approve`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  rejectAssistantApproval: (channelId: number, approvalId: number) =>
+    request<AssistantApprovalView>(
+      `/api/studio/channels/${channelId}/assistant/approvals/${approvalId}/reject`,
+      { method: 'POST', body: JSON.stringify({}) },
     ),
   aiActivity: (channelId: number, limit = 50) =>
     request<AIActivityView>(

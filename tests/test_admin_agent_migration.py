@@ -10,8 +10,8 @@ import app.domain  # noqa: F401 register complete ORM metadata
 from app.core.db import Base
 
 
-PREVIOUS_HEAD = "20260919_0016"
-HEAD = "20260919_0017"
+PREVIOUS_HEAD = "20260919_0017"
+HEAD = "20260919_0018"
 
 
 def _upgrade(repo_root: Path, database_path: Path, target: str) -> None:
@@ -46,9 +46,9 @@ def _tables(database_path: Path) -> set[str]:
         }
 
 
-def test_admin_agent_draft_migration_upgrades_existing_0016_schema(tmp_path) -> None:
+def test_admin_agent_approval_migration_upgrades_existing_0017_schema(tmp_path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    database_path = tmp_path / "existing-0016.db"
+    database_path = tmp_path / "existing-0017.db"
     _upgrade(repo_root, database_path, PREVIOUS_HEAD)
 
     assert {"admin_agent_runs", "admin_agent_events"} <= _tables(database_path)
@@ -56,7 +56,8 @@ def test_admin_agent_draft_migration_upgrades_existing_0016_schema(tmp_path) -> 
         before_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(admin_agent_runs)")
         }
-        assert "request_id" not in before_columns
+        assert "request_id" in before_columns
+        assert "admin_agent_approvals" not in _tables(database_path)
 
     _upgrade(repo_root, database_path, "head")
 
@@ -87,6 +88,36 @@ def test_admin_agent_draft_migration_upgrades_existing_0016_schema(tmp_path) -> 
             for row in connection.execute("PRAGMA index_list(admin_agent_runs)")
         }
         assert indexes["uq_admin_agent_run_idempotency"] is True
+        assert "admin_agent_approvals" in _tables(database_path)
+        approval_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(admin_agent_approvals)")
+        }
+        assert {
+            "owner_tg_user_id",
+            "channel_id",
+            "action_type",
+            "state",
+            "content_item_id",
+            "content_revision",
+            "timezone",
+            "target_local_date",
+            "local_time",
+            "resolved_scheduled_at",
+            "action_fingerprint",
+            "execution_key",
+            "request_id",
+            "schedule_entry_id",
+            "publication_id",
+            "reviewer_tg_user_id",
+            "failure_reason",
+            "reviewed_at",
+            "executed_at",
+        } <= approval_columns
+        approval_indexes = {
+            row[1]: bool(row[2])
+            for row in connection.execute("PRAGMA index_list(admin_agent_approvals)")
+        }
+        assert approval_indexes["ix_admin_agent_approvals_execution_key"] is True
         assert {
             row[1]
             for row in connection.execute("PRAGMA table_info(admin_agent_events)")
@@ -107,5 +138,27 @@ def test_fresh_head_contains_agent_tables_and_matches_registered_orm(tmp_path) -
     _upgrade(repo_root, database_path, "head")
 
     tables = _tables(database_path)
-    assert {"admin_agent_runs", "admin_agent_events"} <= tables
+    assert {"admin_agent_runs", "admin_agent_events", "admin_agent_approvals"} <= tables
     assert tables == set(Base.metadata.tables) | {"alembic_version"}
+
+
+def test_admin_agent_approval_regression_suite_is_mandatory() -> None:
+    """Keep MVP-C approval regressions inside the existing blocking CI gate."""
+
+    repo_root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "tests/test_admin_agent_approvals.py",
+            "tests/test_studio_admin_agent_approval_api.py",
+        ],
+        cwd=repo_root,
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
