@@ -1102,6 +1102,87 @@ class AdminAgentRunner:
         await self.session.refresh(run)
         return run
 
+    async def _complete_draft_run(
+        self,
+        run: AdminAgentRun,
+        result: dict,
+        *,
+        clear_claim: bool,
+    ) -> AdminAgentRun:
+        run.model = result.pop("_model", run.model)
+        run.tokens_used = int(result.pop("_tokens_used", run.tokens_used or 0) or 0)
+        run.result = result
+        run.status = RUN_COMPLETED
+        run.workflow_phase = PHASE_COMPLETED
+        run.checkpoint = None
+        run.error = None
+        run.finished_at = datetime.now(timezone.utc)
+        if clear_claim:
+            run.execution_claim_token = None
+            run.execution_claimed_at = None
+        await self.session.commit()
+        await self._event(
+            run,
+            "run_completed",
+            payload={
+                "draft_count": int(result.get("draft_count") or 0),
+                "target_local_date": result.get("target_local_date"),
+            },
+        )
+        await self.session.refresh(run)
+        return run
+
+    async def _fail_draft_run(
+        self,
+        *,
+        run_id: int,
+        error: str,
+        reason: str,
+        force_phase: str | None = None,
+        clear_checkpoint: bool = False,
+        clear_claim: bool = False,
+    ) -> AdminAgentRun:
+        await self.session.rollback()
+        run = await self.session.get(AdminAgentRun, int(run_id))
+        if run is None:
+            raise AgentExecutionError("admin-agent run disappeared")
+        if force_phase is not None:
+            run.workflow_phase = force_phase
+        if clear_checkpoint:
+            run.checkpoint = None
+        if clear_claim:
+            run.execution_claim_token = None
+            run.execution_claimed_at = None
+        run.status = RUN_FAILED
+        run.error = error
+        run.finished_at = datetime.now(timezone.utc)
+        await self.session.commit()
+        await self._event(run, "run_failed", payload={"reason": reason})
+        await self.session.refresh(run)
+        return run
+
+    async def _acquire_resume_claim(self, run_id: int, token: str) -> None:
+        expiry = self.now_utc - timedelta(seconds=_RESUME_CLAIM_SECONDS)
+        result = await self.session.execute(
+            update(AdminAgentRun)
+            .where(
+                AdminAgentRun.id == int(run_id),
+                or_(
+                    AdminAgentRun.execution_claim_token.is_(None),
+                    AdminAgentRun.execution_claimed_at.is_(None),
+                    AdminAgentRun.execution_claimed_at < expiry,
+                ),
+            )
+            .values(
+                execution_claim_token=str(token),
+                execution_claimed_at=self.now_utc,
+            )
+        )
+        if int(result.rowcount or 0) != 1:
+            await self.session.rollback()
+            raise AgentExecutionBusy("admin-agent run is already being resumed")
+        await self.session.commit()
+
     async def run_drafts_tomorrow(
         self,
         *,
@@ -1124,11 +1205,15 @@ class AdminAgentRunner:
             return existing
 
         self._reset_execution_state()
+        skill = SKILL_REGISTRY.current_for_scenario(SCENARIO_DRAFTS_TOMORROW)
         run = AdminAgentRun(
             owner_tg_user_id=int(owner_tg_user_id),
             channel_id=int(channel_id),
             scenario=SCENARIO_DRAFTS_TOMORROW,
             request_id=key,
+            skill_id=skill.skill_id,
+            skill_version=skill.version,
+            workflow_phase=PHASE_CREATED,
             status=RUN_RUNNING,
             started_at=self.now_utc,
         )
@@ -1153,56 +1238,194 @@ class AdminAgentRunner:
         await self._event(
             run,
             "run_started",
-            payload={"scenario": SCENARIO_DRAFTS_TOMORROW},
+            payload={
+                "scenario": SCENARIO_DRAFTS_TOMORROW,
+                "skill_id": skill.skill_id,
+                "skill_version": skill.version,
+            },
         )
 
-        draft_limits = self.limits
         try:
             result = await asyncio.wait_for(
                 self._execute_drafts_tomorrow(run),
-                timeout=max(0.01, float(draft_limits.max_seconds)),
+                timeout=max(0.01, float(self.limits.max_seconds)),
             )
-            run.model = result.pop("_model", None)
-            run.tokens_used = int(result.pop("_tokens_used", 0) or 0)
-            run.result = result
-            run.status = RUN_COMPLETED
-            run.finished_at = datetime.now(timezone.utc)
-            await self.session.commit()
-            await self._event(
-                run,
-                "run_completed",
-                payload={
-                    "draft_count": int(result.get("draft_count") or 0),
-                    "target_local_date": result.get("target_local_date"),
-                },
-            )
+            return await self._complete_draft_run(run, result, clear_claim=False)
         except asyncio.TimeoutError:
             await self.session.rollback()
-            run = await self.session.get(AdminAgentRun, run_id)
-            assert run is not None
-            run.status = RUN_FAILED
-            run.error = "admin agent wall-clock limit exceeded"
-            run.finished_at = datetime.now(timezone.utc)
-            await self.session.commit()
-            await self._event(run, "run_failed", payload={"reason": "wall_clock_limit"})
+            current = await self.session.get(AdminAgentRun, run_id)
+            assert current is not None
+            if current.workflow_phase == PHASE_GENERATION_INFLIGHT:
+                return await self._fail_draft_run(
+                    run_id=run_id,
+                    error="generation outcome is ambiguous; create a new request",
+                    reason="generation_outcome_ambiguous",
+                    force_phase=PHASE_RESTART_REQUIRED,
+                    clear_checkpoint=True,
+                )
+            return await self._fail_draft_run(
+                run_id=run_id,
+                error="admin agent wall-clock limit exceeded",
+                reason="wall_clock_limit",
+                force_phase=(
+                    None
+                    if current.workflow_phase
+                    in {PHASE_GENERATION_VALIDATED, PHASE_DRAFTS_PERSISTED}
+                    else PHASE_FAILED
+                ),
+                clear_checkpoint=current.workflow_phase not in {
+                    PHASE_GENERATION_VALIDATED,
+                    PHASE_DRAFTS_PERSISTED,
+                },
+            )
         except AgentExecutionLimit as exc:
             await self.session.rollback()
-            run = await self.session.get(AdminAgentRun, run_id)
-            assert run is not None
-            run.status = RUN_FAILED
-            run.error = str(exc)
-            run.finished_at = datetime.now(timezone.utc)
-            await self.session.commit()
-            await self._event(run, "run_failed", payload={"reason": "execution_limit"})
+            current = await self.session.get(AdminAgentRun, run_id)
+            assert current is not None
+            return await self._fail_draft_run(
+                run_id=run_id,
+                error=str(exc),
+                reason="execution_limit",
+                force_phase=(
+                    None
+                    if current.workflow_phase
+                    in {PHASE_GENERATION_VALIDATED, PHASE_DRAFTS_PERSISTED}
+                    else PHASE_FAILED
+                ),
+                clear_checkpoint=current.workflow_phase not in {
+                    PHASE_GENERATION_VALIDATED,
+                    PHASE_DRAFTS_PERSISTED,
+                },
+            )
         except Exception:
             await self.session.rollback()
-            run = await self.session.get(AdminAgentRun, run_id)
-            assert run is not None
-            run.status = RUN_FAILED
-            run.error = "admin agent execution failed"
-            run.finished_at = datetime.now(timezone.utc)
-            await self.session.commit()
-            await self._event(run, "run_failed", payload={"reason": "execution_error"})
+            current = await self.session.get(AdminAgentRun, run_id)
+            assert current is not None
+            if current.workflow_phase == PHASE_GENERATION_INFLIGHT:
+                return await self._fail_draft_run(
+                    run_id=run_id,
+                    error="generation outcome is ambiguous; create a new request",
+                    reason="generation_outcome_ambiguous",
+                    force_phase=PHASE_RESTART_REQUIRED,
+                    clear_checkpoint=True,
+                )
+            return await self._fail_draft_run(
+                run_id=run_id,
+                error="admin agent execution failed",
+                reason="execution_error",
+                force_phase=(
+                    None
+                    if current.workflow_phase
+                    in {PHASE_GENERATION_VALIDATED, PHASE_DRAFTS_PERSISTED, PHASE_FAILED}
+                    else PHASE_FAILED
+                ),
+                clear_checkpoint=current.workflow_phase not in {
+                    PHASE_GENERATION_VALIDATED,
+                    PHASE_DRAFTS_PERSISTED,
+                },
+            )
 
-        await self.session.refresh(run)
-        return run
+    async def resume_drafts_tomorrow(
+        self,
+        *,
+        channel_id: int,
+        owner_tg_user_id: int,
+        run_id: int,
+    ) -> AdminAgentRun:
+        result = await self.session.execute(
+            select(AdminAgentRun).where(
+                AdminAgentRun.id == int(run_id),
+                AdminAgentRun.channel_id == int(channel_id),
+                AdminAgentRun.owner_tg_user_id == int(owner_tg_user_id),
+            )
+        )
+        run = result.scalar_one_or_none()
+        if run is None:
+            raise AgentResumeError("admin-agent run not found")
+        try:
+            skill = SKILL_REGISTRY.resolve(run.skill_id, run.skill_version)
+        except KeyError as exc:
+            raise AgentResumeError("unsupported admin-agent skill version") from exc
+        if skill.scenario != SCENARIO_DRAFTS_TOMORROW or str(run.scenario) != skill.scenario:
+            raise AgentResumeError("admin-agent skill/scenario mismatch")
+        if skill.resume_policy != RESUME_EXPLICIT:
+            raise AgentResumeError("admin-agent skill is not resumable")
+        if str(run.status) == RUN_COMPLETED:
+            return run
+
+        self._reset_execution_state()
+        await self._load_resume_sequence(int(run.id))
+        claim_token = uuid4().hex
+        await self._acquire_resume_claim(int(run.id), claim_token)
+        run = await self.session.get(AdminAgentRun, int(run.id))
+        assert run is not None
+        await self._event(
+            run,
+            "resume_started",
+            payload={
+                "skill_id": skill.skill_id,
+                "skill_version": skill.version,
+                "workflow_phase": run.workflow_phase,
+            },
+        )
+
+        try:
+            phase = str(run.workflow_phase or "")
+            if phase == PHASE_GENERATION_INFLIGHT:
+                return await self._fail_draft_run(
+                    run_id=int(run.id),
+                    error="generation outcome is ambiguous; create a new request",
+                    reason="generation_outcome_ambiguous",
+                    force_phase=PHASE_RESTART_REQUIRED,
+                    clear_checkpoint=True,
+                    clear_claim=True,
+                )
+
+            if phase == PHASE_GENERATION_VALIDATED:
+                self._validated_checkpoint(run)
+                run.status = RUN_RUNNING
+                run.error = None
+                run.finished_at = None
+                await self.session.commit()
+                await self._persist_validated_drafts(run)
+            elif phase == PHASE_DRAFTS_PERSISTED:
+                self._persisted_checkpoint(run)
+            else:
+                raise AgentResumeError("admin-agent run phase is not resumable")
+
+            result_payload = await self._result_from_artifacts(run)
+            return await self._complete_draft_run(
+                run,
+                result_payload,
+                clear_claim=True,
+            )
+        except AgentResumeError:
+            return await self._fail_draft_run(
+                run_id=int(run.id),
+                error="admin-agent resume failed closed",
+                reason="resume_failed_closed",
+                force_phase=PHASE_FAILED_CLOSED,
+                clear_checkpoint=True,
+                clear_claim=True,
+            )
+        except Exception:
+            await self.session.rollback()
+            current = await self.session.get(AdminAgentRun, int(run.id))
+            assert current is not None
+            return await self._fail_draft_run(
+                run_id=int(run.id),
+                error="admin-agent resume execution failed",
+                reason="resume_execution_error",
+                force_phase=(
+                    None
+                    if current.workflow_phase
+                    in {PHASE_GENERATION_VALIDATED, PHASE_DRAFTS_PERSISTED}
+                    else PHASE_FAILED_CLOSED
+                ),
+                clear_checkpoint=current.workflow_phase not in {
+                    PHASE_GENERATION_VALIDATED,
+                    PHASE_DRAFTS_PERSISTED,
+                },
+                clear_claim=True,
+            )
+
