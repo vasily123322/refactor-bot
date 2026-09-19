@@ -1,24 +1,16 @@
 from __future__ import annotations
 
-from contextlib import suppress
-from datetime import datetime
-
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
-from app.bot.routers.content_plan import (
-    _render_content_plan,
-    router as legacy_content_plan_router,
-)
+from app.bot.routers.content_plan import router as legacy_content_plan_router
 from app.bot.routers.content_plan_publication import (
     cb_cp_delete_publication,
     cb_cp_edit_publication,
     cb_cp_open_publication,
 )
 from app.core.db import AsyncSessionLocal
-from app.services.content_plan_cancellation import ContentPlanCancellationService
 from app.services.content_plan_history_identity import (
     HistoryPublicationIdentity,
     HistoryPublicationIdentityKind,
