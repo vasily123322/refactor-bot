@@ -85,6 +85,16 @@ describe('channel async load ownership', () => {
     expect(ownership.isCurrent(requestB, 2)).toBe(true);
   });
 
+  it('rejects an old A completion after an A→B→A selection cycle', () => {
+    const ownership = new ChannelRequestOwnership();
+    const firstA = ownership.begin(1, 'selection');
+    ownership.begin(2, 'selection');
+    const secondA = ownership.begin(1, 'selection');
+
+    expect(ownership.isCurrent(firstA, 1, 'selection')).toBe(false);
+    expect(ownership.isCurrent(secondA, 1, 'selection')).toBe(true);
+  });
+
   it('App content load error is distinct from a real loaded-empty list', () => {
     const error: ChannelLoadState = { channelId: 3, phase: 'error-without-valid-data' };
     const loaded: ChannelLoadState = { channelId: 3, phase: 'loaded' };
