@@ -111,7 +111,7 @@ h2 { font-size: 15px; }
 .editor-panel { display: flex; flex-direction: column; }
 .tiptap-composer { display: flex; flex: 1; min-height: 0; flex-direction: column; }
 .format-toolbar { display: flex; gap: 4px; align-items: center; padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 15%, transparent); overflow-x: auto; }
-.format-toolbar button { width: 30px; height: 28px; flex: 0 0 auto; border: 0; border-radius: 7px; background: color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 10%, transparent); color: inherit; }
+.format-toolbar button { width: 40px; height: 40px; flex: 0 0 auto; border: 0; border-radius: 7px; background: color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 10%, transparent); color: inherit; }
 .format-toolbar button:hover { background: color-mix(in srgb, var(--tg-theme-button-color, #2aabee) 14%, transparent); }
 .format-toolbar button.active { background: var(--tg-theme-button-color, #2aabee); color: var(--tg-theme-button-text-color, white); }
 .toolbar-divider { width: 1px; height: 20px; flex: 0 0 auto; margin: 0 3px; background: color-mix(in srgb, var(--tg-theme-hint-color, #64748b) 25%, transparent); }
@@ -121,6 +121,11 @@ h2 { font-size: 15px; }
 .composer { flex: 1; min-height: 420px; width: 100%; border: 0; outline: 0; background: transparent; color: inherit; line-height: 1.62; font-size: 16px; }
 .tiptap-editor { display: flex; min-height: 0; }
 .tiptap-editor .tiptap, .tiptap-editor .ProseMirror { flex: 1; min-height: 420px; width: 100%; padding: 22px; outline: none; }
+.composer:focus-visible,
+.tiptap-editor .ProseMirror:focus-visible {
+  outline: 2px solid var(--tg-theme-button-color, #2aabee);
+  outline-offset: -2px;
+}
 .tiptap-editor .ProseMirror > :first-child { margin-top: 0; }
 .tiptap-editor .ProseMirror > :last-child { margin-bottom: 0; }
 .tiptap-editor .ProseMirror p { margin: 0 0 .8em; }
@@ -275,6 +280,13 @@ h2 { font-size: 15px; }
 
 .candidate-operation-status {
   margin-top: 9px;
+}
+
+@media (max-width: 720px) {
+  .format-toolbar button {
+    width: 44px;
+    height: 44px;
+  }
 }
 
 @keyframes skeleton-shimmer {
