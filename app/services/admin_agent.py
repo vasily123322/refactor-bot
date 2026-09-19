@@ -4,6 +4,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
+from time import monotonic
 from typing import Awaitable, Callable
 from uuid import uuid4
 
@@ -533,12 +534,29 @@ class AdminAgentRunner:
         self._steps = 0
         self._tool_calls = 0
         self._llm_calls = 0
+        self._deadline_monotonic: float | None = None
 
     def _reset_execution_state(self) -> None:
         self._sequence = 0
         self._steps = 0
         self._tool_calls = 0
         self._llm_calls = 0
+        self._deadline_monotonic = None
+
+    def _start_deadline(self) -> None:
+        self._deadline_monotonic = monotonic() + max(
+            0.001,
+            float(self.limits.max_seconds),
+        )
+
+    def _remaining_seconds(self) -> float:
+        if self._deadline_monotonic is None:
+            self._start_deadline()
+        assert self._deadline_monotonic is not None
+        remaining = self._deadline_monotonic - monotonic()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        return remaining
 
     def _step(self) -> None:
         self._steps += 1
@@ -959,9 +977,10 @@ class AdminAgentRunner:
         if self._llm_calls > self.limits.max_llm_calls:
             raise AgentExecutionLimit("admin agent LLM-call limit exceeded")
 
-        generation = await AIGenerationService(self.session).run_pipeline(
-            channel_id=int(run.channel_id),
-            mode="from_scratch",
+        generation = await asyncio.wait_for(
+            AIGenerationService(self.session).run_pipeline(
+                channel_id=int(run.channel_id),
+                mode="from_scratch",
             topic=(
                 "Сценарий Studio drafts_tomorrow. Создай ровно три РАЗНЫХ черновика "
                 "Telegram-постов в уже настроенном стиле выбранного канала. Используй "
@@ -988,11 +1007,13 @@ class AdminAgentRunner:
                     separators=(",", ":"),
                 )
             ),
-            extra={
-                "force_custom": False,
-                "date": target_local_date,
-                "schedule": "",
-            },
+                extra={
+                    "force_custom": False,
+                    "date": target_local_date,
+                    "schedule": "",
+                },
+            ),
+            timeout=self._remaining_seconds(),
         )
         success = bool(generation.get("success"))
         tokens_used = int(generation.get("tokens_used") or 0)
@@ -1282,11 +1303,9 @@ class AdminAgentRunner:
             },
         )
 
+        self._start_deadline()
         try:
-            result = await asyncio.wait_for(
-                self._execute_drafts_tomorrow(run),
-                timeout=max(0.01, float(self.limits.max_seconds)),
-            )
+            result = await self._execute_drafts_tomorrow(run)
             return await self._complete_draft_run(run, result, clear_claim=False)
         except asyncio.TimeoutError:
             await self.session.rollback()
