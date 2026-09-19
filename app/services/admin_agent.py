@@ -758,8 +758,6 @@ class AdminAgentRunner:
             provenance = {
                 "admin_agent_run_id": int(run.id),
                 "admin_agent_scenario": SCENARIO_DRAFTS_TOMORROW,
-                "admin_agent_skill_id": str(run.skill_id),
-                "admin_agent_skill_version": str(run.skill_version),
                 "target_local_date": target_local_date,
                 "draft_index": index,
             }
