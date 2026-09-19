@@ -238,7 +238,7 @@ export type AssistantRunResult = {
   summary: string;
   attention_items: AssistantAttentionItem[];
   timezone: string;
-  generated_by: 'llm' | 'deterministic_fallback';
+  generated_by: 'llm_priority' | 'deterministic';
   tool_names: string[];
   execution_limits: {
     max_steps: number;
