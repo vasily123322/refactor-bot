@@ -396,6 +396,108 @@ def test_resume_after_atomic_persistence_reconstructs_exact_artifacts(monkeypatc
     asyncio.run(run())
 
 
+def test_concurrent_resume_has_one_executor(tmp_path, monkeypatch) -> None:
+    async def run() -> None:
+        database_path = tmp_path / "concurrent-resume.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+        now = datetime.now(timezone.utc)
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as setup_session:
+                owner, channel = await _setup_channel(setup_session, tg_user_id=9935)
+                channel_id = int(channel.id)
+                owner_tg_user_id = int(owner.tg_user_id)
+                run_row = AdminAgentRun(
+                    owner_tg_user_id=owner_tg_user_id,
+                    channel_id=channel_id,
+                    scenario="drafts_tomorrow",
+                    request_id="concurrent-resume-0001",
+                    skill_id="drafts_tomorrow",
+                    skill_version="1",
+                    workflow_phase=PHASE_GENERATION_VALIDATED,
+                    checkpoint={
+                        "checkpoint_version": 1,
+                        "state": PHASE_GENERATION_VALIDATED,
+                        "target_local_date": "2026-09-20",
+                        "timezone": "UTC",
+                        "context_summary": {
+                            "recent_count": 0,
+                            "scheduled_count": 0,
+                            "item_count": 0,
+                            "total_excerpt_chars": 0,
+                            "fingerprint": "0" * 64,
+                            "refs": [],
+                        },
+                        "drafts": _drafts(),
+                    },
+                    status="failed",
+                    started_at=now,
+                )
+                setup_session.add(run_row)
+                await setup_session.commit()
+                await setup_session.refresh(run_row)
+                run_id = int(run_row.id)
+
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            original_persist = AdminAgentRunner._persist_validated_drafts
+
+            async def hold_persist(self, run_row):
+                entered.set()
+                await release.wait()
+                return await original_persist(self, run_row)
+
+            monkeypatch.setattr(
+                AdminAgentRunner,
+                "_persist_validated_drafts",
+                hold_persist,
+            )
+
+            async with Session() as first_session, Session() as second_session:
+                first_task = asyncio.create_task(
+                    AdminAgentRunner(
+                        first_session,
+                        limits=DRAFT_SCENARIO_LIMITS,
+                        now_utc=now,
+                    ).resume_drafts_tomorrow(
+                        channel_id=channel_id,
+                        owner_tg_user_id=owner_tg_user_id,
+                        run_id=run_id,
+                    )
+                )
+                await asyncio.wait_for(entered.wait(), timeout=2.0)
+
+                with pytest.raises(AgentExecutionBusy):
+                    await AdminAgentRunner(
+                        second_session,
+                        limits=DRAFT_SCENARIO_LIMITS,
+                        now_utc=now,
+                    ).resume_drafts_tomorrow(
+                        channel_id=channel_id,
+                        owner_tg_user_id=owner_tg_user_id,
+                        run_id=run_id,
+                    )
+
+                release.set()
+                completed = await asyncio.wait_for(first_task, timeout=5.0)
+                assert completed.status == "completed"
+                assert completed.execution_claim_token is None
+
+            async with Session() as verify_session:
+                assert await _count(
+                    verify_session,
+                    ContentItem,
+                    channel_id=channel_id,
+                ) == 3
+                assert await _count(verify_session, AdminAgentRunArtifact) == 3
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_partial_persisted_artifact_set_fails_closed_without_new_drafts() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
