@@ -72,6 +72,9 @@ jobs:
             tests/test_channel_dm_reply_global_idempotency.py \
             tests/test_channel_dm_reply_intents.py \
             tests/test_local_enrichment_worker.py \
+            tests/test_alembic_baseline.py \
+            tests/test_posttask_schema_drop.py \
+            tests/test_p8_zero_production_refs.py \
             tests/test_schema_startup.py \
             tests/test_source_media_promotion.py \
             tests/test_source_reconciliation.py \
