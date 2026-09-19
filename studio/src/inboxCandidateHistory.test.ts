@@ -70,6 +70,16 @@ describe('Inbox history paging', () => {
     ).toEqual([5, 4, 3, 2]);
   });
 
+  it('rejects an older-page completion after a newer refresh in the same status view', () => {
+    const ownership = new ChannelRequestOwnership();
+    const scope = inboxStatusScope('new');
+    const older = ownership.begin(1, scope);
+    const refresh = ownership.begin(1, scope);
+
+    expect(ownership.isCurrent(older, 1, scope)).toBe(false);
+    expect(ownership.isCurrent(refresh, 1, scope)).toBe(true);
+  });
+
   it('rejects an older-page completion after status ownership changes', () => {
     const ownership = new ChannelRequestOwnership();
     const newScope = inboxStatusScope('new');
