@@ -9,6 +9,7 @@ import {
   resolveChannelDataView,
   runExclusiveOperation,
   type ChannelLoadState,
+  type ChannelRequestToken,
 } from './asyncControl';
 import {
   buildSourceCreateInput,
@@ -75,10 +76,25 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
   const [citationEnabled, setCitationEnabled] = useState(true);
   const kindTouchedRef = useRef(false);
   const requestOwnershipRef = useRef(new ChannelRequestOwnership());
+  const operationContextOwnershipRef = useRef(new ChannelRequestOwnership());
+  const operationContextRef = useRef<{
+    channelId: number | null;
+    token: ChannelRequestToken | null;
+  }>({ channelId: null, token: null });
   const operationLocksRef = useRef(new Map<string, ExclusiveOperationLock>());
   const validDataChannelRef = useRef<number | null>(null);
   const channelIdRef = useRef<number | null>(channel?.id ?? null);
-  channelIdRef.current = channel?.id ?? null;
+  const currentChannelId = channel?.id ?? null;
+  if (operationContextRef.current.channelId !== currentChannelId) {
+    operationContextRef.current.channelId = currentChannelId;
+    if (currentChannelId === null) {
+      operationContextOwnershipRef.current.invalidate();
+      operationContextRef.current.token = null;
+    } else {
+      operationContextRef.current.token = operationContextOwnershipRef.current.begin(currentChannelId);
+    }
+  }
+  channelIdRef.current = currentChannelId;
 
   const closeCreateSourceForm = useCallback(() => {
     setShowForm(false);
@@ -176,7 +192,8 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
     action: (channelId: number, isCurrent: () => boolean) => Promise<void>,
   ): Promise<boolean> => {
     const operationChannelId = channelIdRef.current;
-    if (operationChannelId === null) return false;
+    const operationContextToken = operationContextRef.current.token;
+    if (operationChannelId === null || operationContextToken === null) return false;
 
     const scopedResourceKey = `${operationChannelId}:${resourceKey}`;
     const busyKey = `${operationChannelId}:${operationKey}`;
@@ -187,7 +204,10 @@ export function SourcesPanel({ channel }: { channel: Channel | null }) {
     }
 
     const result = await runExclusiveOperation(lock, busyKey, async () => {
-      const isCurrent = () => channelIdRef.current === operationChannelId;
+      const isCurrent = () => operationContextOwnershipRef.current.isCurrent(
+        operationContextToken,
+        channelIdRef.current,
+      );
       setBusyKeys((current) => {
         const next = new Set(current);
         next.add(busyKey);
