@@ -93,6 +93,50 @@ def test_candidate_media_api_is_owner_scoped_and_sanitized(monkeypatch) -> None:
                     source_document_id=document.id,
                     channel_id=channel.id,
                 )
+
+                dismissed_document, _ = await SourcesRepo(session).upsert_document(
+                    connector=connector,
+                    external_id="telegram:-1001:56",
+                    content="[Telegram photo]",
+                    metadata={
+                        "telegram_media": {
+                            "kind": "photo",
+                            "mime_type": "image/jpeg",
+                            "size_bytes": 123_456,
+                        }
+                    },
+                )
+                dismissed_candidate = await SourcesRepo(session).ensure_candidate(
+                    source_document_id=dismissed_document.id,
+                    channel_id=channel.id,
+                )
+                dismissed_candidate = await SourcesRepo(session).set_candidate_status(
+                    dismissed_candidate,
+                    "dismissed",
+                )
+
+                foreign_connector = await SourcesRepo(session).create_connector(
+                    channel_id=foreign.id,
+                    kind="telegram",
+                    value="@foreign-source",
+                )
+                foreign_document, _ = await SourcesRepo(session).upsert_document(
+                    connector=foreign_connector,
+                    external_id="telegram:-2001:77",
+                    content="[Telegram photo]",
+                    metadata={
+                        "telegram_media": {
+                            "kind": "photo",
+                            "mime_type": "image/jpeg",
+                            "size_bytes": 222_222,
+                        }
+                    },
+                )
+                foreign_candidate = await SourcesRepo(session).ensure_candidate(
+                    source_document_id=foreign_document.id,
+                    channel_id=foreign.id,
+                )
+
                 asset = await MediaAssetsRepo(session).create(
                     channel_id=channel.id,
                     kind="video",
@@ -108,6 +152,8 @@ def test_candidate_media_api_is_owner_scoped_and_sanitized(monkeypatch) -> None:
                 channel_id = int(channel.id)
                 foreign_id = int(foreign.id)
                 candidate_id = int(candidate.id)
+                dismissed_candidate_id = int(dismissed_candidate.id)
+                foreign_candidate_id = int(foreign_candidate.id)
                 document_id = int(document.id)
                 asset_id = int(asset.id)
 
@@ -134,6 +180,25 @@ def test_candidate_media_api_is_owner_scoped_and_sanitized(monkeypatch) -> None:
                         "media_asset_id": asset_id,
                     }
                 ]
+                batch = await client.get(
+                    f"/api/studio/channels/{channel_id}/candidate-media",
+                    headers=headers,
+                    params={
+                        "candidate_ids": (
+                            f"{candidate_id},{dismissed_candidate_id},{foreign_candidate_id}"
+                        )
+                    },
+                )
+                assert batch.status_code == 200
+                assert [row["candidate_id"] for row in batch.json()] == [candidate_id]
+
+                invalid_batch = await client.get(
+                    f"/api/studio/channels/{channel_id}/candidate-media",
+                    headers=headers,
+                    params={"candidate_ids": "not-an-id"},
+                )
+                assert invalid_batch.status_code == 422
+
                 serialized = json.dumps(response.json())
                 assert "file_reference" not in serialized
                 assert "access_hash" not in serialized

@@ -295,6 +295,33 @@ class SourcesRepo:
         result = await self.session.execute(statement)
         return [(candidate, document) for candidate, document in result.all()]
 
+    async def list_candidate_rows_by_ids(
+        self,
+        channel_id: int,
+        candidate_ids: list[int],
+        *,
+        status: str | None = "new",
+    ) -> list[tuple[ContentCandidate, SourceDocument]]:
+        ids = sorted({int(candidate_id) for candidate_id in candidate_ids if int(candidate_id) > 0})
+        if not ids:
+            return []
+        statement = (
+            select(ContentCandidate, SourceDocument)
+            .join(
+                SourceDocument,
+                SourceDocument.id == ContentCandidate.source_document_id,
+            )
+            .where(
+                ContentCandidate.channel_id == int(channel_id),
+                ContentCandidate.id.in_(ids),
+            )
+        )
+        if status is not None:
+            statement = statement.where(ContentCandidate.status == str(status))
+        statement = statement.order_by(ContentCandidate.id.desc())
+        result = await self.session.execute(statement)
+        return [(candidate, document) for candidate, document in result.all()]
+
     async def set_candidate_status(
         self,
         candidate: ContentCandidate,

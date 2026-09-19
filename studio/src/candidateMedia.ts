@@ -48,6 +48,38 @@ export function loadCandidateMedia(
   );
 }
 
+export function candidateMediaBatchPath(
+  channelId: number,
+  candidateIds: number[],
+): string {
+  const ids = Array.from(new Set(candidateIds.map((candidateId) => Number(candidateId))))
+    .filter((candidateId) => Number.isInteger(candidateId) && candidateId > 0);
+  return `/api/studio/channels/${channelId}/candidate-media?candidate_ids=${encodeURIComponent(ids.join(','))}`;
+}
+
+export function loadCandidateMediaForCandidates(
+  channelId: number,
+  candidateIds: number[],
+): Promise<CandidateMediaView[]> {
+  if (candidateIds.length === 0) return Promise.resolve([]);
+  return authenticatedJson<CandidateMediaView[]>(
+    candidateMediaBatchPath(channelId, candidateIds),
+  );
+}
+
+export function candidateMediaMap(
+  rows: CandidateMediaView[],
+): Record<number, CandidateMediaView> {
+  return Object.fromEntries(rows.map((row) => [row.candidate_id, row]));
+}
+
+export function mergeCandidateMediaMap(
+  current: Record<number, CandidateMediaView>,
+  rows: CandidateMediaView[],
+): Record<number, CandidateMediaView> {
+  return { ...current, ...candidateMediaMap(rows) };
+}
+
 export function promoteCandidateMedia(
   channelId: number,
   candidateId: number,
