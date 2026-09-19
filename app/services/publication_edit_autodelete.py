@@ -5,10 +5,8 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.models import PostTask
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.publication_autodelete_views_state import (
     PublicationAutodeleteViewStateError,
@@ -67,14 +65,9 @@ def _option_report(options: Mapping[str, Any]) -> bool:
 
 def validate_publication_edit_autodelete_execution(
     *,
-    legacy_post_task_id: int | None,
     runtime_options: Mapping[str, Any],
 ) -> None:
     """Validate canonical editor autodelete intent against proven executors."""
-    # Canonical time, views and views+report execution are proven without requiring
-    # PostTask. Keep the legacy argument for the compatibility call boundary while
-    # validating all option shapes fail closed here.
-    _ = legacy_post_task_id
     _option_int(runtime_options, "autodelete_views")
     _option_report(runtime_options)
 
@@ -116,14 +109,7 @@ def _set_runtime(publication: Publication, runtime: dict[str, Any] | None) -> No
 
 
 class PublicationEditAutodeleteSyncService:
-    """Synchronize post-publication runtime and compatibility delivery state.
-
-    Canonical metadata is authoritative. A still-linked `PostTask` is updated as a
-    compatibility executor. Generated timer state is reset only when timer/views intent
-    changes or when linked transport is missing equivalent timer state; ordinary text
-    edits preserve the original due time. Confirmed Telegram delivery IDs/link are also
-    mirrored so legacy autodelete targets the message that actually survived the edit.
-    """
+    """Synchronize canonical post-publication autodelete runtime state."""
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -157,10 +143,7 @@ class PublicationEditAutodeleteSyncService:
                 "canonical autodelete timer and views are mutually exclusive"
             )
 
-        raw_legacy_id = publication.legacy_post_task_id
-        legacy_id = int(raw_legacy_id) if raw_legacy_id is not None else None
         validate_publication_edit_autodelete_execution(
-            legacy_post_task_id=legacy_id,
             runtime_options=current,
         )
 
@@ -174,36 +157,8 @@ class PublicationEditAutodeleteSyncService:
             else None
         )
 
-        task: PostTask | None = None
-        task_payload: dict[str, Any] | None = None
-        task_timer_changed = False
-        task_views_changed = False
-        if legacy_id is not None:
-            task = (
-                await self.session.execute(
-                    select(PostTask)
-                    .where(PostTask.id == legacy_id)
-                    .with_for_update()
-                )
-            ).scalar_one_or_none()
-            if task is None:
-                raise PublicationEditAutodeleteSyncError(
-                    "linked legacy transport is missing"
-                )
-            if int(task.channel_id) != int(publication.channel_id) or str(task.status) != "done":
-                raise PublicationEditAutodeleteSyncError(
-                    "linked legacy transport is not consistently published"
-                )
-            task_payload = _mapping(task.payload, label="legacy transport payload")
-            task_timer_changed = (
-                _option_int(task_payload, "autodelete_seconds") != current_seconds
-            )
-            task_views_changed = (
-                _option_int(task_payload, "autodelete_views") != current_views
-            )
-
-        generated_timer_change = timer_changed or task_timer_changed
-        generated_views_change = views_changed or task_views_changed
+        generated_timer_change = timer_changed
+        generated_views_change = views_changed
 
         if current_seconds is not None and generated_timer_change:
             if not timer_changed and due_token is not None:
@@ -231,39 +186,4 @@ class PublicationEditAutodeleteSyncService:
         except PublicationAutodeleteViewStateError as exc:
             raise PublicationEditAutodeleteSyncError(str(exc)) from None
 
-        if task is None or task_payload is None:
-            return
-
-        task_payload["result_ids"] = list(ids)
-        if result_link is None:
-            task_payload.pop("result_link", None)
-        else:
-            task_payload["result_link"] = str(result_link)
-
-        for key in ("autodelete_seconds", "autodelete_views", "autodelete_report"):
-            task_payload.pop(key, None)
-        if current_seconds is not None:
-            task_payload["autodelete_seconds"] = current_seconds
-        if current_views is not None:
-            task_payload["autodelete_views"] = current_views
-        if current_report:
-            task_payload["autodelete_report"] = True
-
-        if generated_timer_change:
-            task_payload.pop("autodeleted", None)
-            task_payload.pop("autodeleted_at", None)
-            if current_seconds is None:
-                task_payload.pop("autodelete_effective_seconds", None)
-                task_payload.pop("autodelete_at", None)
-            else:
-                task_payload["autodelete_effective_seconds"] = current_seconds
-                task_payload["autodelete_at"] = due or (
-                    current_time + timedelta(seconds=current_seconds)
-                ).isoformat()
-        if generated_views_change and current_seconds is None:
-            task_payload.pop("autodelete_effective_seconds", None)
-            task_payload.pop("autodelete_at", None)
-            task_payload.pop("autodeleted", None)
-            task_payload.pop("autodeleted_at", None)
-
-        task.payload = task_payload
+        return
