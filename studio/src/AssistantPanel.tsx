@@ -4,9 +4,12 @@ import { StudioApiError, studioApi } from './api';
 import type {
   AssistantApprovalView,
   AssistantContentSeriesOperatorInput,
+  AssistantContentSeriesRunResult,
   AssistantDraftReference,
   AssistantRunView,
   AssistantScenario,
+  AssistantSeriesApprovalSlotInput,
+  AssistantSeriesApprovalView,
   AssistantSkillView,
 } from './api';
 import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
@@ -55,6 +58,7 @@ function approvalStateLabel(value: string): string {
   if (value === 'executed') return 'Поставлено в план';
   if (value === 'rejected') return 'Отклонено';
   if (value === 'stale') return 'Устарело';
+  if (value === 'partial_failed') return 'Частично выполнено';
   if (value === 'failed') return 'Ошибка выполнения';
   return value;
 }
@@ -72,6 +76,14 @@ function latestApprovalForDraft(
   return approvals.find((row) => row.content_item_id === contentItemId) ?? null;
 }
 
+
+function latestSeriesApproval(
+  approvals: AssistantSeriesApprovalView[],
+  sourceRunId: number,
+): AssistantSeriesApprovalView | null {
+  return approvals.find((row) => row.source_run_id === sourceRunId) ?? null;
+}
+
 export function mergeAssistantRun(
   previous: AssistantRunView[],
   run: AssistantRunView,
@@ -85,6 +97,15 @@ export function mergeAssistantApproval(
   approval: AssistantApprovalView,
   limit = 50,
 ): AssistantApprovalView[] {
+  return [approval, ...previous.filter((item) => item.id !== approval.id)].slice(0, limit);
+}
+
+
+export function mergeAssistantSeriesApproval(
+  previous: AssistantSeriesApprovalView[],
+  approval: AssistantSeriesApprovalView,
+  limit = 50,
+): AssistantSeriesApprovalView[] {
   return [approval, ...previous.filter((item) => item.id !== approval.id)].slice(0, limit);
 }
 
@@ -259,24 +280,269 @@ function DraftApprovalCard({
   );
 }
 
+
+function SeriesApprovalSection({
+  runId,
+  result,
+  approval,
+  proposalBusy,
+  reviewBusy,
+  onOpenPlanner,
+  onCreateProposal,
+  onApprove,
+  onReject,
+}: {
+  runId: number;
+  result: AssistantContentSeriesRunResult;
+  approval: AssistantSeriesApprovalView | null;
+  proposalBusy: boolean;
+  reviewBusy: boolean;
+  onOpenPlanner?: VoidFunction;
+  onCreateProposal?: (
+    sourceRunId: number,
+    slots: AssistantSeriesApprovalSlotInput[],
+  ) => Promise<void>;
+  onApprove?: (batchId: number) => Promise<void>;
+  onReject?: (batchId: number) => Promise<void>;
+}) {
+  const [slots, setSlots] = useState<AssistantSeriesApprovalSlotInput[]>(() =>
+    result.posts.map((post) => ({
+      ordinal: post.ordinal,
+      local_date: '',
+      local_time: '',
+    })));
+  const statusRef = useRef<HTMLDivElement | null>(null);
+  const previousStateRef = useRef<string | null>(approval?.state ?? null);
+  const approvalState = approval?.state ?? null;
+  const canCreate = !approval
+    || ['rejected', 'stale', 'partial_failed', 'failed'].includes(approval.state);
+  const canReview = approval?.state === 'pending_review';
+  const canRecover = approval?.state === 'executing';
+  const slotsComplete = slots.length === result.requested_post_count
+    && slots.every((slot) => slot.local_date && slot.local_time);
+
+  useEffect(() => {
+    const previous = previousStateRef.current;
+    previousStateRef.current = approvalState;
+    if (
+      previous
+      && previous !== approvalState
+      && approvalState
+      && ['executed', 'rejected', 'stale', 'partial_failed', 'failed'].includes(approvalState)
+    ) {
+      statusRef.current?.focus();
+    }
+  }, [approvalState]);
+
+  const updateSlot = (
+    ordinal: number,
+    field: 'local_date' | 'local_time',
+    value: string,
+  ) => {
+    setSlots((previous) => previous.map((slot) => (
+      slot.ordinal === ordinal ? { ...slot, [field]: value } : slot
+    )));
+  };
+
+  return (
+    <section className="assistant-series-scheduling" aria-label="Постановка серии в план">
+      <div className="assistant-series-scheduling-heading">
+        <div>
+          <h3>Расписание серии</h3>
+          <small>
+            Для каждого поста задайте явные локальные дату и время. Создание предложения
+            не меняет canonical schedule.
+          </small>
+        </div>
+      </div>
+
+      {approval && (
+        <section className="assistant-approval-card assistant-series-review-card" aria-label="Review расписания серии">
+          <div
+            className={`assistant-approval-status assistant-approval-status-${approval.state}`}
+            role="status"
+            tabIndex={-1}
+            ref={statusRef}
+          >
+            <strong>{approvalStateLabel(approval.state)}</strong>
+            <small>Batch approval #{approval.id}</small>
+          </div>
+          <dl className="assistant-approval-facts">
+            <div>
+              <dt>Серия</dt>
+              <dd>{approval.series_title}</dd>
+            </div>
+            <div>
+              <dt>Источник</dt>
+              <dd>run #{approval.source_run_id} · fingerprint {approval.source_plan_fingerprint.slice(0, 12)}</dd>
+            </div>
+            <div>
+              <dt>План</dt>
+              <dd>{approval.item_count} постов · {approval.timezone}</dd>
+            </div>
+          </dl>
+          <p className="assistant-approval-note">
+            После подтверждения будет создано {approval.item_count} canonical ScheduleEntry +{' '}
+            {approval.item_count} Publication. Telegram сейчас не отправляется; доставка выполняется
+            существующим canonical worker в назначенное время.
+          </p>
+          <div className="assistant-series-review-items">
+            {approval.items.map((item) => (
+              <article className="assistant-series-review-item" key={item.id}>
+                <div className="assistant-item-heading">
+                  <strong>{item.ordinal}. {item.content_title}</strong>
+                  <span className={`assistant-run-status assistant-run-status-${item.state}`}>
+                    {item.state}
+                  </span>
+                </div>
+                <small>
+                  Content #{item.content_item_id} · captured revision {item.captured_content_revision}
+                </small>
+                <small>
+                  {item.local_date} · {item.local_time} · {approval.timezone}
+                </small>
+                {(item.schedule_entry_id !== null || item.publication_id !== null) && (
+                  <div className="assistant-executed-result">
+                    {item.schedule_entry_id !== null && (
+                      <span>ScheduleEntry #{item.schedule_entry_id}</span>
+                    )}
+                    {item.publication_id !== null && (
+                      <span>Publication #{item.publication_id}</span>
+                    )}
+                  </div>
+                )}
+                {item.failure_reason && (
+                  <p className="assistant-approval-error">{item.failure_reason}</p>
+                )}
+              </article>
+            ))}
+          </div>
+          {approval.failure_reason && (
+            <p
+              className="assistant-approval-error"
+              role={approval.state === 'failed' || approval.state === 'partial_failed' ? 'alert' : undefined}
+            >
+              {approval.failure_reason}
+            </p>
+          )}
+          {canReview && (
+            <div className="assistant-approval-actions">
+              <button
+                className="button primary assistant-important-action"
+                disabled={reviewBusy}
+                onClick={() => void onApprove?.(approval.id)}
+              >
+                {reviewBusy ? 'Подтверждаю…' : 'Подтвердить постановку серии в план'}
+              </button>
+              <button
+                className="button secondary"
+                disabled={reviewBusy}
+                onClick={() => void onReject?.(approval.id)}
+              >
+                Отклонить
+              </button>
+            </div>
+          )}
+          {canRecover && (
+            <div className="assistant-approval-actions">
+              <button
+                className="button secondary"
+                disabled={reviewBusy}
+                onClick={() => void onApprove?.(approval.id)}
+              >
+                {reviewBusy ? 'Проверяю…' : 'Проверить выполнение'}
+              </button>
+            </div>
+          )}
+          {['executed', 'partial_failed'].includes(approval.state) && (
+            <div className="assistant-approval-actions">
+              <button className="link-button" onClick={onOpenPlanner}>
+                Открыть Planner
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+
+      {canCreate && (
+        <div className="assistant-series-proposal-form">
+          <div className="assistant-series-slot-grid">
+            {result.posts.map((post) => {
+              const slot = slots.find((row) => row.ordinal === post.ordinal);
+              return (
+                <fieldset className="assistant-series-slot" key={post.ordinal}>
+                  <legend>{post.ordinal}. {post.title}</legend>
+                  <label>
+                    Локальная дата
+                    <input
+                      type="date"
+                      value={slot?.local_date ?? ''}
+                      onChange={(event) => updateSlot(post.ordinal, 'local_date', event.target.value)}
+                      disabled={proposalBusy}
+                      required
+                    />
+                  </label>
+                  <label>
+                    Локальное время
+                    <input
+                      type="time"
+                      value={slot?.local_time ?? ''}
+                      onChange={(event) => updateSlot(post.ordinal, 'local_time', event.target.value)}
+                      disabled={proposalBusy}
+                      required
+                    />
+                  </label>
+                </fieldset>
+              );
+            })}
+          </div>
+          <div className="assistant-approval-actions">
+            <button
+              className="button secondary"
+              disabled={proposalBusy || !slotsComplete || !onCreateProposal}
+              onClick={() => void onCreateProposal?.(runId, slots)}
+            >
+              {proposalBusy ? 'Создаю предложение…' : 'Создать предложение расписания'}
+            </button>
+          </div>
+          <small>
+            На этом шаге ScheduleEntry и Publication не создаются; сначала появится review-карточка.
+          </small>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function AssistantBrief({
   run,
   approvals = [],
+  seriesApprovals = [],
   busyKeys = new Set<string>(),
   onOpenPlanner,
   onOpenContent,
   onCreateProposal,
   onApprove,
   onReject,
+  onCreateSeriesProposal,
+  onApproveSeries,
+  onRejectSeries,
 }: {
   run: AssistantRunView;
   approvals?: AssistantApprovalView[];
+  seriesApprovals?: AssistantSeriesApprovalView[];
   busyKeys?: Set<string>;
   onOpenPlanner?: VoidFunction;
   onOpenContent?: (contentId: number) => void;
   onCreateProposal?: (contentId: number, localTime: string) => Promise<void>;
   onApprove?: (approvalId: number) => Promise<void>;
   onReject?: (approvalId: number) => Promise<void>;
+  onCreateSeriesProposal?: (
+    sourceRunId: number,
+    slots: AssistantSeriesApprovalSlotInput[],
+  ) => Promise<void>;
+  onApproveSeries?: (batchId: number) => Promise<void>;
+  onRejectSeries?: (batchId: number) => Promise<void>;
 }) {
   const result = run.result;
   if (run.status === 'failed') {
@@ -330,6 +596,24 @@ export function AssistantBrief({
             </article>
           ))}
         </div>
+        <SeriesApprovalSection
+          key={run.id}
+          runId={run.id}
+          result={result}
+          approval={latestSeriesApproval(seriesApprovals, run.id)}
+          proposalBusy={busyKeys.has(`series-proposal:${run.id}`)}
+          reviewBusy={
+            latestSeriesApproval(seriesApprovals, run.id)
+              ? busyKeys.has(
+                `series-approval:${latestSeriesApproval(seriesApprovals, run.id)!.id}`,
+              )
+              : false
+          }
+          onOpenPlanner={onOpenPlanner}
+          onCreateProposal={onCreateSeriesProposal}
+          onApprove={onApproveSeries}
+          onReject={onRejectSeries}
+        />
       </div>
     );
   }
@@ -625,6 +909,7 @@ export function AssistantPanel({
   const [catalogError, setCatalogError] = useState<{ channelId: number; message: string } | null>(null);
   const [runs, setRuns] = useState<AssistantRunView[]>([]);
   const [approvals, setApprovals] = useState<AssistantApprovalView[]>([]);
+  const [seriesApprovals, setSeriesApprovals] = useState<AssistantSeriesApprovalView[]>([]);
   const [currentRun, setCurrentRun] = useState<AssistantRunView | null>(null);
   const [loadState, setLoadState] = useState<ChannelLoadState | null>(null);
   const [error, setError] = useState<{ channelId: number; message: string } | null>(null);
@@ -686,6 +971,7 @@ export function AssistantPanel({
       validDataChannelRef.current = null;
       setRuns([]);
       setApprovals([]);
+      setSeriesApprovals([]);
       setCurrentRun(null);
       setLoadState(null);
       setError(null);
@@ -698,19 +984,22 @@ export function AssistantPanel({
       validDataChannelRef.current = null;
       setRuns([]);
       setApprovals([]);
+      setSeriesApprovals([]);
       setCurrentRun(null);
       setLoadState({ channelId, phase: 'loading' });
     }
     setError(null);
     try {
-      const [rows, approvalRows] = await Promise.all([
+      const [rows, approvalRows, seriesApprovalRows] = await Promise.all([
         studioApi.assistantRuns(channelId, 10),
         studioApi.assistantApprovals(channelId, 50),
+        studioApi.assistantSeriesApprovals(channelId, 50),
       ]);
       if (!isCurrent()) return;
       validDataChannelRef.current = channelId;
       setRuns(rows);
       setApprovals(approvalRows);
+      setSeriesApprovals(seriesApprovalRows);
       setCurrentRun((existing) => (
         existing?.channel_id === channelId ? existing : rows[0] ?? null
       ));
@@ -720,6 +1009,7 @@ export function AssistantPanel({
       if (validDataChannelRef.current !== channelId) {
         setRuns([]);
         setApprovals([]);
+        setSeriesApprovals([]);
         setCurrentRun(null);
         setLoadState({ channelId, phase: 'error-without-valid-data' });
       }
@@ -870,6 +1160,68 @@ export function AssistantPanel({
       studioApi.rejectAssistantApproval(channelId, approvalId));
   }, [runApprovalOperation]);
 
+
+  const runSeriesApprovalOperation = useCallback(async (
+    key: string,
+    operation: (channelId: number) => Promise<AssistantSeriesApprovalView>,
+  ) => {
+    const channelId = channelIdRef.current;
+    if (channelId === null) return;
+    const scopedKey = `${channelId}:${key}`;
+    let lock = approvalLocksRef.current.get(scopedKey);
+    if (!lock) {
+      lock = new ExclusiveOperationLock();
+      approvalLocksRef.current.set(scopedKey, lock);
+    }
+    const result = await runExclusiveOperation(lock, scopedKey, async () => {
+      setBusyApprovalKeys((previous) => new Set(previous).add(key));
+      setError(null);
+      try {
+        const approval = await operation(channelId);
+        if (channelIdRef.current !== channelId) return approval;
+        setSeriesApprovals((previous) => mergeAssistantSeriesApproval(previous, approval));
+        return approval;
+      } catch (reason) {
+        if (channelIdRef.current === channelId) {
+          setError({ channelId, message: errorMessage(reason) });
+        }
+        return null;
+      } finally {
+        if (channelIdRef.current === channelId) {
+          setBusyApprovalKeys((previous) => {
+            const next = new Set(previous);
+            next.delete(key);
+            return next;
+          });
+        }
+      }
+    });
+    if (!result.started) return;
+  }, []);
+
+  const createSeriesProposal = useCallback(async (
+    sourceRunId: number,
+    slots: AssistantSeriesApprovalSlotInput[],
+  ) => {
+    await runSeriesApprovalOperation(`series-proposal:${sourceRunId}`, (channelId) =>
+      studioApi.createAssistantSeriesApproval(
+        channelId,
+        sourceRunId,
+        slots,
+        newRequestId('series-approval'),
+      ));
+  }, [runSeriesApprovalOperation]);
+
+  const approveSeries = useCallback(async (batchId: number) => {
+    await runSeriesApprovalOperation(`series-approval:${batchId}`, (channelId) =>
+      studioApi.approveAssistantSeriesApproval(channelId, batchId));
+  }, [runSeriesApprovalOperation]);
+
+  const rejectSeries = useCallback(async (batchId: number) => {
+    await runSeriesApprovalOperation(`series-approval:${batchId}`, (channelId) =>
+      studioApi.rejectAssistantSeriesApproval(channelId, batchId));
+  }, [runSeriesApprovalOperation]);
+
   if (!channel) {
     return <div className="sources-empty-page">Выберите канал, чтобы открыть Assistant.</div>;
   }
@@ -976,12 +1328,16 @@ export function AssistantPanel({
           <AssistantBrief
             run={currentRun}
             approvals={approvals}
+            seriesApprovals={seriesApprovals}
             busyKeys={busyApprovalKeys}
             onOpenPlanner={onOpenPlanner}
             onOpenContent={onOpenContent}
             onCreateProposal={createProposal}
             onApprove={approve}
             onReject={reject}
+            onCreateSeriesProposal={createSeriesProposal}
+            onApproveSeries={approveSeries}
+            onRejectSeries={rejectSeries}
           />
         ) : (
           <div className="assistant-empty">
