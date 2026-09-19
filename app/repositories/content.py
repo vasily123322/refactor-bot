@@ -77,6 +77,7 @@ class ContentRepo:
         status: str = "draft",
         created_by_tg_user_id: int | None = None,
         source: str = "editor",
+        commit: bool = True,
     ) -> list[ContentItem]:
         """Create first revisions for a bounded content batch in one transaction.
 
@@ -127,9 +128,10 @@ class ContentRepo:
                 created.append(item)
 
             await self.session.flush()
-            await self.session.commit()
-            for item in created:
-                await self.session.refresh(item)
+            if commit:
+                await self.session.commit()
+                for item in created:
+                    await self.session.refresh(item)
             return created
         except Exception:
             await self.session.rollback()

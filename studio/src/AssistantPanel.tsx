@@ -293,6 +293,12 @@ export function AssistantBrief({
             Создано {result.draft_count} обычных черновика Content domain.
             Расписание и публикация не создаются до явного подтверждения отдельного предложения.
           </p>
+          {result.editorial_context && (
+            <small>
+              Bounded context: {result.editorial_context.recent_count} recent ·{' '}
+              {result.editorial_context.scheduled_count} scheduled refs
+            </small>
+          )}
         </div>
         <div className="assistant-drafts">
           {result.drafts.map((draft) => {
@@ -389,14 +395,18 @@ export function AssistantPanel({
   const [loadState, setLoadState] = useState<ChannelLoadState | null>(null);
   const [error, setError] = useState<{ channelId: number; message: string } | null>(null);
   const [runningScenario, setRunningScenario] = useState<AssistantScenario | null>(null);
+  const [resumeRunId, setResumeRunId] = useState<number | null>(null);
   const [busyApprovalKeys, setBusyApprovalKeys] = useState<Set<string>>(() => new Set());
   const requestOwnershipRef = useRef(new ChannelRequestOwnership());
   const runOwnershipRef = useRef(new ChannelRequestOwnership());
   const operationLockRef = useRef(new ExclusiveOperationLock());
+  const resumeLockRef = useRef(new ExclusiveOperationLock());
   const approvalLocksRef = useRef(new Map<string, ExclusiveOperationLock>());
   const validDataChannelRef = useRef<number | null>(null);
   const channelIdRef = useRef<number | null>(channel?.id ?? null);
+  const currentRunIdRef = useRef<number | null>(currentRun?.id ?? null);
   channelIdRef.current = channel?.id ?? null;
+  currentRunIdRef.current = currentRun?.id ?? null;
 
   const loadHistory = useCallback(async () => {
     const channelId = channelIdRef.current;
@@ -451,6 +461,7 @@ export function AssistantPanel({
     approvalLocksRef.current.clear();
     setBusyApprovalKeys(new Set());
     setRunningScenario(null);
+    setResumeRunId(null);
     void loadHistory();
   }, [loadHistory]);
 
@@ -479,6 +490,39 @@ export function AssistantPanel({
           }
         } finally {
           if (isCurrent()) setRunningScenario(null);
+        }
+      },
+    );
+    if (!result.started) return;
+  }, []);
+
+  const resumeRun = useCallback(async (run: AssistantRunView) => {
+    const channelId = channelIdRef.current;
+    if (channelId === null || !run.resumable) return;
+    const result = await runExclusiveOperation(
+      resumeLockRef.current,
+      `resume:${run.id}`,
+      async () => {
+        const token = runOwnershipRef.current.begin(channelId);
+        const isCurrent = () => (
+          runOwnershipRef.current.isCurrent(token, channelIdRef.current)
+          && currentRunIdRef.current === run.id
+        );
+        setResumeRunId(run.id);
+        setError(null);
+        try {
+          const resumed = await studioApi.resumeAssistantRun(channelId, run.id);
+          if (!isCurrent()) return;
+          setCurrentRun(resumed);
+          setRuns((previous) => mergeAssistantRun(previous, resumed));
+          validDataChannelRef.current = channelId;
+          setLoadState({ channelId, phase: 'loaded' });
+        } catch (reason) {
+          if (isCurrent()) {
+            setError({ channelId, message: errorMessage(reason) });
+          }
+        } finally {
+          if (isCurrent()) setResumeRunId(null);
         }
       },
     );
@@ -604,7 +648,22 @@ export function AssistantPanel({
                 ? `run #${currentRun.id} · ${scenarioLabel(currentRun.scenario)} · ${currentRun.status}`
                 : 'Запустите один из bounded сценариев'}
             </small>
+            {currentRun?.skill_id && (
+              <small>
+                skill {currentRun.skill_id}@{currentRun.skill_version || '—'} · phase{' '}
+                {currentRun.workflow_phase || 'legacy'}
+              </small>
+            )}
           </div>
+          {currentRun?.resumable && (
+            <button
+              className="button secondary"
+              disabled={resumeRunId === currentRun.id}
+              onClick={() => void resumeRun(currentRun)}
+            >
+              {resumeRunId === currentRun.id ? 'Продолжаю…' : 'Продолжить'}
+            </button>
+          )}
         </div>
         {running && !currentRun ? (
           <div className="assistant-brief-skeleton">
@@ -664,7 +723,11 @@ export function AssistantPanel({
             >
               <span>
                 <strong>{scenarioLabel(run.scenario)} · run #{run.id}</strong>
-                <small>{dateLabel(run.finished_at || run.created_at)}</small>
+                <small>
+                  {dateLabel(run.finished_at || run.created_at)}
+                  {run.skill_id ? ` · ${run.skill_id}@${run.skill_version || '—'}` : ' · legacy'}
+                  {run.resumable ? ' · можно продолжить' : ''}
+                </small>
               </span>
               <span className={`assistant-run-status assistant-run-status-${run.status}`}>{run.status}</span>
             </button>

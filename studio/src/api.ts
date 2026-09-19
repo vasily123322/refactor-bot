@@ -259,6 +259,20 @@ export type AssistantDraftReference = {
   status: 'draft' | string;
 };
 
+export type AssistantEditorialContextSummary = {
+  recent_count: number;
+  scheduled_count: number;
+  item_count: number;
+  total_excerpt_chars: number;
+  fingerprint: string;
+  refs: Array<{
+    content_item_id?: number;
+    revision?: number;
+    schedule_entry_id?: number;
+    publication_id?: number;
+  }>;
+};
+
 export type AssistantDraftRunResult = {
   scenario: 'drafts_tomorrow';
   target_local_date: string;
@@ -266,6 +280,7 @@ export type AssistantDraftRunResult = {
   draft_count: number;
   drafts: AssistantDraftReference[];
   write_capability: 'draft_write';
+  editorial_context?: AssistantEditorialContextSummary;
   execution_limits: AssistantExecutionLimits;
 };
 
@@ -285,6 +300,11 @@ export type AssistantRunView = {
   channel_id: number;
   scenario: AssistantScenario;
   request_id: string | null;
+  skill_id: string | null;
+  skill_version: string | null;
+  workflow_phase: string | null;
+  resumable: boolean;
+  resume_state: string;
   status: string;
   model: string | null;
   tokens_used: number;
@@ -508,6 +528,11 @@ export const studioApi = {
   assistantRun: (channelId: number, runId: number) =>
     request<AssistantRunView>(
       `/api/studio/channels/${channelId}/assistant/runs/${runId}`,
+    ),
+  resumeAssistantRun: (channelId: number, runId: number) =>
+    request<AssistantRunView>(
+      `/api/studio/channels/${channelId}/assistant/runs/${runId}/resume`,
+      { method: 'POST', body: JSON.stringify({}) },
     ),
   assistantApprovals: (channelId: number, limit = 50) =>
     request<AssistantApprovalView[]>(

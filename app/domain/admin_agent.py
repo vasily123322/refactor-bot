@@ -36,6 +36,11 @@ class AdminAgentRun(Base):
             "request_id",
             unique=True,
         ),
+        Index(
+            "ix_admin_agent_runs_skill_version",
+            "skill_id",
+            "skill_version",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -45,6 +50,12 @@ class AdminAgentRun(Base):
     )
     scenario: Mapped[str] = mapped_column(String(64), index=True)
     request_id: Mapped[str | None] = mapped_column(String(128))
+    skill_id: Mapped[str | None] = mapped_column(String(64))
+    skill_version: Mapped[str | None] = mapped_column(String(32))
+    workflow_phase: Mapped[str | None] = mapped_column(String(64))
+    checkpoint: Mapped[dict | None] = mapped_column(JSON)
+    execution_claim_token: Mapped[str | None] = mapped_column(String(64))
+    execution_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(32), index=True)
     model: Mapped[str | None] = mapped_column(String(128))
     tokens_used: Mapped[int] = mapped_column(Integer, default=0)
@@ -55,6 +66,45 @@ class AdminAgentRun(Base):
     )
     finished_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class AdminAgentRunArtifact(Base):
+    """Durable canonical artifact ownership for a resumable admin-agent run."""
+
+    __tablename__ = "admin_agent_run_artifacts"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "artifact_type",
+            "ordinal",
+            name="uq_admin_agent_run_artifact_ordinal",
+        ),
+        UniqueConstraint(
+            "run_id",
+            "content_item_id",
+            name="uq_admin_agent_run_artifact_content",
+        ),
+        Index(
+            "ix_admin_agent_run_artifacts_run",
+            "run_id",
+            "artifact_type",
+            "ordinal",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("admin_agent_runs.id", ondelete="CASCADE"), index=True
+    )
+    artifact_type: Mapped[str] = mapped_column(String(32))
+    ordinal: Mapped[int] = mapped_column(Integer)
+    content_item_id: Mapped[int] = mapped_column(
+        ForeignKey("content_items.id", ondelete="CASCADE"), index=True
+    )
+    content_revision: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 

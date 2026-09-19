@@ -11,14 +11,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.studio.auth import StudioPrincipal, require_studio_principal
 from app.core.db import AsyncSessionLocal
-from app.domain.admin_agent import AdminAgentApproval, AdminAgentEvent, AdminAgentRun
+from app.domain.admin_agent import (
+    AdminAgentApproval,
+    AdminAgentEvent,
+    AdminAgentRun,
+    AdminAgentRunArtifact,
+)
 from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
 from app.services.admin_agent import (
     DRAFT_SCENARIO_LIMITS,
+    AgentExecutionBusy,
+    AgentResumeError,
     AdminAgentRunner,
+    PHASE_DRAFTS_PERSISTED,
     SCENARIO_ATTENTION_TODAY,
     SCENARIO_DRAFTS_TOMORROW,
+    assistant_run_resume_state,
 )
 from app.services.admin_agent_approvals import (
     ACTION_SCHEDULE_DRAFT_TOMORROW,
@@ -51,6 +60,10 @@ class AssistantRunRequest(BaseModel):
         max_length=128,
         pattern=r"^[A-Za-z0-9._:-]+$",
     )
+
+
+class AssistantResumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 class AssistantApprovalCreateRequest(BaseModel):
@@ -107,6 +120,11 @@ class AssistantRunResponse(BaseModel):
     channel_id: int
     scenario: str
     request_id: str | None
+    skill_id: str | None
+    skill_version: str | None
+    workflow_phase: str | None
+    resumable: bool
+    resume_state: str
     status: str
     model: str | None
     tokens_used: int
@@ -163,11 +181,36 @@ async def _response(
             ).scalars()
         )
         events = [_event_response(event) for event in event_rows]
+    resumable, resume_state = assistant_run_resume_state(row)
+    if resumable and str(row.workflow_phase or "") == PHASE_DRAFTS_PERSISTED:
+        artifact_rows = list(
+            (
+                await session.execute(
+                    select(AdminAgentRunArtifact)
+                    .where(AdminAgentRunArtifact.run_id == int(row.id))
+                    .order_by(AdminAgentRunArtifact.ordinal.asc())
+                )
+            ).scalars()
+        )
+        valid_artifacts = (
+            len(artifact_rows) == 3
+            and [int(value.ordinal) for value in artifact_rows] == [1, 2, 3]
+            and all(str(value.artifact_type) == "content_draft" for value in artifact_rows)
+        )
+        if not valid_artifacts:
+            resumable = False
+            resume_state = "partial_artifacts"
+
     return AssistantRunResponse(
         id=int(row.id),
         channel_id=int(row.channel_id),
         scenario=str(row.scenario),
         request_id=row.request_id,
+        skill_id=row.skill_id,
+        skill_version=row.skill_version,
+        workflow_phase=row.workflow_phase,
+        resumable=resumable,
+        resume_state=resume_state,
         status=str(row.status),
         model=row.model,
         tokens_used=int(row.tokens_used or 0),
@@ -369,6 +412,43 @@ async def create_assistant_run(
         )
     else:
         raise HTTPException(status_code=422, detail="Unsupported assistant scenario")
+    return await _response(session, run, include_events=True)
+
+
+@router.post(
+    "/channels/{channel_id}/assistant/runs/{run_id}/resume",
+    response_model=AssistantRunResponse,
+)
+async def resume_assistant_run(
+    channel_id: int,
+    run_id: int,
+    _request: AssistantResumeRequest,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> AssistantRunResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    existing = await session.scalar(
+        select(AdminAgentRun).where(
+            AdminAgentRun.id == int(run_id),
+            AdminAgentRun.channel_id == int(channel_id),
+            AdminAgentRun.owner_tg_user_id == int(principal.tg_user_id),
+        )
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Assistant run not found")
+    try:
+        run = await AdminAgentRunner(
+            session,
+            limits=DRAFT_SCENARIO_LIMITS,
+        ).resume_drafts_tomorrow(
+            channel_id=channel_id,
+            owner_tg_user_id=principal.tg_user_id,
+            run_id=run_id,
+        )
+    except AgentExecutionBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except AgentResumeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return await _response(session, run, include_events=True)
 
 
