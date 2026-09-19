@@ -63,14 +63,10 @@ def _canonical_attempt(attempt: PublicationAttempt) -> bool:
 class CanonicalRepeatContinuationWorker:
     """Recover successor creation for canonical-delivered repeat sources.
 
-    The historical Scheduler invokes canonical repeat planning only while it still owns a
-    successful legacy PostTask. Once a repeat occurrence is delivered canonically and its
-    compatibility transport is retired, that callback no longer exists. This worker is
-    the provider-free continuation/recovery owner for exactly those sources.
-
-    It never touches linked legacy-owned rows. Candidate authority requires terminal
-    canonical delivery evidence, physical transport retirement and an enabled repeat
-    rule. Existing repeat primitives remain the only planning/materialization authority.
+    This worker is the provider-free continuation/recovery owner for canonically
+    delivered repeat sources. Candidate authority requires terminal canonical delivery
+    evidence and an enabled repeat rule. Existing repeat primitives remain the only
+    planning/materialization authority.
 
     Retry order is deliberately verifier-first:
       * matched  -> already complete;
@@ -132,7 +128,6 @@ class CanonicalRepeatContinuationWorker:
                     )
                     .where(
                         Publication.id > after_id,
-                        Publication.legacy_post_task_id.is_(None),
                         Publication.status == "published",
                         ScheduleEntry.status == "completed",
                         PublicationAttempt.status == "published",
