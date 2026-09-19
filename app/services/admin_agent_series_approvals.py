@@ -607,6 +607,26 @@ class AdminAgentSeriesApprovalService:
         existing_items = await self.items_for_batch(int(existing.id))
         if len(slots) != len(existing_items):
             return False
+        artifacts = list(
+            (
+                await self.session.execute(
+                    select(AdminAgentRunArtifact)
+                    .where(
+                        AdminAgentRunArtifact.run_id == int(source_run_id),
+                        AdminAgentRunArtifact.artifact_type == SOURCE_ARTIFACT_TYPE,
+                    )
+                    .order_by(AdminAgentRunArtifact.ordinal.asc())
+                )
+            ).scalars()
+        )
+        if [
+            (int(row.ordinal), int(row.content_item_id))
+            for row in artifacts
+        ] != [
+            (int(item.ordinal), int(item.content_item_id))
+            for item in existing_items
+        ]:
+            return False
         normalized: dict[int, tuple[str, str]] = {}
         try:
             for raw_slot in slots:
