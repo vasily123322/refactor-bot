@@ -1145,12 +1145,16 @@ class AdminAgentSeriesApprovalService:
         batch_id: int,
         claim_token: str,
     ) -> bool:
-        row = await self.session.get(AdminAgentApprovalBatch, int(batch_id))
-        return (
-            row is not None
-            and str(row.state) == STATE_EXECUTING
-            and str(row.execution_claim_token or "") == str(claim_token)
-        )
+        owned_id = (
+            await self.session.execute(
+                select(AdminAgentApprovalBatch.id).where(
+                    AdminAgentApprovalBatch.id == int(batch_id),
+                    AdminAgentApprovalBatch.state == STATE_EXECUTING,
+                    AdminAgentApprovalBatch.execution_claim_token == str(claim_token),
+                )
+            )
+        ).scalar_one_or_none()
+        return owned_id is not None
 
     async def _queue_item(
         self,
