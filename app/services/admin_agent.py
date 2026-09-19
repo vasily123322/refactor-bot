@@ -5,19 +5,26 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from typing import Awaitable, Callable
+from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import to_user_tz
-from app.domain.admin_agent import AdminAgentEvent, AdminAgentRun
+from app.domain.admin_agent import AdminAgentEvent, AdminAgentRun, AdminAgentRunArtifact
 from app.domain.content import PostDocument
+from app.domain.content.models import ContentItem
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.domain.sources.models import SourceConnector
 from app.repositories.content import ContentRepo
 from app.services.ai_activity import AIActivityService
 from app.services.ai_generation import AIGenerationService
+from app.services.admin_agent_context import EditorialContextService
+from app.services.admin_agent_skills import (
+    RESUME_EXPLICIT,
+    SKILL_REGISTRY,
+)
 from app.services.scheduling import as_utc
 
 
@@ -43,6 +50,18 @@ _PROVIDER_QUOTA_ERRORS = (
 _DRAFT_COUNT = 3
 _DRAFT_MAX_TITLE_CHARS = 255
 _DRAFT_MAX_TEXT_CHARS = 4096
+_DRAFT_ARTIFACT_TYPE = "content_draft"
+_CHECKPOINT_VERSION = 1
+_RESUME_CLAIM_SECONDS = 90
+
+PHASE_CREATED = "created"
+PHASE_GENERATION_INFLIGHT = "generation_inflight"
+PHASE_GENERATION_VALIDATED = "generation_validated"
+PHASE_DRAFTS_PERSISTED = "drafts_persisted"
+PHASE_COMPLETED = "completed"
+PHASE_RESTART_REQUIRED = "restart_required"
+PHASE_FAILED = "failed"
+PHASE_FAILED_CLOSED = "failed_closed"
 
 
 class AgentExecutionError(RuntimeError):
@@ -51,6 +70,65 @@ class AgentExecutionError(RuntimeError):
 
 class AgentExecutionLimit(AgentExecutionError):
     pass
+
+
+class AgentResumeError(AgentExecutionError):
+    pass
+
+
+class AgentExecutionBusy(AgentResumeError):
+    pass
+
+
+def _utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def assistant_run_resume_state(
+    run: AdminAgentRun,
+    *,
+    now_utc: datetime | None = None,
+) -> tuple[bool, str]:
+    if str(run.status) == RUN_COMPLETED:
+        return False, "completed"
+    try:
+        spec = SKILL_REGISTRY.resolve(run.skill_id, run.skill_version)
+    except KeyError:
+        return False, "unsupported_skill_version"
+    if spec.resume_policy != RESUME_EXPLICIT:
+        return False, "not_supported"
+    phase = str(run.workflow_phase or "")
+    if phase == PHASE_GENERATION_INFLIGHT:
+        return False, "restart_required"
+    if phase not in {PHASE_GENERATION_VALIDATED, PHASE_DRAFTS_PERSISTED}:
+        return False, "not_resumable"
+    if phase == PHASE_GENERATION_VALIDATED:
+        checkpoint = run.checkpoint
+        if (
+            not isinstance(checkpoint, dict)
+            or checkpoint.get("checkpoint_version") != _CHECKPOINT_VERSION
+            or checkpoint.get("state") != PHASE_GENERATION_VALIDATED
+            or not isinstance(checkpoint.get("drafts"), list)
+            or len(checkpoint.get("drafts") or []) != _DRAFT_COUNT
+        ):
+            return False, "malformed_checkpoint"
+    if phase == PHASE_DRAFTS_PERSISTED:
+        checkpoint = run.checkpoint
+        if (
+            not isinstance(checkpoint, dict)
+            or checkpoint.get("checkpoint_version") != _CHECKPOINT_VERSION
+            or checkpoint.get("state") != PHASE_DRAFTS_PERSISTED
+        ):
+            return False, "malformed_checkpoint"
+    now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    claimed = _utc(run.execution_claimed_at)
+    if run.execution_claim_token and claimed and claimed > now - timedelta(seconds=_RESUME_CLAIM_SECONDS):
+        return False, "busy"
+    return True, "available"
 
 
 @dataclass(frozen=True, slots=True)
