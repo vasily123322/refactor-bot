@@ -226,7 +226,6 @@ export function PlannerPanel({
     }
 
     const operationChannelId = channel.id;
-    const operationScopeKey = scopeKey;
     const operationContextToken = operationContextRef.current.token;
     if (operationContextToken === null) return;
     const isCurrent = () => operationContextOwnershipRef.current.isCurrent(
@@ -261,7 +260,6 @@ export function PlannerPanel({
     if (!window.confirm('Отменить эту запланированную публикацию?')) return;
 
     const operationChannelId = channel.id;
-    const operationScopeKey = scopeKey;
     const operationContextToken = operationContextRef.current.token;
     if (operationContextToken === null) return;
     const isCurrent = () => operationContextOwnershipRef.current.isCurrent(
