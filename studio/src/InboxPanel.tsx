@@ -5,12 +5,18 @@ import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
 import {
   ChannelRequestOwnership,
   ScopedExclusiveOperationLock,
-  resolveChannelDataView,
+  resolveScopedDataView,
   runScopedExclusiveOperation,
-  type ChannelLoadState,
   type ChannelRequestToken,
+  type ScopedLoadState,
 } from './asyncControl';
 import { ChannelDMProvenance } from './ChannelDMProvenance';
+import {
+  INBOX_STATUS_OPTIONS,
+  inboxStatusPresentation,
+  inboxStatusScope,
+  type InboxCandidateStatus,
+} from './inboxCandidateStatus';
 import { channelDMEnrichmentSummary } from './channelDMPresentation';
 import { promptCandidateStructuredRewrite } from './candidatePromptRewrite';
 import {
@@ -89,40 +95,62 @@ export function InboxPanel({
   channel: Channel | null;
   onOpenContent: (contentId: number) => void;
 }) {
+  const [statusView, setStatusView] = useState<InboxCandidateStatus>('new');
   const [candidates, setCandidates] = useState<ContentCandidateView[]>([]);
   const [candidateMedia, setCandidateMedia] = useState<Record<number, CandidateMediaView>>({});
   const [rewritePreviews, setRewritePreviews] = useState<Record<number, RewritePreview>>({});
   const [rewriteInstructions, setRewriteInstructions] = useState<Record<number, string>>({});
   const [busyKeys, setBusyKeys] = useState<Set<string>>(() => new Set());
-  const [loadState, setLoadState] = useState<ChannelLoadState | null>(null);
-  const [error, setError] = useState<{ channelId: number; message: string } | null>(null);
+  const [loadState, setLoadState] = useState<ScopedLoadState | null>(null);
+  const [error, setError] = useState<{
+    channelId: number;
+    scopeKey: string;
+    message: string;
+  } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const requestOwnershipRef = useRef(new ChannelRequestOwnership());
   const operationContextOwnershipRef = useRef(new ChannelRequestOwnership());
   const operationContextRef = useRef<{
     channelId: number | null;
+    scopeKey: string | null;
     token: ChannelRequestToken | null;
-  }>({ channelId: null, token: null });
+  }>({ channelId: null, scopeKey: null, token: null });
   const operationLocksRef = useRef(new Map<number, ScopedExclusiveOperationLock>());
-  const validDataChannelRef = useRef<number | null>(null);
+  const validDataScopeRef = useRef<string | null>(null);
   const channelIdRef = useRef<number | null>(channel?.id ?? null);
+  const statusRef = useRef<InboxCandidateStatus>(statusView);
+  const scopeKeyRef = useRef<string | null>(
+    channel?.id == null ? null : inboxStatusScope(statusView),
+  );
   const currentChannelId = channel?.id ?? null;
-  if (operationContextRef.current.channelId !== currentChannelId) {
+  const currentScopeKey = currentChannelId === null ? null : inboxStatusScope(statusView);
+  if (
+    operationContextRef.current.channelId !== currentChannelId
+    || operationContextRef.current.scopeKey !== currentScopeKey
+  ) {
     operationContextRef.current.channelId = currentChannelId;
-    if (currentChannelId === null) {
+    operationContextRef.current.scopeKey = currentScopeKey;
+    if (currentChannelId === null || currentScopeKey === null) {
       operationContextOwnershipRef.current.invalidate();
       operationContextRef.current.token = null;
     } else {
-      operationContextRef.current.token = operationContextOwnershipRef.current.begin(currentChannelId);
+      operationContextRef.current.token = operationContextOwnershipRef.current.begin(
+        currentChannelId,
+        currentScopeKey,
+      );
     }
   }
   channelIdRef.current = currentChannelId;
+  statusRef.current = statusView;
+  scopeKeyRef.current = currentScopeKey;
 
   const load = useCallback(async (): Promise<boolean> => {
     const channelId = channelIdRef.current;
+    const status = statusRef.current;
+    const scopeKey = inboxStatusScope(status);
     if (channelId === null) {
       requestOwnershipRef.current.invalidate();
-      validDataChannelRef.current = null;
+      validDataScopeRef.current = null;
       setCandidates([]);
       setCandidateMedia({});
       setRewritePreviews({});
@@ -131,61 +159,75 @@ export function InboxPanel({
       return false;
     }
 
-    const token = requestOwnershipRef.current.begin(channelId);
-    const hasValidData = validDataChannelRef.current === channelId;
-    const isCurrent = () => requestOwnershipRef.current.isCurrent(token, channelIdRef.current);
+    const token = requestOwnershipRef.current.begin(channelId, scopeKey);
+    const dataScope = `${channelId}:${scopeKey}`;
+    const hasValidData = validDataScopeRef.current === dataScope;
+    const isCurrent = () => requestOwnershipRef.current.isCurrent(
+      token,
+      channelIdRef.current,
+      scopeKeyRef.current,
+    );
 
     setError(null);
     if (!hasValidData) {
-      validDataChannelRef.current = null;
+      validDataScopeRef.current = null;
       setCandidates([]);
       setCandidateMedia({});
       setRewritePreviews({});
       setRewriteInstructions({});
-      setLoadState({ channelId, phase: 'loading' });
+      setLoadState({ channelId, scopeKey, phase: 'loading' });
     }
 
     try {
       const [rows, mediaRows] = await Promise.all([
-        studioApi.candidates(channelId),
-        loadCandidateMedia(channelId),
+        studioApi.candidates(channelId, status),
+        status === 'new'
+          ? loadCandidateMedia(channelId)
+          : Promise.resolve<CandidateMediaView[]>([]),
       ]);
       if (!isCurrent()) return false;
-      const previews = await loadCurrentStructuredRewritePreviews(channelId, rows);
+      const previews = status === 'new'
+        ? await loadCurrentStructuredRewritePreviews(channelId, rows)
+        : {};
       if (!isCurrent()) return false;
 
       setCandidates(rows);
       setCandidateMedia(mediaMap(mediaRows));
       setRewritePreviews(previews);
-      validDataChannelRef.current = channelId;
-      setLoadState({ channelId, phase: 'loaded' });
+      validDataScopeRef.current = dataScope;
+      setLoadState({ channelId, scopeKey, phase: 'loaded' });
       return true;
     } catch (reason) {
       if (!isCurrent()) return false;
-      if (validDataChannelRef.current !== channelId) {
+      if (validDataScopeRef.current !== dataScope) {
         setCandidates([]);
         setCandidateMedia({});
         setRewritePreviews({});
-        setLoadState({ channelId, phase: 'error-without-valid-data' });
+        setLoadState({ channelId, scopeKey, phase: 'error-without-valid-data' });
       }
-      setError({ channelId, message: errorMessage(reason) });
+      setError({ channelId, scopeKey, message: errorMessage(reason) });
       return false;
     }
-  }, [channel?.id]);
+  }, []);
 
   useEffect(() => {
     setError(null);
     setNotice(null);
     void load();
-  }, [channel?.id, load]);
+  }, [channel?.id, statusView, load]);
 
   const run = async (
     key: string,
     action: (isCurrent: () => boolean) => Promise<unknown>,
   ): Promise<boolean> => {
     const operationChannelId = channelIdRef.current;
+    const operationScopeKey = scopeKeyRef.current;
     const operationContextToken = operationContextRef.current.token;
-    if (operationChannelId === null || operationContextToken === null) return false;
+    if (
+      operationChannelId === null
+      || operationScopeKey === null
+      || operationContextToken === null
+    ) return false;
 
     let lock = operationLocksRef.current.get(operationChannelId);
     if (!lock) {
@@ -198,7 +240,7 @@ export function InboxPanel({
       : candidateId
         ? `candidate:${candidateId}`
         : null;
-    const busyKey = `${operationChannelId}:${key}`;
+    const busyKey = `${operationChannelId}:${operationScopeKey}:${key}`;
     const result = await runScopedExclusiveOperation(
       lock,
       scope,
@@ -207,13 +249,18 @@ export function InboxPanel({
         const isCurrent = () => operationContextOwnershipRef.current.isCurrent(
           operationContextToken,
           channelIdRef.current,
+          scopeKeyRef.current,
         );
         if (isCurrent()) setError(null);
         try {
           await action(isCurrent);
         } catch (reason) {
           if (isCurrent()) {
-            setError({ channelId: operationChannelId, message: errorMessage(reason) });
+            setError({
+              channelId: operationChannelId,
+              scopeKey: operationScopeKey,
+              message: errorMessage(reason),
+            });
           }
         }
       },
@@ -227,7 +274,9 @@ export function InboxPanel({
     return result.started;
   };
 
-  const currentBusyPrefix = channelIdRef.current === null ? null : `${channelIdRef.current}:`;
+  const currentBusyPrefix = channelIdRef.current === null || scopeKeyRef.current === null
+    ? null
+    : `${channelIdRef.current}:${scopeKeyRef.current}:`;
   const currentBusyKeys = currentBusyPrefix === null
     ? []
     : Array.from(busyKeys)
@@ -251,6 +300,7 @@ export function InboxPanel({
     if (key.startsWith('promote-media:')) return 'Сохраняю media в медиатеку…';
     if (key.startsWith('draft:')) return 'Создаю черновик…';
     if (key.startsWith('dismiss:')) return 'Скрываю материал…';
+    if (key.startsWith('restore:')) return 'Восстанавливаю материал…';
     return 'Выполняю действие…';
   };
 
@@ -466,6 +516,14 @@ export function InboxPanel({
       });
     });
 
+  const restore = (candidate: ContentCandidateView) =>
+    run(`restore:${candidate.id}`, async (isCurrent) => {
+      await studioApi.restoreCandidate(channel!.id, candidate.id);
+      if (!isCurrent()) return;
+      setCandidates((current) => current.filter((row) => row.id !== candidate.id));
+      setNotice('Материал восстановлен в «Новые»');
+    });
+
   const acceptDraft = (candidate: ContentCandidateView) =>
     run(`draft:${candidate.id}`, async (isCurrent) => {
       const preview = rewritePreviews[candidate.id];
@@ -506,7 +564,14 @@ export function InboxPanel({
     return <div className="sources-empty-page">Выберите канал, чтобы открыть Inbox.</div>;
   }
 
-  const inboxDataView = resolveChannelDataView(loadState, channel.id, candidates.length);
+  const activeScopeKey = inboxStatusScope(statusView);
+  const presentation = inboxStatusPresentation(statusView);
+  const inboxDataView = resolveScopedDataView(
+    loadState,
+    channel.id,
+    activeScopeKey,
+    candidates.length,
+  );
   const inboxLoading = inboxDataView === 'loading';
   const inboxLoadFailed = inboxDataView === 'error-without-valid-data';
   const inboxEmpty = inboxDataView === 'loaded-empty';
@@ -527,29 +592,54 @@ export function InboxPanel({
           >
             ↻ Обновить
           </button>
-          <button
-            className="button secondary"
-            onClick={() => void enrichBatch()}
-            disabled={hasCurrentBusy || candidates.length === 0}
-            title="Deterministic local enrichment, без AI-токенов"
-          >
-            Local batch
-          </button>
+          {presentation.showActiveActions && (
+            <button
+              className="button secondary"
+              onClick={() => void enrichBatch()}
+              disabled={hasCurrentBusy || candidates.length === 0}
+              title="Deterministic local enrichment, без AI-токенов"
+            >
+              Local batch
+            </button>
+          )}
           {isBusy('refresh') && <InlineStatus>Обновляю Inbox…</InlineStatus>}
-          {isBusy('batch-local') && <InlineStatus>Анализирую Inbox batch…</InlineStatus>}
+          {presentation.showActiveActions && isBusy('batch-local') && (
+            <InlineStatus>Анализирую Inbox batch…</InlineStatus>
+          )}
         </div>
       </header>
 
-      {error?.channelId === channel.id && <div className="banner error" role="alert">{error.message}<button aria-label="Закрыть ошибку" onClick={() => setError(null)}>×</button></div>}
+      {error?.channelId === channel.id && error.scopeKey === activeScopeKey && (
+        <div className="banner error" role="alert">
+          {error.message}
+          <button aria-label="Закрыть ошибку" onClick={() => setError(null)}>×</button>
+        </div>
+      )}
       {notice && <InlineStatus className="banner success">{notice}<button aria-label="Закрыть уведомление" onClick={() => setNotice(null)}>×</button></InlineStatus>}
 
       <section className="sources-inbox-card inbox-standalone-card">
         <div className="panel-heading">
           <div>
-            <h2>Новые кандидаты</h2>
+            <h2>{presentation.heading}</h2>
             <small>
-              {inboxLoading ? 'Загружаю Inbox…' : inboxLoadFailed ? 'Inbox не загружен' : `${candidates.length} в очереди редактора`}
+              {inboxLoading
+                ? 'Загружаю Inbox…'
+                : inboxLoadFailed
+                  ? 'Inbox не загружен'
+                  : `${candidates.length} ${presentation.countSuffix}`}
             </small>
+          </div>
+          <div className="inbox-status-switch" role="group" aria-label="Фильтр Inbox">
+            {INBOX_STATUS_OPTIONS.map((option) => (
+              <button
+                key={option.status}
+                className="button secondary compact"
+                aria-pressed={statusView === option.status}
+                onClick={() => setStatusView(option.status)}
+              >
+                {option.label}
+              </button>
+            ))}
           </div>
         </div>
         <AsyncRegion
@@ -572,7 +662,7 @@ export function InboxPanel({
             </div>
           }
           emptyFallback={
-            <div className="empty-state">Inbox пуст. Источники и ingestion worker добавят новые материалы сюда.</div>
+            <div className="empty-state">{presentation.emptyText}</div>
           }
           errorFallback={
             <div className="empty-state">Inbox не загружен. Повторите попытку обновления.</div>
@@ -587,8 +677,10 @@ export function InboxPanel({
               candidate.source_document_id,
             );
             const media = candidateMedia[candidate.id];
-            const canRewrite = candidate.reuse_policy === 'rewrite_with_attribution';
-            const canPromoteMedia = Boolean(media?.promotable && !media.media_asset_id);
+            const canRewrite = presentation.showActiveActions
+              && candidate.reuse_policy === 'rewrite_with_attribution';
+            const canPromoteMedia = presentation.showActiveActions
+              && Boolean(media?.promotable && !media.media_asset_id);
             const prompt = rewriteInstructions[candidate.id] || '';
             const primaryText = candidateInboxPrimaryText(candidate);
             const enrichmentSummary = channelDMEnrichmentSummary(candidate)
@@ -680,65 +772,77 @@ export function InboxPanel({
                     {candidate.source_url && (
                       <a className="button secondary compact" href={candidate.source_url} target="_blank" rel="noreferrer">Источник ↗</a>
                     )}
-                    {canPromoteMedia && (
+                    {presentation.showActiveActions ? (
+                      <>
+                        {canPromoteMedia && (
+                          <button
+                            className="button secondary compact"
+                            disabled={globalBusy || candidateBusy(candidate.id)}
+                            title="Сохранить исходное Telegram media как reusable MediaAsset текущего канала"
+                            onClick={() => void promoteMedia(candidate)}
+                          >
+                            ▣ В медиатеку
+                          </button>
+                        )}
+                        <button
+                          className="button secondary compact"
+                          disabled={globalBusy || candidateBusy(candidate.id)}
+                          onClick={() => void enrichLocal(candidate)}
+                        >
+                          Local
+                        </button>
+                        <button
+                          className="button secondary compact"
+                          disabled={globalBusy || candidateBusy(candidate.id)}
+                          title="Использует AI-настройки и лимиты выбранного канала"
+                          onClick={() => void enrichAI(candidate)}
+                        >
+                          ✨ AI
+                        </button>
+                        {canRewrite && (
+                          <button
+                            className="button secondary compact"
+                            disabled={globalBusy || candidateBusy(candidate.id)}
+                            title="Создать независимый AI rewrite; attribution добавит приложение"
+                            onClick={() => void rewriteAI(candidate)}
+                          >
+                            ✨ Rewrite
+                          </button>
+                        )}
+                        {canRewrite && (
+                          <button
+                            className="button secondary compact"
+                            disabled={globalBusy || candidateBusy(candidate.id)}
+                            title="Сгенерировать validated Rich PostDocument без автоматического применения"
+                            onClick={() => void rewriteStructuredAI(candidate)}
+                          >
+                            ✨ Rich
+                          </button>
+                        )}
+                        <button
+                          className="button primary compact"
+                          disabled={globalBusy || candidateBusy(candidate.id)}
+                          onClick={() => void acceptDraft(candidate)}
+                        >
+                          {rewritePreview?.kind === 'structured' ? 'В Rich черновик' : 'В черновик'}
+                        </button>
+                        <button
+                          className="button secondary compact"
+                          disabled={globalBusy || candidateBusy(candidate.id)}
+                          onClick={() => void dismiss(candidate)}
+                        >
+                          Скрыть
+                        </button>
+                      </>
+                    ) : (
                       <button
-                        className="button secondary compact"
+                        className="button primary compact"
                         disabled={globalBusy || candidateBusy(candidate.id)}
-                        title="Сохранить исходное Telegram media как reusable MediaAsset текущего канала"
-                        onClick={() => void promoteMedia(candidate)}
+                        onClick={() => void restore(candidate)}
                       >
-                        ▣ В медиатеку
+                        Восстановить
                       </button>
                     )}
-                    <button
-                      className="button secondary compact"
-                      disabled={globalBusy || candidateBusy(candidate.id)}
-                      onClick={() => void enrichLocal(candidate)}
-                    >
-                      Local
-                    </button>
-                    <button
-                      className="button secondary compact"
-                      disabled={globalBusy || candidateBusy(candidate.id)}
-                      title="Использует AI-настройки и лимиты выбранного канала"
-                      onClick={() => void enrichAI(candidate)}
-                    >
-                      ✨ AI
-                    </button>
-                    {canRewrite && (
-                      <button
-                        className="button secondary compact"
-                        disabled={globalBusy || candidateBusy(candidate.id)}
-                        title="Создать независимый AI rewrite; attribution добавит приложение"
-                        onClick={() => void rewriteAI(candidate)}
-                      >
-                        ✨ Rewrite
-                      </button>
-                    )}
-                    {canRewrite && (
-                      <button
-                        className="button secondary compact"
-                        disabled={globalBusy || candidateBusy(candidate.id)}
-                        title="Сгенерировать validated Rich PostDocument без автоматического применения"
-                        onClick={() => void rewriteStructuredAI(candidate)}
-                      >
-                        ✨ Rich
-                      </button>
-                    )}
-                    <button
-                      className="button primary compact"
-                      disabled={globalBusy || candidateBusy(candidate.id)}
-                      onClick={() => void acceptDraft(candidate)}
-                    >
-                      {rewritePreview?.kind === 'structured' ? 'В Rich черновик' : 'В черновик'}
-                    </button>
-                    <button
-                      className="button secondary compact"
-                      disabled={globalBusy || candidateBusy(candidate.id)}
-                      onClick={() => void dismiss(candidate)}
-                    >
-                      Скрыть
-                    </button>
                   </div>
                 </div>
                 <InlineStatus className="candidate-operation-status">

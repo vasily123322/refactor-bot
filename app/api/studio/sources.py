@@ -484,3 +484,25 @@ async def dismiss_candidate(
         raise HTTPException(status_code=404, detail="Candidate source not found")
     candidate = await repo.set_candidate_status(candidate, "dismissed")
     return _candidate_response(candidate, document)
+
+
+@router.post(
+    "/channels/{channel_id}/candidates/{candidate_id}/restore",
+    response_model=CandidateResponse,
+)
+async def restore_candidate(
+    channel_id: int,
+    candidate_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> CandidateResponse:
+    await _require_owned_channel(session, principal, channel_id)
+    repo = SourcesRepo(session)
+    candidate = await repo.get_candidate_for_channel(candidate_id, channel_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    document = await session.get(SourceDocument, int(candidate.source_document_id))
+    if document is None or int(document.channel_id) != int(channel_id):
+        raise HTTPException(status_code=404, detail="Candidate source not found")
+    candidate = await repo.set_candidate_status(candidate, "new")
+    return _candidate_response(candidate, document)
