@@ -67,6 +67,7 @@ class AdminAgentSkillRegistry:
         expected_capabilities = {
             "attention_today": {CAPABILITY_READ_ONLY},
             "drafts_tomorrow": {CAPABILITY_DRAFT_WRITE},
+            "prepare_content_series": {CAPABILITY_DRAFT_WRITE},
         }
         allowed_profiles = {CONTEXT_NONE, CONTEXT_EDITORIAL_V1}
         allowed_resume = {RESUME_NONE, RESUME_EXPLICIT}
@@ -93,10 +94,16 @@ class AdminAgentSkillRegistry:
                 )
             if spec.scenario == "attention_today" and spec.resume_policy != RESUME_NONE:
                 raise ValueError("attention_today must remain non-resumable")
-            if spec.scenario == "drafts_tomorrow" and spec.resume_policy != RESUME_EXPLICIT:
-                raise ValueError("drafts_tomorrow must use explicit resume")
-            if spec.scenario == "drafts_tomorrow" and spec.context_profile != CONTEXT_EDITORIAL_V1:
-                raise ValueError("drafts_tomorrow must use bounded editorial context")
+            if (
+                spec.scenario in {"drafts_tomorrow", "prepare_content_series"}
+                and spec.resume_policy != RESUME_EXPLICIT
+            ):
+                raise ValueError(f"{spec.scenario} must use explicit resume")
+            if (
+                spec.scenario in {"drafts_tomorrow", "prepare_content_series"}
+                and spec.context_profile != CONTEXT_EDITORIAL_V1
+            ):
+                raise ValueError(f"{spec.scenario} must use bounded editorial context")
             if not spec.display_title.strip() or not spec.description.strip():
                 raise ValueError("admin-agent presentation title/description must be non-empty")
             if not spec.category.strip() or not spec.result_kind.strip():
@@ -148,6 +155,16 @@ _EMPTY_OPERATOR_SCHEMA = {
     "additionalProperties": False,
 }
 
+_CONTENT_SERIES_OPERATOR_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "brief": {"type": "string", "minLength": 20, "maxLength": 2000},
+        "post_count": {"type": "integer", "minimum": 2, "maximum": 8},
+    },
+    "required": ["brief", "post_count"],
+    "additionalProperties": False,
+}
+
 
 SKILL_REGISTRY = AdminAgentSkillRegistry(
     (
@@ -196,6 +213,35 @@ SKILL_REGISTRY = AdminAgentSkillRegistry(
             approval_requirement=APPROVAL_NONE,
             capability_summary=(
                 "Draft-write: создаёт bounded Content drafts; scheduling остаётся отдельным approval."
+            ),
+            context_requirements=(
+                "Existing channel memory/profile + bounded recent and scheduled Content context."
+            ),
+        ),
+        AdminAgentSkillSpec(
+            skill_id="prepare_content_series",
+            version="1",
+            scenario="prepare_content_series",
+            execution_limits={
+                "max_steps": 4,
+                "max_tool_calls": 0,
+                "max_llm_calls": 1,
+                "max_seconds": 30.0,
+                "max_items_per_tool": 0,
+            },
+            allowed_capability_classes=(CAPABILITY_DRAFT_WRITE,),
+            context_profile=CONTEXT_EDITORIAL_V1,
+            resume_policy=RESUME_EXPLICIT,
+            display_title="Подготовить серию постов",
+            description=(
+                "Строит bounded series plan и создаёт указанное число ordinary Content drafts."
+            ),
+            category="editorial",
+            operator_input_schema=_CONTENT_SERIES_OPERATOR_SCHEMA,
+            result_kind="content_series",
+            approval_requirement=APPROVAL_NONE,
+            capability_summary=(
+                "Draft-write: создаёт только Content drafts; scheduling/publishing не выполняются."
             ),
             context_requirements=(
                 "Existing channel memory/profile + bounded recent and scheduled Content context."
