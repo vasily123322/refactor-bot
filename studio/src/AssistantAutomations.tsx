@@ -67,6 +67,20 @@ export function automationCadenceLabel(
   return `daily · ${automation.cadence.local_time}`;
 }
 
+export function automationScheduleSummary(
+  automation: Pick<AssistantAutomationView, 'cadence' | 'timezone' | 'next_run_at'>,
+): string {
+  return `${automationCadenceLabel(automation)} · ${automation.timezone} · Следующий запуск: ${nextRunLabel(automation.next_run_at)}`;
+}
+
+export function automationDataView(
+  state: ChannelLoadState | null,
+  channelId: number,
+  count: number,
+) {
+  return resolveChannelDataView(state, channelId, count);
+}
+
 export function validateAutomationForm({
   skill,
   cadenceKind,
@@ -359,7 +373,7 @@ export function AssistantAutomations({
     if (!result.started) return;
   }, []);
 
-  const loadView = resolveChannelDataView(loadState, channel.id, automations.length);
+  const loadView = automationDataView(loadState, channel.id, automations.length);
   const loading = loadView === 'loading';
   const failed = loadView === 'error-without-valid-data';
   const empty = loadView === 'loaded-empty';
@@ -516,12 +530,7 @@ export function AssistantAutomations({
           <article className="assistant-automation-row" key={automation.id}>
             <div>
               <strong>{automation.skill_id}@{automation.skill_version}</strong>
-              <small>
-                {automationCadenceLabel(automation)} · {automation.timezone}
-              </small>
-              <small>
-                Следующий запуск: {nextRunLabel(automation.next_run_at)}
-              </small>
+              <small>{automationScheduleSummary(automation)}</small>
             </div>
             <button
               className="button secondary"
