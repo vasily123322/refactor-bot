@@ -41,7 +41,7 @@ def _clear_pending_autodelete(meta: Mapping[str, Any] | None) -> tuple[dict[str,
 
 
 class AdminRemoveAllRepeatService:
-    """Bulk-clean only mutable canonical plans; historical PostTask rows are evidence."""
+    """Bulk-clean only mutable canonical plans; terminal canonical history is preserved."""
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
