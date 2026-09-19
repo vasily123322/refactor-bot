@@ -532,11 +532,14 @@ class AdminAgentApprovalService:
         self,
         approval: AdminAgentApproval,
     ) -> AdminAgentApproval:
+        approval_id = int(approval.id)
+        owner_tg_user_id = int(approval.owner_tg_user_id)
+        channel_id = int(approval.channel_id)
         metadata = {
-            "admin_agent_approval_id": int(approval.id),
+            "admin_agent_approval_id": approval_id,
             "admin_agent_execution_key": str(approval.execution_key),
             "admin_agent_action_type": ACTION_SCHEDULE_DRAFT_TOMORROW,
-            "admin_agent_owner_tg_user_id": int(approval.owner_tg_user_id),
+            "admin_agent_owner_tg_user_id": owner_tg_user_id,
             "admin_agent_reviewer_tg_user_id": int(
                 approval.reviewer_tg_user_id or approval.owner_tg_user_id
             ),
@@ -563,9 +566,9 @@ class AdminAgentApprovalService:
         except Exception as exc:
             await self.session.rollback()
             current = await self._load(
-                approval_id=int(approval.id),
-                owner_tg_user_id=int(approval.owner_tg_user_id),
-                channel_id=int(approval.channel_id),
+                approval_id=approval_id,
+                owner_tg_user_id=owner_tg_user_id,
+                channel_id=channel_id,
             )
             if current is not None and current.state == STATE_EXECUTING:
                 current.failure_reason = (
