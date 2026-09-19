@@ -59,13 +59,20 @@ def test_admin_agent_resumable_migration_upgrades_existing_0018_schema(tmp_path)
         assert "request_id" in before_columns
         assert "skill_id" not in before_columns
         assert "admin_agent_approvals" in _tables(database_path)
-        connection.execute(
+        connection.executemany(
             """
             INSERT INTO admin_agent_runs
                 (owner_tg_user_id, channel_id, scenario, request_id, status, tokens_used)
             VALUES
-                (777, 999999, 'drafts_tomorrow', 'historical-run-0001', 'completed', 0)
-            """
+                (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (777, 999999, "attention_today", "historical-a-run", "completed", 0),
+                (777, 999999, "drafts_tomorrow", "historical-b-run", "completed", 0),
+                # Slice C does not introduce a new run scenario; its approval is
+                # attached to the durable drafts_tomorrow run from B.
+                (777, 999999, "drafts_tomorrow", "historical-c-source-run", "completed", 0),
+            ],
         )
         connection.commit()
 
@@ -148,12 +155,21 @@ def test_admin_agent_resumable_migration_upgrades_existing_0018_schema(tmp_path)
         } <= artifact_columns
         historical = connection.execute(
             """
-            SELECT skill_id, skill_version, workflow_phase, checkpoint
+            SELECT request_id, skill_id, skill_version, workflow_phase, checkpoint
             FROM admin_agent_runs
-            WHERE request_id = 'historical-run-0001'
+            WHERE request_id IN (
+                'historical-a-run',
+                'historical-b-run',
+                'historical-c-source-run'
+            )
+            ORDER BY request_id
             """
-        ).fetchone()
-        assert historical == (None, None, None, None)
+        ).fetchall()
+        assert historical == [
+            ("historical-a-run", None, None, None, None),
+            ("historical-b-run", None, None, None, None),
+            ("historical-c-source-run", None, None, None, None),
+        ]
         assert {
             row[1]
             for row in connection.execute("PRAGMA table_info(admin_agent_events)")
