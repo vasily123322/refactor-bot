@@ -8,6 +8,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
+from app.services.canonical_runtime_safety import has_no_replay_barrier
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,9 +48,8 @@ class CanonicalRepeatContinuationAuthorityService:
     """Lock and prove exclusive canonical repeat-continuation source authority.
 
     Selection is only an optimization. Every primitive that can reserve, verify or
-    materialize a successor must call this proof in its own transaction so a source that
-    is relinked to legacy transport after selection immediately leaves the canonical
-    continuation authority domain.
+    materialize a successor must call this proof in its own transaction. Durable
+    no-replay evidence immediately removes a source from continuation authority.
 
     The proof intentionally binds Publication, Schedule and the exact current Attempt:
 
@@ -57,7 +57,6 @@ class CanonicalRepeatContinuationAuthorityService:
     * exact Schedule identity linkage;
     * exact `attempt == Publication.attempt_count` linkage and finished evidence;
     * durable `Attempt.meta.canonical_delivery == true`;
-    * physical legacy transport retirement (`legacy_post_task_id IS NULL`);
     * exact repeat group/rule/runtime identity shared by Publication and Schedule.
 
     Any drift returns no authority. Callers decide whether that is ordinary ineligibility
@@ -105,10 +104,14 @@ class CanonicalRepeatContinuationAuthorityService:
         if row is None:
             return None
         publication, schedule, attempt = row
+        if await has_no_replay_barrier(
+            self.session,
+            publication_id=safe_publication_id,
+        ):
+            return None
 
         if (
             publication.status != "published"
-            or publication.legacy_post_task_id is not None
             or schedule.status != "completed"
             or attempt.status != "published"
             or attempt.finished_at is None
