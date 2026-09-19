@@ -14,7 +14,12 @@ from app.core.db import AsyncSessionLocal
 from app.domain.admin_agent import AdminAgentEvent, AdminAgentRun
 from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
-from app.services.admin_agent import AdminAgentRunner, SCENARIO_ATTENTION_TODAY
+from app.services.admin_agent import (
+    DRAFT_SCENARIO_LIMITS,
+    AdminAgentRunner,
+    SCENARIO_ATTENTION_TODAY,
+    SCENARIO_DRAFTS_TOMORROW,
+)
 
 
 router = APIRouter(prefix="/api/studio", tags=["assistant"])
@@ -32,7 +37,13 @@ PrincipalDep = Annotated[StudioPrincipal, Depends(require_studio_principal)]
 class AssistantRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    scenario: Literal["attention_today"] = SCENARIO_ATTENTION_TODAY
+    scenario: Literal["attention_today", "drafts_tomorrow"] = SCENARIO_ATTENTION_TODAY
+    request_id: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
 
 
 class AssistantEventResponse(BaseModel):
@@ -48,6 +59,7 @@ class AssistantRunResponse(BaseModel):
     id: int
     channel_id: int
     scenario: str
+    request_id: str | None
     status: str
     model: str | None
     tokens_used: int
@@ -108,6 +120,7 @@ async def _response(
         id=int(row.id),
         channel_id=int(row.channel_id),
         scenario=str(row.scenario),
+        request_id=row.request_id,
         status=str(row.status),
         model=row.model,
         tokens_used=int(row.tokens_used or 0),
@@ -132,12 +145,24 @@ async def create_assistant_run(
     session: SessionDep,
 ) -> AssistantRunResponse:
     await _require_owned_channel(session, principal, channel_id)
-    if request.scenario != SCENARIO_ATTENTION_TODAY:
+    if request.scenario == SCENARIO_ATTENTION_TODAY:
+        run = await AdminAgentRunner(session).run_attention_today(
+            channel_id=channel_id,
+            owner_tg_user_id=principal.tg_user_id,
+        )
+    elif request.scenario == SCENARIO_DRAFTS_TOMORROW:
+        if not request.request_id:
+            raise HTTPException(status_code=422, detail="request_id is required for drafts_tomorrow")
+        run = await AdminAgentRunner(
+            session,
+            limits=DRAFT_SCENARIO_LIMITS,
+        ).run_drafts_tomorrow(
+            channel_id=channel_id,
+            owner_tg_user_id=principal.tg_user_id,
+            request_id=request.request_id,
+        )
+    else:
         raise HTTPException(status_code=422, detail="Unsupported assistant scenario")
-    run = await AdminAgentRunner(session).run_attention_today(
-        channel_id=channel_id,
-        owner_tg_user_id=principal.tg_user_id,
-    )
     return await _response(session, run, include_events=True)
 
 
