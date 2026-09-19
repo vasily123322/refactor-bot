@@ -939,7 +939,7 @@ export function InboxPanel({
                 <button
                   className="button secondary compact"
                   onClick={() => void loadOlder()}
-                  disabled={historyLoadingMore}
+                  disabled={historyLoadingMore || globalBusy}
                 >
                   {historyLoadingMore
                     ? 'Загружаю старые…'
