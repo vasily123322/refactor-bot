@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { StudioApiError, studioApi } from './api';
-import type { AssistantAttentionItem, AssistantRunView } from './api';
+import type { AssistantRunView } from './api';
 import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
 import {
   ChannelRequestOwnership,
