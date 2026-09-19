@@ -204,7 +204,7 @@ def test_series_proposal_is_server_authored_snapshot_and_idempotent(monkeypatch)
                 assert proposal.state == STATE_PENDING_REVIEW
                 assert proposal.item_count == 4
                 assert proposal.timezone == "UTC+3"
-                items = await service.items_for_batch(proposal.id)
+                items = await service.items_for_batch(proposal_id)
                 assert [item.ordinal for item in items] == [1, 2, 3, 4]
                 assert items[0].captured_content_revision == 2
                 assert [item.state for item in items] == [ITEM_PENDING] * 4
@@ -451,10 +451,10 @@ def test_series_approve_uses_bridge_once_per_item_and_retry_never_duplicates(
 
                 monkeypatch.setattr(LegacyPublicationBridge, "queue", observed_queue)
                 executed = await service.approve(
-                    batch_id=proposal.id,
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
-                    reviewer_tg_user_id=owner.tg_user_id,
+                    batch_id=proposal_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    reviewer_tg_user_id=owner_id,
                 )
                 assert executed is not None
                 assert executed.state == STATE_EXECUTED
@@ -578,10 +578,10 @@ def test_series_full_preflight_stale_and_reject_have_zero_batch_mutations(
                 assert await _counts(session, channel.id) == (0, 0, 0)
                 with pytest.raises(Exception):
                     await service.reject(
-                        batch_id=proposal.id,
-                        owner_tg_user_id=owner.tg_user_id,
-                        channel_id=channel.id,
-                        reviewer_tg_user_id=owner.tg_user_id,
+                        batch_id=proposal_id,
+                        owner_tg_user_id=owner_id,
+                        channel_id=channel_id,
+                        reviewer_tg_user_id=owner_id,
                     )
         finally:
             await engine.dispose()
@@ -702,14 +702,18 @@ def test_series_multiple_exact_recovery_outcomes_fail_closed(monkeypatch) -> Non
                     count=2,
                     request_id="series-source-multi-recovery-0001",
                 )
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
                 service = AdminAgentSeriesApprovalService(session, now_utc=NOW)
                 proposal = await service.create(
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
                     source_run_id=source.id,
                     request_id="series-multi-recovery-0001",
                     slots=_slots(2),
                 )
+                proposal_id = int(proposal.id)
+                proposal_timezone = str(proposal.timezone)
                 original_finalize = service._finalize_item
 
                 async def crash_after_bridge(*args, **kwargs):
@@ -741,12 +745,12 @@ def test_series_multiple_exact_recovery_outcomes_fail_closed(monkeypatch) -> Non
                     content_item_id=first.content_item_id,
                     content_revision=first.captured_content_revision,
                     scheduled_at=first.resolved_scheduled_at,
-                    timezone_name=proposal.timezone,
+                    timezone_name=proposal_timezone,
                     repeat_rule=None,
                     runtime_options=None,
                     metadata=dict(existing_schedule.meta or {}),
                 )
-                before_retry = await _counts(session, channel.id)
+                before_retry = await _counts(session, channel_id)
                 recovery_service = AdminAgentSeriesApprovalService(
                     session,
                     now_utc=NOW + timedelta(seconds=31),
@@ -760,7 +764,7 @@ def test_series_multiple_exact_recovery_outcomes_fail_closed(monkeypatch) -> Non
                 assert failed is not None
                 assert failed.state == STATE_FAILED
                 assert "canonical recovery conflict" in str(failed.failure_reason)
-                assert await _counts(session, channel.id) == before_retry
+                assert await _counts(session, channel_id) == before_retry
         finally:
             await engine.dispose()
 
@@ -792,14 +796,17 @@ def test_series_crash_recovery_and_partial_failure_are_no_replay(monkeypatch) ->
                     count=3,
                     request_id="series-source-recovery-0001",
                 )
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
                 service = AdminAgentSeriesApprovalService(session, now_utc=NOW)
                 proposal = await service.create(
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
                     source_run_id=source.id,
                     request_id="series-recovery-0001",
                     slots=_slots(3),
                 )
+                proposal_id = int(proposal.id)
                 original_finalize = service._finalize_item
 
                 async def crash_after_bridge(*args, **kwargs):
@@ -808,17 +815,19 @@ def test_series_crash_recovery_and_partial_failure_are_no_replay(monkeypatch) ->
                 monkeypatch.setattr(service, "_finalize_item", crash_after_bridge)
                 with pytest.raises(RuntimeError, match="synthetic crash"):
                     await service.approve(
-                        batch_id=proposal.id,
-                        owner_tg_user_id=owner.tg_user_id,
-                        channel_id=channel.id,
-                        reviewer_tg_user_id=owner.tg_user_id,
+                        batch_id=proposal_id,
+                        owner_tg_user_id=owner_id,
+                        channel_id=channel_id,
+                        reviewer_tg_user_id=owner_id,
                     )
-                assert await _counts(session, channel.id) == (1, 1, 0)
-                stored = await session.get(AdminAgentApprovalBatch, proposal.id)
+                assert await _counts(session, channel_id) == (1, 1, 0)
+                stored = await session.get(AdminAgentApprovalBatch, proposal_id)
                 assert stored is not None and stored.state == STATE_EXECUTING
-                stored_items = await service.items_for_batch(proposal.id)
+                stored_items = await service.items_for_batch(proposal_id)
                 assert stored_items[0].state == ITEM_EXECUTING
                 assert stored_items[0].schedule_entry_id is None
+                await session.refresh(owner)
+                await session.refresh(channel)
 
                 monkeypatch.setattr(service, "_finalize_item", original_finalize)
                 recovery_service = AdminAgentSeriesApprovalService(
@@ -826,13 +835,13 @@ def test_series_crash_recovery_and_partial_failure_are_no_replay(monkeypatch) ->
                     now_utc=NOW + timedelta(seconds=31),
                 )
                 recovered = await recovery_service.approve(
-                    batch_id=proposal.id,
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
-                    reviewer_tg_user_id=owner.tg_user_id,
+                    batch_id=proposal_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    reviewer_tg_user_id=owner_id,
                 )
                 assert recovered is not None and recovered.state == STATE_EXECUTED
-                assert await _counts(session, channel.id) == (3, 3, 0)
+                assert await _counts(session, channel_id) == (3, 3, 0)
 
                 source2 = await _source_run(
                     session,
@@ -847,8 +856,8 @@ def test_series_crash_recovery_and_partial_failure_are_no_replay(monkeypatch) ->
                     now_utc=NOW,
                 )
                 partial = await partial_service.create(
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
                     source_run_id=source2.id,
                     request_id="series-partial-0001",
                     slots=_slots(3, minute_offset=20),
@@ -889,9 +898,9 @@ def test_series_crash_recovery_and_partial_failure_are_no_replay(monkeypatch) ->
                 )
                 partial_result = await partial_service.approve(
                     batch_id=partial.id,
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
-                    reviewer_tg_user_id=owner.tg_user_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    reviewer_tg_user_id=owner_id,
                 )
                 assert partial_result is not None
                 assert partial_result.state == STATE_PARTIAL_FAILED
@@ -900,7 +909,7 @@ def test_series_crash_recovery_and_partial_failure_are_no_replay(monkeypatch) ->
                 assert final_items[0].schedule_entry_id is not None
                 assert final_items[1].state == "stale"
                 assert final_items[2].state == ITEM_PENDING
-                assert await _counts(session, channel.id) == (4, 4, 0)
+                assert await _counts(session, channel_id) == (4, 4, 0)
         finally:
             await engine.dispose()
 
