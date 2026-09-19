@@ -289,24 +289,23 @@ def test_approve_uses_canonical_facade_once_and_has_no_provider_side_effect(
             Session = async_sessionmaker(engine, expire_on_commit=False)
             async with Session() as session:
                 owner, channel = await _setup_channel(session, tg_user_id=9914)
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
                 item = await _draft(
                     session,
                     channel_id=channel_id,
                     owner_tg_user_id=owner_id,
                 )
+                item_id = int(item.id)
                 now = datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc)
                 service = AdminAgentApprovalService(session, now_utc=now)
                 approval = await service.create_schedule_draft_tomorrow(
                     owner_tg_user_id=owner_id,
                     channel_id=channel_id,
-                    content_item_id=item.id,
+                    content_item_id=item_id,
                     local_time_value="17:15",
                     request_id="approval-execute-0001",
                 )
-
-                owner_id = int(owner.tg_user_id)
-                channel_id = int(channel.id)
-                item_id = int(item.id)
                 approval_id = int(approval.id)
 
                 original_queue = LegacyPublicationBridge.queue
