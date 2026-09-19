@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   AssistantAutomations,
+  automationAvailableControls,
   automationCadenceLabel,
   automationDataView,
+  automationHealthLabel,
   automationScheduleSummary,
   eligibleAutomationSkills,
   mergeAssistantAutomation,
@@ -66,10 +68,45 @@ function automation(id = 1): AssistantAutomationView {
       local_time: '09:30',
       weekday: 2,
     },
+    automation_policy: 'bounded',
     timezone: 'Europe/Berlin',
     enabled: true,
+    disabled_reason: null,
+    disabled_at: null,
     next_run_at: '2026-09-23T07:30:00Z',
     last_scheduled_for: null,
+    last_outcome: 'run_recorded',
+    last_outcome_at: '2026-09-19T08:00:00Z',
+    health: 'active',
+    health_reason: 'healthy',
+    claim_active: false,
+    claimed_at: null,
+    latest_run: null,
+    usage_7d: {
+      occurrence_runs: 1,
+      completed: 1,
+      failed: 0,
+      restart_required_or_manual_resume: 0,
+      tokens_used: 17,
+    },
+    usage_30d: {
+      occurrence_runs: 2,
+      completed: 2,
+      failed: 0,
+      restart_required_or_manual_resume: 0,
+      tokens_used: 29,
+    },
+    execution_limits: {
+      max_steps: 4,
+      max_tool_calls: 0,
+      max_llm_calls: 1,
+      max_seconds: 20,
+    },
+    cadence_occurrences_per_week: 1,
+    post_count: null,
+    migration_available: false,
+    suggested_skill_id: null,
+    suggested_skill_version: null,
     request_id: `automation-request-${id}`,
     definition_fingerprint: 'a'.repeat(64),
     created_at: '2026-09-19T08:00:00Z',
@@ -190,6 +227,75 @@ describe('Assistant automations', () => {
     expect(second.started).toBe(false);
     release();
     expect((await first).started).toBe(true);
+  });
+
+
+  it('derives health labels and bounded controls without any retry action', () => {
+    const active = automation(10);
+    expect(automationHealthLabel(active)).toContain('Активна');
+    expect(automationAvailableControls(active)).toEqual(['pause', 'history']);
+
+    const paused: AssistantAutomationView = {
+      ...active,
+      enabled: false,
+      disabled_reason: 'manual_pause',
+      disabled_at: '2026-09-19T09:00:00Z',
+      health: 'paused',
+      health_reason: 'manual_pause',
+    };
+    expect(automationHealthLabel(paused)).toContain('Приостановлена');
+    expect(automationAvailableControls(paused)).toEqual(['enable', 'history']);
+
+    const blocked: AssistantAutomationView = {
+      ...paused,
+      disabled_reason: 'unsupported_skill_version',
+      health: 'blocked',
+      health_reason: 'unsupported_skill_version',
+      migration_available: true,
+      suggested_skill_id: 'attention_today',
+      suggested_skill_version: '2',
+    };
+    expect(automationHealthLabel(blocked)).toContain('Заблокирована');
+    expect(automationAvailableControls(blocked)).toEqual(['history', 'replacement']);
+    expect(automationAvailableControls(blocked)).not.toContain('enable');
+
+    const needsAttention: AssistantAutomationView = {
+      ...active,
+      health: 'needs_attention',
+      health_reason: 'manual_resume_available',
+      latest_run: {
+        id: 101,
+        scheduled_for: '2026-09-19T07:30:00Z',
+        status: 'failed',
+        workflow_phase: 'generation_validated',
+        resumable: true,
+        resume_state: 'available',
+        tokens_used: 11,
+        model: 'provider/model',
+        created_at: '2026-09-19T07:30:00Z',
+        started_at: '2026-09-19T07:30:00Z',
+        finished_at: null,
+        result_kind: 'content_drafts',
+        result_metadata: {},
+      },
+    };
+    expect(automationHealthLabel(needsAttention)).toContain('Требует внимания');
+    expect(automationAvailableControls(needsAttention)).toEqual([
+      'pause',
+      'resume',
+      'history',
+    ]);
+    expect(automationAvailableControls(needsAttention)).not.toContain('retry' as never);
+  });
+
+  it('invalidates stale automation-history ownership when selection changes', () => {
+    const ownership = new ChannelRequestOwnership();
+    const first = ownership.begin(7, '10');
+    expect(ownership.isCurrent(first, 7, '10')).toBe(true);
+    const second = ownership.begin(7, '11');
+    expect(ownership.isCurrent(first, 7, '11')).toBe(false);
+    expect(ownership.isCurrent(second, 7, '11')).toBe(true);
+    expect(ownership.isCurrent(second, 8, '11')).toBe(false);
   });
 
   it('merges server-idempotent definitions and renders pinned cadence/timezone/next run', () => {
