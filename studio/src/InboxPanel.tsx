@@ -478,8 +478,8 @@ export function InboxPanel({
         </div>
       </header>
 
-      {error?.channelId === channel.id && <div className="banner error" role="alert">{error.message}<button onClick={() => setError(null)}>×</button></div>}
-      {notice && <InlineStatus className="banner success">{notice}<button onClick={() => setNotice(null)}>×</button></InlineStatus>}
+      {error?.channelId === channel.id && <div className="banner error" role="alert">{error.message}<button aria-label="Закрыть ошибку" onClick={() => setError(null)}>×</button></div>}
+      {notice && <InlineStatus className="banner success">{notice}<button aria-label="Закрыть уведомление" onClick={() => setNotice(null)}>×</button></InlineStatus>}
 
       <section className="sources-inbox-card inbox-standalone-card">
         <div className="panel-heading">
