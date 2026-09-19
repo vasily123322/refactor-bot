@@ -272,6 +272,27 @@ class AdminAgentSeriesApprovalService:
             ).scalars()
         )
 
+    async def latest_for_source_run(
+        self,
+        *,
+        owner_tg_user_id: int,
+        channel_id: int,
+        source_run_id: int,
+    ) -> AdminAgentApprovalBatch | None:
+        return (
+            await self.session.execute(
+                select(AdminAgentApprovalBatch)
+                .where(
+                    AdminAgentApprovalBatch.owner_tg_user_id == int(owner_tg_user_id),
+                    AdminAgentApprovalBatch.channel_id == int(channel_id),
+                    AdminAgentApprovalBatch.source_run_id == int(source_run_id),
+                    AdminAgentApprovalBatch.action_type == ACTION_SCHEDULE_CONTENT_SERIES,
+                )
+                .order_by(AdminAgentApprovalBatch.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
     async def items_for_batch(
         self,
         batch_id: int,
