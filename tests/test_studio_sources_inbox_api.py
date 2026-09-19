@@ -240,3 +240,104 @@ def test_manual_ingest_routes_telegram_through_mtproto_adapter(monkeypatch) -> N
             await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_sources_inbox_candidate_history_cursor_crosses_null_tail(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            monkeypatch.setattr(studio_app_module, "AsyncSessionLocal", Session)
+            monkeypatch.setattr(sources_api_module, "AsyncSessionLocal", Session)
+
+            published_at = datetime(2026, 9, 19, 12, 0, 0, tzinfo=timezone.utc)
+            async with Session() as session:
+                owner = await ClientsRepo(session).create_or_get(5201, "history", "History")
+                channel = await ChannelsRepo(session).create(owner.id, -1005201, "History")
+                repo = SourcesRepo(session)
+                connector = await repo.create_connector(
+                    channel_id=channel.id,
+                    kind="rss",
+                    value="https://example.com/history.xml",
+                    mode="summary",
+                    reuse_policy="summarize",
+                )
+
+                candidate_ids: list[int] = []
+                for index in range(5):
+                    document, _ = await repo.upsert_document(
+                        connector=connector,
+                        external_id=f"entry-{index}",
+                        title=f"Candidate {index}",
+                        content=f"Body {index}",
+                        source_url=f"https://example.com/history/{index}",
+                        published_at=published_at if index < 3 else None,
+                        metadata={"reuse_policy": "summarize"},
+                    )
+                    candidate = await repo.ensure_candidate(
+                        source_document_id=document.id,
+                        channel_id=channel.id,
+                        suggested_action="summarize",
+                        metadata={"reuse_policy": "summarize"},
+                    )
+                    candidate_ids.append(int(candidate.id))
+                await session.commit()
+
+            non_null_ids = sorted(candidate_ids[:3], reverse=True)
+            null_ids = sorted(candidate_ids[3:], reverse=True)
+
+            app = create_studio_app(_config())
+            headers = {"X-Telegram-Init-Data": _init_data(5201)}
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://studio") as client:
+                first = await client.get(
+                    f"/api/studio/channels/{channel.id}/candidates",
+                    headers=headers,
+                    params={"limit": 2},
+                )
+                assert first.status_code == 200
+                first_rows = first.json()
+                assert [row["id"] for row in first_rows] == non_null_ids[:2]
+                assert all(row["published_at"] is not None for row in first_rows)
+
+                second = await client.get(
+                    f"/api/studio/channels/{channel.id}/candidates",
+                    headers=headers,
+                    params={
+                        "limit": 2,
+                        "before_published_at": first_rows[-1]["published_at"],
+                        "before_id": first_rows[-1]["id"],
+                    },
+                )
+                assert second.status_code == 200
+                second_rows = second.json()
+                assert [row["id"] for row in second_rows] == [non_null_ids[2], null_ids[0]]
+                assert second_rows[0]["published_at"] is not None
+                assert second_rows[1]["published_at"] is None
+
+                third = await client.get(
+                    f"/api/studio/channels/{channel.id}/candidates",
+                    headers=headers,
+                    params={
+                        "limit": 2,
+                        "before_id": second_rows[-1]["id"],
+                    },
+                )
+                assert third.status_code == 200
+                third_rows = third.json()
+                assert [row["id"] for row in third_rows] == [null_ids[1]]
+                assert third_rows[0]["published_at"] is None
+
+                invalid = await client.get(
+                    f"/api/studio/channels/{channel.id}/candidates",
+                    headers=headers,
+                    params={"before_published_at": published_at.isoformat()},
+                )
+                assert invalid.status_code == 422
+                assert "before_id is required" in invalid.json()["detail"]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
