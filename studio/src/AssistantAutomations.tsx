@@ -516,6 +516,12 @@ export function AssistantAutomations({
       createLockRef.current,
       `replacement:${automation.id}`,
       async () => {
+        const token = createOwnershipRef.current.begin(channelId, `replacement:${automation.id}`);
+        const isCurrent = () => createOwnershipRef.current.isCurrent(
+          token,
+          channelIdRef.current,
+          `replacement:${automation.id}`,
+        );
         setReplacementBusyIds((previous) => new Set(previous).add(automation.id));
         setError(null);
         try {
@@ -532,15 +538,15 @@ export function AssistantAutomations({
                 : {}),
             },
           });
-          if (channelIdRef.current !== channelId) return;
+          if (!isCurrent()) return;
           replacementRequestIdsRef.current.delete(automation.id);
           setAutomations((previous) => mergeAssistantAutomation(previous, created));
         } catch (reason) {
-          if (channelIdRef.current === channelId) {
+          if (isCurrent()) {
             setError({ channelId, message: automationErrorMessage(reason) });
           }
         } finally {
-          if (channelIdRef.current === channelId) {
+          if (isCurrent()) {
             setReplacementBusyIds((previous) => {
               const next = new Set(previous);
               next.delete(automation.id);
