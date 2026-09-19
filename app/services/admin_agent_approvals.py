@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, time, timedelta, timezone
 from hashlib import sha256
-import json
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -646,16 +646,55 @@ class AdminAgentApprovalService:
                 reason=stale_reason,
             )
 
-        approval.state = STATE_EXECUTING
-        approval.execution_key = approval.execution_key or _execution_key(approval)
-        approval.execution_claim_token = _claim_token()
-        approval.execution_claimed_at = self.now_utc
-        approval.reviewer_tg_user_id = int(reviewer_tg_user_id)
-        approval.reviewed_at = self.now_utc
-        approval.failure_reason = None
+        execution_key = approval.execution_key or _execution_key(approval)
+        claim_token = _claim_token()
+        transition = await self.session.execute(
+            update(AdminAgentApproval)
+            .where(
+                AdminAgentApproval.id == int(approval.id),
+                AdminAgentApproval.owner_tg_user_id == int(owner_tg_user_id),
+                AdminAgentApproval.channel_id == int(channel_id),
+                AdminAgentApproval.state == STATE_PENDING_REVIEW,
+            )
+            .values(
+                state=STATE_EXECUTING,
+                execution_key=execution_key,
+                execution_claim_token=claim_token,
+                execution_claimed_at=self.now_utc,
+                reviewer_tg_user_id=int(reviewer_tg_user_id),
+                reviewed_at=self.now_utc,
+                failure_reason=None,
+            )
+        )
         await self.session.commit()
-        await self.session.refresh(approval)
-        return await self._execute_claimed(approval)
+        if int(transition.rowcount or 0) != 1:
+            # Another approver won the durable transition. Re-enter through the
+            # executing recovery path; a fresh claim prevents a second queue call.
+            return await self.approve(
+                approval_id=approval_id,
+                owner_tg_user_id=owner_tg_user_id,
+                channel_id=channel_id,
+                reviewer_tg_user_id=reviewer_tg_user_id,
+            )
+
+        claimed = await self._load(
+            approval_id=approval_id,
+            owner_tg_user_id=owner_tg_user_id,
+            channel_id=channel_id,
+        )
+        if claimed is None:
+            raise ApprovalExecutionError("approval disappeared after execution claim")
+
+        # Revalidate once more after the claim commit so edits or a competing
+        # canonical schedule that landed during review cannot be silently ignored.
+        stale_after_claim = await self._stale_reason(claimed)
+        if stale_after_claim is not None:
+            return await self._mark_stale(
+                claimed,
+                reviewer_tg_user_id=reviewer_tg_user_id,
+                reason=stale_after_claim,
+            )
+        return await self._execute_claimed(claimed)
 
     async def reject(
         self,
