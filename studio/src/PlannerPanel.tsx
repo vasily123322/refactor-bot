@@ -355,6 +355,7 @@ export function PlannerPanel({
                           <div className="planner-reschedule">
                             <input
                               type="datetime-local"
+                              aria-label="Новая дата и время публикации"
                               value={editingValue}
                               onChange={(event) => setEditingValue(event.target.value)}
                             />

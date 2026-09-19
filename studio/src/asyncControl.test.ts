@@ -89,6 +89,15 @@ describe('channel async load ownership', () => {
     expect(resolveChannelDataView(error, 3, 0)).toBe('error-without-valid-data');
     expect(resolveChannelDataView(loaded, 3, 0)).toBe('loaded-empty');
   });
+
+  it('App same-channel content refresh gives ownership to the newest request', () => {
+    const ownership = new ChannelRequestOwnership();
+    const first = ownership.begin(3);
+    const second = ownership.begin(3);
+
+    expect(ownership.isCurrent(first, 3)).toBe(false);
+    expect(ownership.isCurrent(second, 3)).toBe(true);
+  });
 });
 
 describe('App exclusive operation ownership', () => {
@@ -160,6 +169,34 @@ describe('App exclusive operation ownership', () => {
     releaseMove();
     await reschedule;
     expect(scheduleOne.isLocked()).toBe(false);
+  });
+
+  it('Sources serialize one connector mutation without blocking another connector', async () => {
+    const sourceOne = new ExclusiveOperationLock();
+    const sourceTwo = new ExclusiveOperationLock();
+    let releaseDoctor!: () => void;
+    const doctorGate = new Promise<void>((resolve) => { releaseDoctor = resolve; });
+    let conflictingSettings = 0;
+    let unrelatedIngest = 0;
+
+    const doctor = runExclusiveOperation(sourceOne, 'doctor:1', async () => {
+      await doctorGate;
+    });
+    const settings = await runExclusiveOperation(sourceOne, 'settings:1', async () => {
+      conflictingSettings += 1;
+    });
+    const ingest = await runExclusiveOperation(sourceTwo, 'ingest:2', async () => {
+      unrelatedIngest += 1;
+    });
+
+    expect(settings.started).toBe(false);
+    expect(conflictingSettings).toBe(0);
+    expect(ingest.started).toBe(true);
+    expect(unrelatedIngest).toBe(1);
+
+    releaseDoctor();
+    await doctor;
+    expect(sourceOne.isLocked()).toBe(false);
   });
 
   it('does not release a newer holder when an old token is released again', () => {

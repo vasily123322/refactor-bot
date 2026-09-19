@@ -5,6 +5,7 @@ import { AIStudioPanel } from './AIStudioPanel';
 import { AssistantPanel } from './AssistantPanel';
 import { AsyncRegion, InlineStatus, SkeletonBlock } from './AsyncUI';
 import {
+  ChannelRequestOwnership,
   ExclusiveOperationLock,
   resolveChannelDataView,
   runExclusiveOperation,
@@ -192,6 +193,7 @@ export default function App() {
   const inFlightSaveRef = useRef<Promise<boolean> | null>(null);
   const inFlightPreviewRef = useRef<Promise<void> | null>(null);
   const loadedItemsChannelRef = useRef<number | null>(null);
+  const contentRequestOwnershipRef = useRef(new ChannelRequestOwnership());
   const operationLockRef = useRef(new ExclusiveOperationLock());
 
   useTelegramDirtyClosingProtection(dirty);
@@ -207,19 +209,26 @@ export default function App() {
     [channels, selectedChannelId],
   );
 
-  const loadItems = useCallback(async (channelId: number) => {
+  const loadItems = useCallback(async (channelId: number): Promise<boolean> => {
+    const token = contentRequestOwnershipRef.current.begin(channelId);
+    const isCurrent = () => contentRequestOwnershipRef.current.isCurrent(
+      token,
+      channelIdRef.current,
+    );
     const hasValidData = loadedItemsChannelRef.current === channelId;
-    if (channelIdRef.current === channelId && !hasValidData) {
+    if (isCurrent() && !hasValidData) {
       setItemsLoadState({ channelId, phase: 'loading' });
     }
     try {
       const rows = await studioApi.content(channelId);
-      if (channelIdRef.current !== channelId) return;
+      if (!isCurrent()) return false;
       loadedItemsChannelRef.current = channelId;
       setItems(rows);
       setItemsLoadState({ channelId, phase: 'loaded' });
+      return true;
     } catch (reason) {
-      if (channelIdRef.current === channelId && loadedItemsChannelRef.current !== channelId) {
+      if (!isCurrent()) return false;
+      if (loadedItemsChannelRef.current !== channelId) {
         setItems([]);
         setItemsLoadState({ channelId, phase: 'error-without-valid-data' });
       }
@@ -380,6 +389,7 @@ export default function App() {
 
   useEffect(() => {
     if (selectedChannelId === null) {
+      contentRequestOwnershipRef.current.invalidate();
       loadedItemsChannelRef.current = null;
       setItems([]);
       setItemsLoadState(null);
@@ -646,13 +656,13 @@ export default function App() {
             {error && (
               <div className="banner error" role="alert">
                 {error}
-                <button onClick={() => setError(null)}>×</button>
+                <button aria-label="Закрыть ошибку" onClick={() => setError(null)}>×</button>
               </div>
             )}
             {notice && (
               <InlineStatus className="banner success">
                 {notice}
-                <button onClick={() => setNotice(null)}>×</button>
+                <button aria-label="Закрыть уведомление" onClick={() => setNotice(null)}>×</button>
               </InlineStatus>
             )}
 

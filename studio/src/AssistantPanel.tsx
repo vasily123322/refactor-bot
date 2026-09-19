@@ -1277,7 +1277,7 @@ export function AssistantPanel({
       {error?.channelId === channel.id && (
         <div className="banner error" role="alert">
           {error.message}
-          <button onClick={() => setError(null)}>×</button>
+          <button aria-label="Закрыть ошибку" onClick={() => setError(null)}>×</button>
         </div>
       )}
 
