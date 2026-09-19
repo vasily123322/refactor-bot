@@ -315,7 +315,7 @@ function SeriesApprovalSection({
   const previousStateRef = useRef<string | null>(approval?.state ?? null);
   const approvalState = approval?.state ?? null;
   const canCreate = !approval
-    || ['rejected', 'stale', 'partial_failed', 'failed'].includes(approval.state);
+    || ['rejected', 'stale', 'failed'].includes(approval.state);
   const canReview = approval?.state === 'pending_review';
   const canRecover = approval?.state === 'executing';
   const slotsComplete = slots.length === result.requested_post_count
