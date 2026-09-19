@@ -194,6 +194,48 @@ def test_editorial_context_is_channel_scoped_and_bounded() -> None:
     asyncio.run(run())
 
 
+def test_editorial_context_keeps_promptbuilder_memory_and_profile_contracts() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                _owner, channel = await _setup_channel(session, tg_user_id=9915)
+                ai = await ChannelAISettingsRepo(session).get_or_create(channel.id)
+                ai.tone = "expert"
+                ai.filters = {
+                    "memory": {
+                        "brand": "D_MEMORY_BRAND",
+                        "style": "D_MEMORY_STYLE",
+                    },
+                    "publication_profile": "analysis",
+                }
+                await session.commit()
+
+                _settings, _model, system_prompt, user_prompt = await AIGenerationService(
+                    session
+                ).build_prompt(
+                    channel.id,
+                    mode="from_scratch",
+                    topic="EDITORIAL_CONTEXT_JSON:{\"items\":[]}",
+                    extra={
+                        "force_custom": False,
+                        "date": "2026-09-20",
+                        "schedule": "",
+                    },
+                )
+                assert "D_MEMORY_BRAND" in system_prompt
+                assert "D_MEMORY_STYLE" in system_prompt
+                assert "Профиль публикации — Разбор" in system_prompt
+                assert "EDITORIAL_CONTEXT_JSON" in user_prompt
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_resume_after_validated_checkpoint_does_not_call_llm_twice(monkeypatch) -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -364,18 +406,21 @@ def test_partial_persisted_artifact_set_fails_closed_without_new_drafts() -> Non
             Session = async_sessionmaker(engine, expire_on_commit=False)
             async with Session() as session:
                 owner, channel = await _setup_channel(session, tg_user_id=9939)
+                channel_id = int(channel.id)
+                owner_tg_user_id = int(owner.tg_user_id)
                 item = await ContentRepo(session).create(
-                    channel_id=channel.id,
+                    channel_id=channel_id,
                     title="Existing owned draft",
                     document=PostDocument(
                         blocks=[{"id": "existing", "type": "text", "text": "Canonical draft"}]
                     ),
-                    created_by_tg_user_id=owner.tg_user_id,
+                    created_by_tg_user_id=owner_tg_user_id,
                     source="admin_agent",
                 )
+                item_id = int(item.id)
                 run_row = AdminAgentRun(
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
+                    owner_tg_user_id=owner_tg_user_id,
+                    channel_id=channel_id,
                     scenario="drafts_tomorrow",
                     request_id="partial-artifacts-0001",
                     skill_id="drafts_tomorrow",
@@ -405,26 +450,27 @@ def test_partial_persisted_artifact_set_fails_closed_without_new_drafts() -> Non
                         run_id=run_row.id,
                         artifact_type="content_draft",
                         ordinal=1,
-                        content_item_id=item.id,
+                        content_item_id=item_id,
                         content_revision=1,
                     )
                 )
                 await session.commit()
-                before = await _count(session, ContentItem, channel_id=channel.id)
+                run_id = int(run_row.id)
+                before = await _count(session, ContentItem, channel_id=channel_id)
 
                 resumed = await AdminAgentRunner(
                     session,
                     limits=DRAFT_SCENARIO_LIMITS,
                     now_utc=now,
                 ).resume_drafts_tomorrow(
-                    channel_id=channel.id,
-                    owner_tg_user_id=owner.tg_user_id,
-                    run_id=run_row.id,
+                    channel_id=channel_id,
+                    owner_tg_user_id=owner_tg_user_id,
+                    run_id=run_id,
                 )
                 assert resumed.status == "failed"
                 assert resumed.workflow_phase == PHASE_FAILED_CLOSED
                 assert resumed.checkpoint is None
-                assert await _count(session, ContentItem, channel_id=channel.id) == before
+                assert await _count(session, ContentItem, channel_id=channel_id) == before
                 assert await _count(session, AdminAgentRunArtifact) == 1
         finally:
             await engine.dispose()
@@ -442,9 +488,11 @@ def test_resume_claim_and_fail_closed_states() -> None:
             Session = async_sessionmaker(engine, expire_on_commit=False)
             async with Session() as session:
                 owner, channel = await _setup_channel(session, tg_user_id=9941)
+                channel_id = int(channel.id)
+                owner_tg_user_id = int(owner.tg_user_id)
                 run_row = AdminAgentRun(
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
+                    owner_tg_user_id=owner_tg_user_id,
+                    channel_id=channel_id,
                     scenario="drafts_tomorrow",
                     request_id="claim-test-0001",
                     skill_id="drafts_tomorrow",
@@ -473,6 +521,7 @@ def test_resume_claim_and_fail_closed_states() -> None:
                 session.add(run_row)
                 await session.commit()
                 await session.refresh(run_row)
+                run_id = int(run_row.id)
 
                 with pytest.raises(AgentExecutionBusy):
                     await AdminAgentRunner(
@@ -480,11 +529,13 @@ def test_resume_claim_and_fail_closed_states() -> None:
                         limits=DRAFT_SCENARIO_LIMITS,
                         now_utc=now,
                     ).resume_drafts_tomorrow(
-                        channel_id=channel.id,
-                        owner_tg_user_id=owner.tg_user_id,
-                        run_id=run_row.id,
+                        channel_id=channel_id,
+                        owner_tg_user_id=owner_tg_user_id,
+                        run_id=run_id,
                     )
 
+                run_row = await session.get(AdminAgentRun, run_id)
+                assert run_row is not None
                 run_row.execution_claimed_at = now - timedelta(minutes=5)
                 await session.commit()
                 recovered = await AdminAgentRunner(
@@ -492,17 +543,17 @@ def test_resume_claim_and_fail_closed_states() -> None:
                     limits=DRAFT_SCENARIO_LIMITS,
                     now_utc=now,
                 ).resume_drafts_tomorrow(
-                    channel_id=channel.id,
-                    owner_tg_user_id=owner.tg_user_id,
-                    run_id=run_row.id,
+                    channel_id=channel_id,
+                    owner_tg_user_id=owner_tg_user_id,
+                    run_id=run_id,
                 )
                 assert recovered.status == "completed"
                 assert recovered.execution_claim_token is None
-                assert await _count(session, ContentItem, channel_id=channel.id) == 3
+                assert await _count(session, ContentItem, channel_id=channel_id) == 3
 
                 unknown = AdminAgentRun(
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
+                    owner_tg_user_id=owner_tg_user_id,
+                    channel_id=channel_id,
                     scenario="drafts_tomorrow",
                     request_id="unknown-version-0001",
                     skill_id="drafts_tomorrow",
@@ -521,14 +572,14 @@ def test_resume_claim_and_fail_closed_states() -> None:
                         limits=DRAFT_SCENARIO_LIMITS,
                         now_utc=now,
                     ).resume_drafts_tomorrow(
-                        channel_id=channel.id,
-                        owner_tg_user_id=owner.tg_user_id,
+                        channel_id=channel_id,
+                        owner_tg_user_id=owner_tg_user_id,
                         run_id=unknown.id,
                     )
 
                 malformed = AdminAgentRun(
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
+                    owner_tg_user_id=owner_tg_user_id,
+                    channel_id=channel_id,
                     scenario="drafts_tomorrow",
                     request_id="malformed-0001",
                     skill_id="drafts_tomorrow",
@@ -546,8 +597,8 @@ def test_resume_claim_and_fail_closed_states() -> None:
                     limits=DRAFT_SCENARIO_LIMITS,
                     now_utc=now,
                 ).resume_drafts_tomorrow(
-                    channel_id=channel.id,
-                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel_id,
+                    owner_tg_user_id=owner_tg_user_id,
                     run_id=malformed.id,
                 )
                 assert failed_closed.status == "failed"
