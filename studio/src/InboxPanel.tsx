@@ -221,8 +221,13 @@ export function InboxPanel({
     action: (isCurrent: () => boolean) => Promise<unknown>,
   ): Promise<boolean> => {
     const operationChannelId = channelIdRef.current;
+    const operationScopeKey = scopeKeyRef.current;
     const operationContextToken = operationContextRef.current.token;
-    if (operationChannelId === null || operationContextToken === null) return false;
+    if (
+      operationChannelId === null
+      || operationScopeKey === null
+      || operationContextToken === null
+    ) return false;
 
     let lock = operationLocksRef.current.get(operationChannelId);
     if (!lock) {
@@ -235,7 +240,7 @@ export function InboxPanel({
       : candidateId
         ? `candidate:${candidateId}`
         : null;
-    const busyKey = `${operationChannelId}:${key}`;
+    const busyKey = `${operationChannelId}:${operationScopeKey}:${key}`;
     const result = await runScopedExclusiveOperation(
       lock,
       scope,
@@ -244,13 +249,18 @@ export function InboxPanel({
         const isCurrent = () => operationContextOwnershipRef.current.isCurrent(
           operationContextToken,
           channelIdRef.current,
+          scopeKeyRef.current,
         );
         if (isCurrent()) setError(null);
         try {
           await action(isCurrent);
         } catch (reason) {
           if (isCurrent()) {
-            setError({ channelId: operationChannelId, message: errorMessage(reason) });
+            setError({
+              channelId: operationChannelId,
+              scopeKey: operationScopeKey,
+              message: errorMessage(reason),
+            });
           }
         }
       },
@@ -264,7 +274,9 @@ export function InboxPanel({
     return result.started;
   };
 
-  const currentBusyPrefix = channelIdRef.current === null ? null : `${channelIdRef.current}:`;
+  const currentBusyPrefix = channelIdRef.current === null || scopeKeyRef.current === null
+    ? null
+    : `${channelIdRef.current}:${scopeKeyRef.current}:`;
   const currentBusyKeys = currentBusyPrefix === null
     ? []
     : Array.from(busyKeys)
@@ -288,6 +300,7 @@ export function InboxPanel({
     if (key.startsWith('promote-media:')) return 'Сохраняю media в медиатеку…';
     if (key.startsWith('draft:')) return 'Создаю черновик…';
     if (key.startsWith('dismiss:')) return 'Скрываю материал…';
+    if (key.startsWith('restore:')) return 'Восстанавливаю материал…';
     return 'Выполняю действие…';
   };
 
@@ -501,6 +514,14 @@ export function InboxPanel({
         delete next[candidate.id];
         return next;
       });
+    });
+
+  const restore = (candidate: ContentCandidateView) =>
+    run(`restore:${candidate.id}`, async (isCurrent) => {
+      await studioApi.restoreCandidate(channel!.id, candidate.id);
+      if (!isCurrent()) return;
+      setCandidates((current) => current.filter((row) => row.id !== candidate.id));
+      setNotice('Материал восстановлен в «Новые»');
     });
 
   const acceptDraft = (candidate: ContentCandidateView) =>
