@@ -17,11 +17,13 @@ from app.api.studio.app import create_studio_app
 from app.api.studio.config import StudioConfig
 from app.core.config import settings
 from app.core.db import Base
+from app.domain.admin_agent import AdminAgentRun
 from app.domain.content import PostDocument
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
 from app.repositories.content import ContentRepo
+from app.services.admin_agent_approvals import AdminAgentApprovalService
 
 
 def _init_data(user_id: int) -> str:
@@ -263,3 +265,120 @@ def test_studio_approval_routes_are_owner_scoped_bounded_and_idempotent(monkeypa
             await engine.dispose()
 
     asyncio.run(run())
+
+def test_visible_run_approval_lookup_survives_newer_channel_approvals(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            monkeypatch.setattr(studio_app_module, "AsyncSessionLocal", Session)
+            monkeypatch.setattr(admin_agent_api_module, "AsyncSessionLocal", Session)
+
+            async with Session() as session:
+                owner = await ClientsRepo(session).create_or_get(9961, "owner", "Owner")
+                channel = await ChannelsRepo(session).create(owner.id, -1009961, "Owned")
+                source_run = AdminAgentRun(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    scenario="drafts_tomorrow",
+                    request_id="source-draft-association-0001",
+                    status="completed",
+                    model=None,
+                    tokens_used=0,
+                    result={},
+                    error=None,
+                )
+                session.add(source_run)
+                await session.commit()
+                await session.refresh(source_run)
+
+                target = await ContentRepo(session).create(
+                    channel_id=channel.id,
+                    document=PostDocument(
+                        blocks=[{"id": "target", "type": "text", "text": "Target draft"}]
+                    ),
+                    status="draft",
+                    title="Target",
+                    created_by_tg_user_id=owner.tg_user_id,
+                    metadata={
+                        "admin_agent_run_id": source_run.id,
+                        "admin_agent_scenario": "drafts_tomorrow",
+                    },
+                )
+                noise_items = await ContentRepo(session).create_batch(
+                    channel_id=channel.id,
+                    items=[
+                        {
+                            "document": PostDocument(
+                                blocks=[
+                                    {
+                                        "id": f"noise-{index}",
+                                        "type": "text",
+                                        "text": f"Noise {index}",
+                                    }
+                                ]
+                            ),
+                            "title": f"Noise {index}",
+                            "metadata": {},
+                        }
+                        for index in range(50)
+                    ],
+                    status="draft",
+                    created_by_tg_user_id=owner.tg_user_id,
+                )
+                service = AdminAgentApprovalService(
+                    session,
+                    now_utc=datetime(2026, 9, 19, 7, 0, tzinfo=timezone.utc),
+                )
+                target_approval = await service.create_schedule_draft_tomorrow(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    content_item_id=target.id,
+                    local_time_value="14:30",
+                    request_id="target-approval-association-0001",
+                )
+                for index, item in enumerate(noise_items):
+                    await service.create_schedule_draft_tomorrow(
+                        owner_tg_user_id=owner.tg_user_id,
+                        channel_id=channel.id,
+                        content_item_id=item.id,
+                        local_time_value="14:30",
+                        request_id=f"noise-approval-{index:04d}",
+                    )
+
+            headers = {"X-Telegram-Init-Data": _init_data(9961)}
+            app = create_studio_app(_config())
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as client:
+                listing = await client.get(
+                    f"/api/studio/channels/{channel.id}/assistant/approvals",
+                    headers=headers,
+                )
+                assert listing.status_code == 200
+                assert len(listing.json()) == 50
+                assert target_approval.id not in {row["id"] for row in listing.json()}
+
+                targeted = await client.get(
+                    f"/api/studio/channels/{channel.id}/assistant/runs/{source_run.id}/approvals",
+                    headers=headers,
+                )
+                assert targeted.status_code == 200
+                assert [row["id"] for row in targeted.json()] == [target_approval.id]
+                assert targeted.json()[0]["content_item_id"] == target.id
+                assert targeted.json()[0]["state"] == "pending_review"
+
+                missing_run = await client.get(
+                    f"/api/studio/channels/{channel.id}/assistant/runs/999999/approvals",
+                    headers=headers,
+                )
+                assert missing_run.status_code == 404
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
