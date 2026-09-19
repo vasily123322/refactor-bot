@@ -267,6 +267,8 @@ export type AssistantSkillView = {
   resume_policy: string;
   resumable: boolean;
   approval_requirement: string;
+  automation_policy?: string;
+  automation_allowed?: boolean;
   execution_limits: AssistantExecutionLimits;
 };
 
@@ -368,6 +370,41 @@ export type AssistantRunView = {
   finished_at: string | null;
   created_at: string | null;
   events: AssistantEventView[];
+};
+
+export type AssistantAutomationCadence = {
+  kind: 'daily' | 'weekly';
+  local_time: string;
+  weekday: number | null;
+};
+
+export type AssistantAutomationView = {
+  id: number;
+  channel_id: number;
+  skill_id: string;
+  skill_version: string;
+  operator_input: Record<string, unknown>;
+  cadence: AssistantAutomationCadence;
+  timezone: string;
+  enabled: boolean;
+  next_run_at: string;
+  last_scheduled_for: string | null;
+  request_id: string;
+  definition_fingerprint: string;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type AssistantAutomationCreateInput = {
+  request_id: string;
+  skill_id: string;
+  skill_version: string;
+  operator_input: Record<string, unknown>;
+  cadence: {
+    kind: 'daily' | 'weekly';
+    local_time: string;
+    weekday?: number;
+  };
 };
 
 export type AssistantApprovalState =
@@ -622,6 +659,37 @@ export const studioApi = {
   assistantSkills: (channelId: number) =>
     request<AssistantSkillView[]>(
       `/api/studio/channels/${channelId}/assistant/skills`,
+    ),
+  assistantAutomations: (channelId: number) =>
+    request<AssistantAutomationView[]>(
+      `/api/studio/channels/${channelId}/assistant/automations`,
+    ),
+  assistantAutomation: (channelId: number, automationId: number) =>
+    request<AssistantAutomationView>(
+      `/api/studio/channels/${channelId}/assistant/automations/${automationId}`,
+    ),
+  createAssistantAutomation: (
+    channelId: number,
+    input: AssistantAutomationCreateInput,
+  ) =>
+    request<AssistantAutomationView>(
+      `/api/studio/channels/${channelId}/assistant/automations`,
+      {
+        method: 'POST',
+        body: JSON.stringify(input),
+      },
+    ),
+  setAssistantAutomationEnabled: (
+    channelId: number,
+    automationId: number,
+    enabled: boolean,
+  ) =>
+    request<AssistantAutomationView>(
+      `/api/studio/channels/${channelId}/assistant/automations/${automationId}/enabled`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ enabled }),
+      },
     ),
   assistantRuns: (channelId: number, limit = 10) =>
     request<AssistantRunView[]>(
