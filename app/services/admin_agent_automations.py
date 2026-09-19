@@ -667,6 +667,9 @@ class AdminAgentAutomationService:
             await self.session.commit()
             raise AutomationControlConflict(blocker)
 
+        if bool(row.enabled) and row.disabled_reason is None:
+            return row
+
         row.enabled = True
         row.disabled_reason = None
         row.disabled_at = None
