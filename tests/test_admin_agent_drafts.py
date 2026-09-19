@@ -504,7 +504,7 @@ def test_content_batch_rolls_back_when_second_flush_fails(monkeypatch) -> None:
 
                 # Restore flush before issuing SELECT, then prove the transaction left no row.
                 monkeypatch.setattr(session, "flush", original_flush)
-                assert await _content_count(session, channel.id) == 0
+                assert await _content_count(session, channel_id) == 0
         finally:
             await engine.dispose()
 
