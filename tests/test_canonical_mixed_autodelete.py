@@ -134,7 +134,6 @@ async def _seed(
             channel_id=int(channel.id),
             status="published",
             execution_mode="canonical",
-            legacy_post_task_id=None,
             telegram_message_ids=list(message_ids),
             result_link=f"https://t.me/c/{seed}/{message_ids[0]}",
             attempt_count=1,
