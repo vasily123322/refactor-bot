@@ -20,6 +20,7 @@ from app.services.admin_agent import (
     AdminAgentRunner,
     _normalize_content_series_input,
     _resolve_channel_timezone,
+    assistant_run_resume_state,
 )
 from app.services.admin_agent_skills import (
     AUTOMATION_BOUNDED,
@@ -37,6 +38,26 @@ CADENCE_WEEKLY = "weekly"
 MISFIRE_GRACE = timedelta(minutes=15)
 CLAIM_LEASE = timedelta(minutes=2)
 MAX_OCCURRENCES_PER_TICK = 5
+
+DISABLED_MANUAL_PAUSE = "manual_pause"
+DISABLED_OWNERSHIP_LOST = "ownership_lost"
+DISABLED_UNSUPPORTED_SKILL_VERSION = "unsupported_skill_version"
+DISABLED_INVALID_DEFINITION = "invalid_definition"
+SAFETY_DISABLED_REASONS = {
+    DISABLED_OWNERSHIP_LOST,
+    DISABLED_UNSUPPORTED_SKILL_VERSION,
+    DISABLED_INVALID_DEFINITION,
+}
+
+OUTCOME_RUN_RECORDED = "run_recorded"
+OUTCOME_MISFIRE_SKIPPED = "misfire_skipped"
+OUTCOME_SAFETY_DISABLED = "safety_disabled"
+
+HEALTH_ACTIVE = "active"
+HEALTH_PAUSED = "paused"
+HEALTH_BLOCKED = "blocked"
+HEALTH_NEEDS_ATTENTION = "needs_attention"
+
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _LOCAL_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -47,6 +68,12 @@ class AutomationInputError(ValueError):
 
 class AutomationIdempotencyConflict(RuntimeError):
     pass
+
+
+class AutomationControlConflict(RuntimeError):
+    def __init__(self, reason: str):
+        self.reason = str(reason)
+        super().__init__(self.reason)
 
 
 def _ensure_automation_skill(spec: AdminAgentSkillSpec) -> None:
@@ -244,6 +271,234 @@ class AdminAgentAutomationService:
             )
         )
 
+    async def _ownership_is_current(
+        self,
+        row: AdminAgentAutomation,
+    ) -> bool:
+        client = await self.session.scalar(
+            select(Client).where(Client.tg_user_id == int(row.owner_tg_user_id))
+        )
+        if client is None:
+            return False
+        channel = await self.session.get(Channel, int(row.channel_id))
+        return channel is not None and int(channel.owner_id) == int(client.id)
+
+    def _validated_definition(
+        self,
+        row: AdminAgentAutomation,
+    ) -> tuple[AdminAgentSkillSpec | None, str | None]:
+        stored_input = (
+            dict(row.operator_input)
+            if isinstance(row.operator_input, Mapping)
+            else {}
+        )
+        expected = automation_definition_fingerprint(
+            skill_id=str(row.skill_id),
+            skill_version=str(row.skill_version),
+            operator_input=stored_input,
+            cadence_kind=str(row.cadence_kind),
+            local_time_value=str(row.local_time),
+            weekday=row.weekday,
+            timezone_name=str(row.timezone),
+        )
+        if expected != str(row.definition_fingerprint):
+            return None, DISABLED_INVALID_DEFINITION
+        try:
+            spec = SKILL_REGISTRY.resolve(row.skill_id, row.skill_version)
+        except KeyError:
+            return None, DISABLED_UNSUPPORTED_SKILL_VERSION
+        try:
+            _ensure_automation_skill(spec)
+            normalized = normalize_automation_operator_input(spec, stored_input)
+        except AutomationInputError:
+            return None, DISABLED_INVALID_DEFINITION
+        if normalized != stored_input:
+            return None, DISABLED_INVALID_DEFINITION
+        return spec, None
+
+    def _migration_suggestion(
+        self,
+        row: AdminAgentAutomation,
+    ) -> dict[str, object] | None:
+        try:
+            current = SKILL_REGISTRY.current_for_skill_id(str(row.skill_id))
+            _ensure_automation_skill(current)
+            normalized = normalize_automation_operator_input(
+                current,
+                row.operator_input if isinstance(row.operator_input, Mapping) else None,
+            )
+        except (KeyError, AutomationInputError):
+            return None
+        if str(current.version) == str(row.skill_version):
+            return None
+        return {
+            "migration_available": True,
+            "suggested_skill_id": str(current.skill_id),
+            "suggested_skill_version": str(current.version),
+            "operator_input": normalized,
+        }
+
+    async def runs(
+        self,
+        *,
+        automation_id: int,
+        owner_tg_user_id: int,
+        channel_id: int,
+        limit: int = 20,
+    ) -> list[AdminAgentRun]:
+        return list(
+            (
+                await self.session.execute(
+                    select(AdminAgentRun)
+                    .where(
+                        AdminAgentRun.automation_id == int(automation_id),
+                        AdminAgentRun.owner_tg_user_id == int(owner_tg_user_id),
+                        AdminAgentRun.channel_id == int(channel_id),
+                    )
+                    .order_by(
+                        AdminAgentRun.scheduled_for.desc(),
+                        AdminAgentRun.id.desc(),
+                    )
+                    .limit(max(1, min(int(limit), 50)))
+                )
+            ).scalars()
+        )
+
+    async def operational_snapshot(
+        self,
+        row: AdminAgentAutomation,
+        *,
+        now_utc: datetime | None = None,
+    ) -> dict[str, object]:
+        now = as_utc(now_utc)
+        owner_current = await self._ownership_is_current(row)
+        spec, definition_blocker = self._validated_definition(row)
+        durable_reason = str(row.disabled_reason) if row.disabled_reason else None
+
+        latest_rows = await self.runs(
+            automation_id=int(row.id),
+            owner_tg_user_id=int(row.owner_tg_user_id),
+            channel_id=int(row.channel_id),
+            limit=1,
+        )
+        latest = latest_rows[0] if latest_rows else None
+
+        if not owner_current:
+            health = HEALTH_BLOCKED
+            health_reason = DISABLED_OWNERSHIP_LOST
+        elif definition_blocker is not None:
+            health = HEALTH_BLOCKED
+            health_reason = definition_blocker
+        elif durable_reason == DISABLED_MANUAL_PAUSE:
+            health = HEALTH_PAUSED
+            health_reason = DISABLED_MANUAL_PAUSE
+        elif durable_reason in SAFETY_DISABLED_REASONS:
+            health = HEALTH_BLOCKED
+            health_reason = durable_reason
+        elif not bool(row.enabled):
+            health = HEALTH_BLOCKED
+            health_reason = "disabled_without_reason"
+        else:
+            health = HEALTH_ACTIVE
+            health_reason = "healthy"
+            if latest is not None:
+                resumable, resume_state = assistant_run_resume_state(
+                    latest,
+                    now_utc=now,
+                )
+                phase = str(latest.workflow_phase or "")
+                if resumable:
+                    health = HEALTH_NEEDS_ATTENTION
+                    health_reason = "manual_resume_available"
+                elif resume_state == "restart_required" or phase == "restart_required":
+                    health = HEALTH_NEEDS_ATTENTION
+                    health_reason = "restart_required"
+                elif str(latest.status) == "failed" or phase in {"failed", "failed_closed"}:
+                    health = HEALTH_NEEDS_ATTENTION
+                    health_reason = (
+                        "failed_closed" if phase == "failed_closed" else "run_failed"
+                    )
+
+        recent = list(
+            (
+                await self.session.execute(
+                    select(AdminAgentRun)
+                    .where(
+                        AdminAgentRun.automation_id == int(row.id),
+                        AdminAgentRun.owner_tg_user_id == int(row.owner_tg_user_id),
+                        AdminAgentRun.channel_id == int(row.channel_id),
+                        AdminAgentRun.scheduled_for >= now - timedelta(days=30),
+                    )
+                    .order_by(AdminAgentRun.scheduled_for.desc())
+                )
+            ).scalars()
+        )
+
+        def usage(days: int) -> dict[str, int]:
+            cutoff = now - timedelta(days=days)
+            rows = [
+                run
+                for run in recent
+                if run.scheduled_for is not None and as_utc(run.scheduled_for) >= cutoff
+            ]
+            needs_manual = 0
+            for run in rows:
+                resumable, resume_state = assistant_run_resume_state(run, now_utc=now)
+                if resumable or resume_state == "restart_required":
+                    needs_manual += 1
+            return {
+                "occurrence_runs": len(rows),
+                "completed": sum(str(run.status) == "completed" for run in rows),
+                "failed": sum(
+                    str(run.status) == "failed"
+                    or str(run.workflow_phase or "") in {"failed", "failed_closed"}
+                    for run in rows
+                ),
+                "restart_required_or_manual_resume": needs_manual,
+                "tokens_used": sum(int(run.tokens_used or 0) for run in rows),
+            }
+
+        migration = None
+        if (
+            definition_blocker == DISABLED_UNSUPPORTED_SKILL_VERSION
+            or durable_reason == DISABLED_UNSUPPORTED_SKILL_VERSION
+        ):
+            migration = self._migration_suggestion(row)
+
+        execution_limits = (
+            {str(key): value for key, value in spec.execution_limits.items()}
+            if spec is not None
+            else None
+        )
+        post_count = None
+        if (
+            spec is not None
+            and spec.scenario == "prepare_content_series"
+            and isinstance(row.operator_input, Mapping)
+            and isinstance(row.operator_input.get("post_count"), int)
+        ):
+            post_count = int(row.operator_input["post_count"])
+
+        claimed_at = row.claimed_at
+        claim_active = bool(
+            row.claim_token
+            and claimed_at is not None
+            and as_utc(claimed_at) > now - CLAIM_LEASE
+        )
+        return {
+            "health": health,
+            "health_reason": health_reason,
+            "claim_active": claim_active,
+            "claimed_at": claimed_at,
+            "latest_run": latest,
+            "usage_7d": usage(7),
+            "usage_30d": usage(30),
+            "execution_limits": execution_limits,
+            "cadence_occurrences_per_week": 7 if str(row.cadence_kind) == CADENCE_DAILY else 1,
+            "post_count": post_count,
+            "migration_suggestion": migration,
+        }
+
     async def create(
         self,
         *,
@@ -376,16 +631,55 @@ class AdminAgentAutomationService:
         )
         if row is None:
             return None
+
+        now = as_utc(now_utc)
         value = bool(enabled)
-        if value and not bool(row.enabled):
-            row.next_run_at = next_occurrence_utc(
-                cadence_kind=str(row.cadence_kind),
-                local_time_value=str(row.local_time),
-                weekday=row.weekday,
-                timezone_name=str(row.timezone),
-                after_utc=as_utc(now_utc),
-            )
-        row.enabled = value
+        if not value:
+            row.enabled = False
+            row.disabled_reason = DISABLED_MANUAL_PAUSE
+            row.disabled_at = now
+            row.claim_token = None
+            row.claimed_at = None
+            await self.session.commit()
+            await self.session.refresh(row)
+            return row
+
+        if not await self._ownership_is_current(row):
+            row.enabled = False
+            row.disabled_reason = DISABLED_OWNERSHIP_LOST
+            row.disabled_at = now
+            row.last_outcome = OUTCOME_SAFETY_DISABLED
+            row.last_outcome_at = now
+            row.claim_token = None
+            row.claimed_at = None
+            await self.session.commit()
+            raise AutomationControlConflict(DISABLED_OWNERSHIP_LOST)
+
+        _spec, blocker = self._validated_definition(row)
+        if blocker is not None:
+            row.enabled = False
+            row.disabled_reason = blocker
+            row.disabled_at = now
+            row.last_outcome = OUTCOME_SAFETY_DISABLED
+            row.last_outcome_at = now
+            row.claim_token = None
+            row.claimed_at = None
+            await self.session.commit()
+            raise AutomationControlConflict(blocker)
+
+        if bool(row.enabled) and row.disabled_reason is None:
+            return row
+
+        row.enabled = True
+        row.disabled_reason = None
+        row.disabled_at = None
+        row.next_run_at = next_occurrence_utc(
+            cadence_kind=str(row.cadence_kind),
+            local_time_value=str(row.local_time),
+            weekday=row.weekday,
+            timezone_name=str(row.timezone),
+            after_utc=now,
+        )
         row.claim_token = None
         row.claimed_at = None
         await self.session.commit()
@@ -477,7 +771,10 @@ class AdminAgentAutomationTickService:
         row: AdminAgentAutomation,
         *,
         claim_token: str,
+        reason: str,
+        now_utc: datetime,
     ) -> None:
+        now = as_utc(now_utc)
         await session.execute(
             update(AdminAgentAutomation)
             .where(
@@ -486,6 +783,10 @@ class AdminAgentAutomationTickService:
             )
             .values(
                 enabled=False,
+                disabled_reason=str(reason),
+                disabled_at=now,
+                last_outcome=OUTCOME_SAFETY_DISABLED,
+                last_outcome_at=now,
                 claim_token=None,
                 claimed_at=None,
             )
@@ -500,6 +801,7 @@ class AdminAgentAutomationTickService:
         claim_token: str,
         scheduled_for: datetime,
         after_utc: datetime,
+        outcome: str = OUTCOME_RUN_RECORDED,
     ) -> None:
         next_run_at = next_occurrence_utc(
             cadence_kind=str(row.cadence_kind),
@@ -518,6 +820,8 @@ class AdminAgentAutomationTickService:
             .values(
                 last_scheduled_for=as_utc(scheduled_for),
                 next_run_at=next_run_at,
+                last_outcome=str(outcome),
+                last_outcome_at=as_utc(after_utc),
                 claim_token=None,
                 claimed_at=None,
             )
@@ -549,21 +853,64 @@ class AdminAgentAutomationTickService:
                     claim_token=claim_token,
                     scheduled_for=scheduled_for,
                     after_utc=now,
+                    outcome=OUTCOME_MISFIRE_SKIPPED,
+                )
+                return
+
+            stored_input = (
+                dict(row.operator_input)
+                if isinstance(row.operator_input, Mapping)
+                else {}
+            )
+            expected_fingerprint = automation_definition_fingerprint(
+                skill_id=str(row.skill_id),
+                skill_version=str(row.skill_version),
+                operator_input=stored_input,
+                cadence_kind=str(row.cadence_kind),
+                local_time_value=str(row.local_time),
+                weekday=row.weekday,
+                timezone_name=str(row.timezone),
+            )
+            if expected_fingerprint != str(row.definition_fingerprint):
+                await self._disable_claimed(
+                    session,
+                    row,
+                    claim_token=claim_token,
+                    reason=DISABLED_INVALID_DEFINITION,
+                    now_utc=now,
                 )
                 return
 
             try:
                 spec = SKILL_REGISTRY.resolve(row.skill_id, row.skill_version)
-                _ensure_automation_skill(spec)
-                normalized_input = normalize_automation_operator_input(
-                    spec,
-                    row.operator_input if isinstance(row.operator_input, Mapping) else None,
-                )
-            except (KeyError, AutomationInputError):
+            except KeyError:
                 await self._disable_claimed(
                     session,
                     row,
                     claim_token=claim_token,
+                    reason=DISABLED_UNSUPPORTED_SKILL_VERSION,
+                    now_utc=now,
+                )
+                return
+            try:
+                _ensure_automation_skill(spec)
+                normalized_input = normalize_automation_operator_input(spec, stored_input)
+            except AutomationInputError:
+                await self._disable_claimed(
+                    session,
+                    row,
+                    claim_token=claim_token,
+                    reason=DISABLED_INVALID_DEFINITION,
+                    now_utc=now,
+                )
+                return
+            if normalized_input != stored_input:
+                await self._disable_claimed(
+                    session,
+                    row,
+                    claim_token=claim_token,
+                    reason=DISABLED_INVALID_DEFINITION,
+                    now_utc=now,
                 )
                 return
 
@@ -572,6 +919,8 @@ class AdminAgentAutomationTickService:
                     session,
                     row,
                     claim_token=claim_token,
+                    reason=DISABLED_OWNERSHIP_LOST,
+                    now_utc=now,
                 )
                 return
 

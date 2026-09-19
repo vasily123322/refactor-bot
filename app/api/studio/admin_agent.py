@@ -36,6 +36,7 @@ from app.services.admin_agent import (
     assistant_run_resume_state,
 )
 from app.services.admin_agent_automations import (
+    AutomationControlConflict,
     AutomationIdempotencyConflict,
     AutomationInputError,
     AdminAgentAutomationService,
@@ -186,17 +187,59 @@ class AssistantAutomationCadenceResponse(BaseModel):
     weekday: int | None = None
 
 
+class AssistantAutomationRunSummaryResponse(BaseModel):
+    id: int
+    scheduled_for: datetime | None
+    status: str
+    workflow_phase: str | None
+    resumable: bool
+    resume_state: str
+    tokens_used: int
+    model: str | None
+    created_at: datetime | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    result_kind: str | None
+    result_metadata: dict[str, Any]
+
+
+class AssistantAutomationUsageResponse(BaseModel):
+    occurrence_runs: int
+    completed: int
+    failed: int
+    restart_required_or_manual_resume: int
+    tokens_used: int
+
+
 class AssistantAutomationResponse(BaseModel):
     id: int
     channel_id: int
     skill_id: str
     skill_version: str
     operator_input: dict[str, Any]
+    automation_policy: str
     cadence: AssistantAutomationCadenceResponse
     timezone: str
     enabled: bool
+    disabled_reason: str | None
+    disabled_at: datetime | None
     next_run_at: datetime
     last_scheduled_for: datetime | None
+    last_outcome: str | None
+    last_outcome_at: datetime | None
+    health: Literal["active", "paused", "blocked", "needs_attention"]
+    health_reason: str
+    claim_active: bool
+    claimed_at: datetime | None
+    latest_run: AssistantAutomationRunSummaryResponse | None
+    usage_7d: AssistantAutomationUsageResponse
+    usage_30d: AssistantAutomationUsageResponse
+    execution_limits: dict[str, int | float] | None
+    cadence_occurrences_per_week: int
+    post_count: int | None
+    migration_available: bool
+    suggested_skill_id: str | None
+    suggested_skill_version: str | None
     request_id: str
     definition_fingerprint: str
     created_at: datetime | None
@@ -390,13 +433,60 @@ def _skill_response(spec: AdminAgentSkillSpec) -> AssistantSkillResponse:
     )
 
 
-def _automation_response(row: AdminAgentAutomation) -> AssistantAutomationResponse:
+def _automation_run_summary(
+    row: AdminAgentRun,
+) -> AssistantAutomationRunSummaryResponse:
+    resumable, resume_state = assistant_run_resume_state(row)
+    result = row.result if isinstance(row.result, dict) else {}
+    result_metadata: dict[str, Any] = {}
+    for key in (
+        "draft_count",
+        "requested_post_count",
+        "generated_by",
+        "write_capability",
+    ):
+        value = result.get(key)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            if key in result:
+                result_metadata[key] = value
+    result_kind = None
+    try:
+        result_kind = SKILL_REGISTRY.resolve(row.skill_id, row.skill_version).result_kind
+    except KeyError:
+        scenario = result.get("scenario")
+        if isinstance(scenario, str):
+            result_kind = scenario
+    return AssistantAutomationRunSummaryResponse(
+        id=int(row.id),
+        scheduled_for=row.scheduled_for,
+        status=str(row.status),
+        workflow_phase=row.workflow_phase,
+        resumable=resumable,
+        resume_state=resume_state,
+        tokens_used=int(row.tokens_used or 0),
+        model=row.model,
+        created_at=row.created_at,
+        started_at=row.started_at,
+        finished_at=row.finished_at,
+        result_kind=result_kind,
+        result_metadata=result_metadata,
+    )
+
+
+async def _automation_response(
+    session: AsyncSession,
+    row: AdminAgentAutomation,
+) -> AssistantAutomationResponse:
+    snapshot = await AdminAgentAutomationService(session).operational_snapshot(row)
+    latest = snapshot["latest_run"]
+    migration = snapshot["migration_suggestion"]
     return AssistantAutomationResponse(
         id=int(row.id),
         channel_id=int(row.channel_id),
         skill_id=str(row.skill_id),
         skill_version=str(row.skill_version),
         operator_input=dict(row.operator_input or {}),
+        automation_policy=AUTOMATION_BOUNDED,
         cadence=AssistantAutomationCadenceResponse(
             kind=str(row.cadence_kind),
             local_time=str(row.local_time),
@@ -404,8 +494,41 @@ def _automation_response(row: AdminAgentAutomation) -> AssistantAutomationRespon
         ),
         timezone=str(row.timezone),
         enabled=bool(row.enabled),
+        disabled_reason=row.disabled_reason,
+        disabled_at=row.disabled_at,
         next_run_at=row.next_run_at,
         last_scheduled_for=row.last_scheduled_for,
+        last_outcome=row.last_outcome,
+        last_outcome_at=row.last_outcome_at,
+        health=str(snapshot["health"]),
+        health_reason=str(snapshot["health_reason"]),
+        claim_active=bool(snapshot["claim_active"]),
+        claimed_at=snapshot["claimed_at"],
+        latest_run=(
+            _automation_run_summary(latest)
+            if isinstance(latest, AdminAgentRun)
+            else None
+        ),
+        usage_7d=AssistantAutomationUsageResponse(**snapshot["usage_7d"]),
+        usage_30d=AssistantAutomationUsageResponse(**snapshot["usage_30d"]),
+        execution_limits=snapshot["execution_limits"],
+        cadence_occurrences_per_week=int(snapshot["cadence_occurrences_per_week"]),
+        post_count=(
+            int(snapshot["post_count"])
+            if snapshot["post_count"] is not None
+            else None
+        ),
+        migration_available=isinstance(migration, dict),
+        suggested_skill_id=(
+            str(migration["suggested_skill_id"])
+            if isinstance(migration, dict)
+            else None
+        ),
+        suggested_skill_version=(
+            str(migration["suggested_skill_version"])
+            if isinstance(migration, dict)
+            else None
+        ),
         request_id=str(row.request_id),
         definition_fingerprint=str(row.definition_fingerprint),
         created_at=row.created_at,
@@ -623,7 +746,7 @@ async def list_assistant_automations(
         owner_tg_user_id=principal.tg_user_id,
         channel_id=channel_id,
     )
-    return [_automation_response(row) for row in rows]
+    return [await _automation_response(session, row) for row in rows]
 
 
 @router.post(
@@ -655,7 +778,7 @@ async def create_assistant_automation(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except AutomationIdempotencyConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _automation_response(row)
+    return await _automation_response(session, row)
 
 
 @router.get(
@@ -676,7 +799,7 @@ async def get_assistant_automation(
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Automation not found")
-    return _automation_response(row)
+    return await _automation_response(session, row)
 
 
 @router.post(
@@ -691,15 +814,47 @@ async def set_assistant_automation_enabled(
     session: SessionDep,
 ) -> AssistantAutomationResponse:
     await _require_owned_channel(session, principal, channel_id)
-    row = await AdminAgentAutomationService(session).set_enabled(
+    try:
+        row = await AdminAgentAutomationService(session).set_enabled(
+            automation_id=automation_id,
+            owner_tg_user_id=principal.tg_user_id,
+            channel_id=channel_id,
+            enabled=request.enabled,
+        )
+    except AutomationControlConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="Automation not found")
+    return await _automation_response(session, row)
+
+
+@router.get(
+    "/channels/{channel_id}/assistant/automations/{automation_id}/runs",
+    response_model=list[AssistantAutomationRunSummaryResponse],
+)
+async def list_assistant_automation_runs(
+    channel_id: int,
+    automation_id: int,
+    principal: PrincipalDep,
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> list[AssistantAutomationRunSummaryResponse]:
+    await _require_owned_channel(session, principal, channel_id)
+    service = AdminAgentAutomationService(session)
+    row = await service.get(
         automation_id=automation_id,
         owner_tg_user_id=principal.tg_user_id,
         channel_id=channel_id,
-        enabled=request.enabled,
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Automation not found")
-    return _automation_response(row)
+    runs = await service.runs(
+        automation_id=automation_id,
+        owner_tg_user_id=principal.tg_user_id,
+        channel_id=channel_id,
+        limit=limit,
+    )
+    return [_automation_run_summary(run) for run in runs]
 
 
 @router.post(

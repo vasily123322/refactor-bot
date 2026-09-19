@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StudioApiError, studioApi } from './api';
 import type {
   AssistantAutomationCreateInput,
+  AssistantAutomationRunSummaryView,
   AssistantAutomationView,
   AssistantSkillView,
 } from './api';
@@ -13,6 +14,7 @@ import {
   resolveChannelDataView,
   runExclusiveOperation,
   type ChannelLoadState,
+  type ScopedLoadState,
 } from './asyncControl';
 import type { Channel } from './types';
 
@@ -71,6 +73,51 @@ export function automationScheduleSummary(
   automation: Pick<AssistantAutomationView, 'cadence' | 'timezone' | 'next_run_at'>,
 ): string {
   return `${automationCadenceLabel(automation)} · ${automation.timezone} · Следующий запуск: ${nextRunLabel(automation.next_run_at)}`;
+}
+
+export function automationHealthLabel(
+  automation: Pick<AssistantAutomationView, 'health' | 'health_reason'>,
+): string {
+  const labels: Record<AssistantAutomationView['health'], string> = {
+    active: 'Активна',
+    paused: 'Приостановлена',
+    blocked: 'Заблокирована',
+    needs_attention: 'Требует внимания',
+  };
+  return `${labels[automation.health]} · ${automation.health_reason}`;
+}
+
+function automationRunSummary(run: AssistantAutomationRunSummaryView): string {
+  const phase = run.workflow_phase ? ` · ${run.workflow_phase}` : '';
+  const model = run.model ? ` · ${run.model}` : '';
+  return `#${run.id} · ${run.status}${phase} · ${run.tokens_used} tokens${model}`;
+}
+
+export type AutomationControl =
+  | 'pause'
+  | 'enable'
+  | 'resume'
+  | 'history'
+  | 'replacement';
+
+export function automationAvailableControls(
+  automation: AssistantAutomationView,
+): AutomationControl[] {
+  const controls: AutomationControl[] = [];
+  if (automation.enabled) controls.push('pause');
+  if (
+    !automation.enabled
+    && automation.health === 'paused'
+    && automation.disabled_reason === 'manual_pause'
+  ) controls.push('enable');
+  if (automation.latest_run?.resumable) controls.push('resume');
+  controls.push('history');
+  if (
+    automation.migration_available
+    && automation.suggested_skill_id
+    && automation.suggested_skill_version
+  ) controls.push('replacement');
+  return controls;
 }
 
 export function automationDataView(
@@ -170,12 +217,22 @@ export function AssistantAutomations({
   const [seriesPostCount, setSeriesPostCount] = useState(3);
   const [creating, setCreating] = useState(false);
   const [toggleBusyIds, setToggleBusyIds] = useState<Set<number>>(() => new Set());
+  const [resumeBusyIds, setResumeBusyIds] = useState<Set<number>>(() => new Set());
+  const [replacementBusyIds, setReplacementBusyIds] = useState<Set<number>>(() => new Set());
+  const [historyAutomationId, setHistoryAutomationId] = useState<number | null>(null);
+  const [historyRows, setHistoryRows] = useState<AssistantAutomationRunSummaryView[]>([]);
+  const [historyState, setHistoryState] = useState<ScopedLoadState | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   const channelIdRef = useRef(channel.id);
   const loadOwnershipRef = useRef(new ChannelRequestOwnership());
   const createOwnershipRef = useRef(new ChannelRequestOwnership());
   const createLockRef = useRef(new ExclusiveOperationLock());
   const toggleLocksRef = useRef(new Map<number, ExclusiveOperationLock>());
+  const resumeLocksRef = useRef(new Map<number, ExclusiveOperationLock>());
+  const historyOwnershipRef = useRef(new ChannelRequestOwnership());
+  const historyScopeRef = useRef<string | null>(null);
+  const replacementRequestIdsRef = useRef(new Map<number, string>());
   const validDataChannelRef = useRef<number | null>(null);
   const pendingCreateRef = useRef<{
     channelId: number;
@@ -236,6 +293,15 @@ export function AssistantAutomations({
     pendingCreateRef.current = null;
     setCreating(false);
     setToggleBusyIds(new Set());
+    setResumeBusyIds(new Set());
+    setReplacementBusyIds(new Set());
+    historyOwnershipRef.current.invalidate();
+    historyScopeRef.current = null;
+    setHistoryAutomationId(null);
+    setHistoryRows([]);
+    setHistoryState(null);
+    setHistoryError(null);
+    replacementRequestIdsRef.current.clear();
     setSelectedSkillKey('');
     setSeriesBrief('');
     setSeriesPostCount(3);
@@ -371,6 +437,125 @@ export function AssistantAutomations({
       },
     );
     if (!result.started) return;
+  }, []);
+
+  const loadHistory = useCallback(async (automationId: number) => {
+    const channelId = channelIdRef.current;
+    const scopeKey = String(automationId);
+    historyScopeRef.current = scopeKey;
+    setHistoryAutomationId(automationId);
+    setHistoryRows([]);
+    setHistoryError(null);
+    setHistoryState({ channelId, scopeKey, phase: 'loading' });
+    const token = historyOwnershipRef.current.begin(channelId, scopeKey);
+    try {
+      const rows = await studioApi.assistantAutomationRuns(channelId, automationId, 20);
+      if (!historyOwnershipRef.current.isCurrent(
+        token,
+        channelIdRef.current,
+        historyScopeRef.current,
+      )) return;
+      setHistoryRows(rows);
+      setHistoryState({ channelId, scopeKey, phase: 'loaded' });
+    } catch (reason) {
+      if (!historyOwnershipRef.current.isCurrent(
+        token,
+        channelIdRef.current,
+        historyScopeRef.current,
+      )) return;
+      setHistoryRows([]);
+      setHistoryState({ channelId, scopeKey, phase: 'error-without-valid-data' });
+      setHistoryError(automationErrorMessage(reason));
+    }
+  }, []);
+
+  const resumeLatest = useCallback(async (automation: AssistantAutomationView) => {
+    const run = automation.latest_run;
+    if (!run?.resumable) return;
+    const channelId = channelIdRef.current;
+    let lock = resumeLocksRef.current.get(automation.id);
+    if (!lock) {
+      lock = new ExclusiveOperationLock();
+      resumeLocksRef.current.set(automation.id, lock);
+    }
+    await runExclusiveOperation(lock, `resume:${automation.id}`, async () => {
+      setResumeBusyIds((previous) => new Set(previous).add(automation.id));
+      setError(null);
+      try {
+        await studioApi.resumeAssistantRun(channelId, run.id);
+        if (channelIdRef.current !== channelId) return;
+        await loadAutomations();
+        await loadHistory(automation.id);
+      } catch (reason) {
+        if (channelIdRef.current === channelId) {
+          setError({ channelId, message: automationErrorMessage(reason) });
+        }
+      } finally {
+        if (channelIdRef.current === channelId) {
+          setResumeBusyIds((previous) => {
+            const next = new Set(previous);
+            next.delete(automation.id);
+            return next;
+          });
+        }
+      }
+    });
+  }, [loadAutomations, loadHistory]);
+
+  const createReplacement = useCallback(async (automation: AssistantAutomationView) => {
+    if (
+      !automation.migration_available
+      || !automation.suggested_skill_id
+      || !automation.suggested_skill_version
+    ) return;
+    const channelId = channelIdRef.current;
+    const existingRequestId = replacementRequestIdsRef.current.get(automation.id);
+    const requestId = existingRequestId ?? automationRequestId();
+    replacementRequestIdsRef.current.set(automation.id, requestId);
+    await runExclusiveOperation(
+      createLockRef.current,
+      `replacement:${automation.id}`,
+      async () => {
+        const token = createOwnershipRef.current.begin(channelId, `replacement:${automation.id}`);
+        const isCurrent = () => createOwnershipRef.current.isCurrent(
+          token,
+          channelIdRef.current,
+          `replacement:${automation.id}`,
+        );
+        setReplacementBusyIds((previous) => new Set(previous).add(automation.id));
+        setError(null);
+        try {
+          const created = await studioApi.createAssistantAutomation(channelId, {
+            request_id: requestId,
+            skill_id: automation.suggested_skill_id!,
+            skill_version: automation.suggested_skill_version!,
+            operator_input: automation.operator_input,
+            cadence: {
+              kind: automation.cadence.kind,
+              local_time: automation.cadence.local_time,
+              ...(automation.cadence.kind === 'weekly' && automation.cadence.weekday !== null
+                ? { weekday: automation.cadence.weekday }
+                : {}),
+            },
+          });
+          if (!isCurrent()) return;
+          replacementRequestIdsRef.current.delete(automation.id);
+          setAutomations((previous) => mergeAssistantAutomation(previous, created));
+        } catch (reason) {
+          if (isCurrent()) {
+            setError({ channelId, message: automationErrorMessage(reason) });
+          }
+        } finally {
+          if (isCurrent()) {
+            setReplacementBusyIds((previous) => {
+              const next = new Set(previous);
+              next.delete(automation.id);
+              return next;
+            });
+          }
+        }
+      },
+    );
   }, []);
 
   const loadView = automationDataView(loadState, channel.id, automations.length);
@@ -526,23 +711,127 @@ export function AssistantAutomations({
           <div className="assistant-empty">Recurring automations пока не созданы.</div>
         }
       >
-        {automations.map((automation) => (
-          <article className="assistant-automation-row" key={automation.id}>
-            <div>
-              <strong>{automation.skill_id}@{automation.skill_version}</strong>
-              <small>{automationScheduleSummary(automation)}</small>
-            </div>
-            <button
-              className="button secondary"
-              disabled={toggleBusyIds.has(automation.id)}
-              onClick={() => void toggleEnabled(automation)}
-            >
-              {toggleBusyIds.has(automation.id)
-                ? 'Сохраняю…'
-                : automation.enabled ? 'Отключить' : 'Включить'}
-            </button>
-          </article>
-        ))}
+        {automations.map((automation) => {
+          const historySelected = historyAutomationId === automation.id;
+          const historyScopeKey = String(automation.id);
+          const historyLoading = historySelected
+            && historyState?.channelId === channel.id
+            && historyState.scopeKey === historyScopeKey
+            && historyState.phase === 'loading';
+          const historyFailed = historySelected
+            && historyState?.channelId === channel.id
+            && historyState.scopeKey === historyScopeKey
+            && historyState.phase === 'error-without-valid-data';
+          const controls = automationAvailableControls(automation);
+          const canEnable = controls.includes('enable');
+          const canPause = controls.includes('pause');
+          return (
+            <article className="assistant-automation-row assistant-automation-row-e5" key={automation.id}>
+              <div className="assistant-automation-main">
+                <div className="assistant-automation-title-row">
+                  <strong>{automation.skill_id}@{automation.skill_version}</strong>
+                  <span
+                    className={`assistant-automation-health assistant-automation-health-${automation.health}`}
+                    aria-label={`Состояние automation: ${automationHealthLabel(automation)}`}
+                  >
+                    {automationHealthLabel(automation)}
+                  </span>
+                </div>
+                <small>{automationScheduleSummary(automation)}</small>
+                <small>
+                  Последний outcome: {automation.last_outcome ?? 'нет'} · 7 дней: {automation.usage_7d.tokens_used} tokens
+                  {' · '}30 дней: {automation.usage_30d.tokens_used} tokens
+                </small>
+                {automation.latest_run && (
+                  <small>
+                    Последний запуск: {automationRunSummary(automation.latest_run)}
+                    {automation.latest_run.resume_state ? ` · ${automation.latest_run.resume_state}` : ''}
+                  </small>
+                )}
+                <small>
+                  Envelope: {automation.cadence_occurrences_per_week}/нед.
+                  {automation.execution_limits
+                    ? ` · max_llm_calls=${automation.execution_limits.max_llm_calls} · max_seconds=${automation.execution_limits.max_seconds}`
+                    : ' · pinned version unsupported'}
+                  {automation.post_count ? ` · post_count=${automation.post_count}` : ''}
+                  {automation.claim_active ? ' · claim active' : ''}
+                </small>
+                <div className="assistant-automation-actions">
+                  {(canPause || canEnable) && (
+                    <button
+                      className="button secondary"
+                      disabled={toggleBusyIds.has(automation.id)}
+                      onClick={() => void toggleEnabled(automation)}
+                    >
+                      {toggleBusyIds.has(automation.id)
+                        ? 'Сохраняю…'
+                        : canPause ? 'Приостановить' : 'Включить'}
+                    </button>
+                  )}
+                  {controls.includes('resume') && automation.latest_run?.resumable && (
+                    <button
+                      className="button secondary"
+                      disabled={resumeBusyIds.has(automation.id)}
+                      onClick={() => void resumeLatest(automation)}
+                    >
+                      {resumeBusyIds.has(automation.id) ? 'Продолжаю…' : 'Продолжить'}
+                    </button>
+                  )}
+                  <button
+                    className="button secondary"
+                    onClick={() => {
+                      if (historySelected) {
+                        historyOwnershipRef.current.invalidate();
+                        historyScopeRef.current = null;
+                        setHistoryAutomationId(null);
+                        setHistoryRows([]);
+                        setHistoryState(null);
+                        setHistoryError(null);
+                      } else {
+                        void loadHistory(automation.id);
+                      }
+                    }}
+                  >
+                    {historySelected ? 'Скрыть историю' : 'История запусков'}
+                  </button>
+                  {controls.includes('replacement')
+                    && automation.suggested_skill_id
+                    && automation.suggested_skill_version && (
+                    <button
+                      className="button secondary"
+                      disabled={replacementBusyIds.has(automation.id)}
+                      onClick={() => void createReplacement(automation)}
+                    >
+                      {replacementBusyIds.has(automation.id)
+                        ? 'Создаю замену…'
+                        : `Создать замену на ${automation.suggested_skill_id}@${automation.suggested_skill_version}`}
+                    </button>
+                  )}
+                </div>
+                {historySelected && (
+                  <div className="assistant-automation-history" aria-live="polite">
+                    {historyLoading && <small>Загружаю историю…</small>}
+                    {historyFailed && (
+                      <small role="alert">{historyError ?? 'История запусков не загружена.'}</small>
+                    )}
+                    {!historyLoading && !historyFailed && historyRows.length === 0 && (
+                      <small>Запусков ещё нет.</small>
+                    )}
+                    {!historyLoading && !historyFailed && historyRows.map((run) => (
+                      <div className="assistant-automation-history-row" key={run.id}>
+                        <small>
+                          {run.scheduled_for ? nextRunLabel(run.scheduled_for) : 'без scheduled_for'}
+                          {' · '}{automationRunSummary(run)}
+                          {' · '}{run.resume_state}
+                        </small>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </article>
+          );
+        })}
       </AsyncRegion>
     </section>
   );

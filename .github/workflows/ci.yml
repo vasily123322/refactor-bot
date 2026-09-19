@@ -55,6 +55,7 @@ jobs:
             tests/test_admin_agent_series_approvals.py \
             tests/test_admin_agent_resumable.py \
             tests/test_admin_agent_automations.py \
+            tests/test_admin_agent_automation_observability.py \
             tests/test_admin_agent_migration.py \
             tests/test_studio_admin_agent_automation_api.py \
             tests/test_studio_admin_agent_api.py \

@@ -484,6 +484,50 @@
   overflow-wrap: anywhere;
 }
 
+.assistant-automation-row-e5 {
+  align-items: stretch;
+}
+
+.assistant-automation-main {
+  display: grid;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+}
+
+.assistant-automation-title-row,
+.assistant-automation-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.assistant-automation-health {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.assistant-automation-history {
+  display: grid;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  min-width: 0;
+}
+
+.assistant-automation-history-row {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 720px) {
   .assistant-automation-cadence {
     grid-template-columns: 1fr;
