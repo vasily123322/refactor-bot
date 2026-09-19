@@ -167,3 +167,107 @@
   overflow-wrap: anywhere;
   white-space: normal;
 }
+
+
+.assistant-approval-card,
+.assistant-proposal-form {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border, rgba(15, 23, 42, 0.1));
+  border-radius: 10px;
+  min-width: 0;
+}
+
+.assistant-approval-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: baseline;
+  outline: none;
+}
+
+.assistant-approval-status:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+.assistant-approval-status-stale,
+.assistant-approval-status-failed {
+  font-weight: 700;
+}
+
+.assistant-approval-facts {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.assistant-approval-facts > div {
+  display: grid;
+  gap: 2px;
+}
+
+.assistant-approval-facts dt {
+  font-size: 12px;
+  opacity: 0.72;
+}
+
+.assistant-approval-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.assistant-approval-note,
+.assistant-approval-error {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.assistant-approval-actions,
+.assistant-proposal-controls,
+.assistant-executed-result {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.assistant-important-action {
+  font-weight: 700;
+}
+
+.assistant-proposal-form label {
+  font-weight: 600;
+}
+
+.assistant-proposal-form input[type='time'] {
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--border, rgba(15, 23, 42, 0.16));
+  border-radius: 8px;
+  background: var(--panel, #fff);
+  color: inherit;
+  font: inherit;
+}
+
+.assistant-proposal-form input[type='time']:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+@media (max-width: 720px) {
+  .assistant-approval-actions,
+  .assistant-proposal-controls,
+  .assistant-executed-result {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .assistant-approval-actions .button,
+  .assistant-proposal-controls .button,
+  .assistant-proposal-controls input[type='time'] {
+    width: 100%;
+  }
+}
