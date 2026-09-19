@@ -11,7 +11,7 @@ from app.core.db import Base
 
 
 PREVIOUS_HEAD = "20260919_0018"
-HEAD = "20260919_0021"
+HEAD = "20260919_0022"
 
 
 def _upgrade(repo_root: Path, database_path: Path, target: str) -> None:
@@ -376,6 +376,90 @@ def test_series_approval_batch_migration_upgrades_existing_0020_schema(tmp_path)
             "pending_review",
             "historical-c-approval-0020",
         )
+
+
+def test_recurring_automation_migration_upgrades_existing_0021_schema(tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    database_path = tmp_path / "existing-0021.db"
+    _upgrade(repo_root, database_path, "20260919_0021")
+
+    with sqlite3.connect(database_path) as connection:
+        assert "admin_agent_automations" not in _tables(database_path)
+        connection.execute(
+            """
+            INSERT INTO admin_agent_runs
+                (
+                    owner_tg_user_id, channel_id, scenario, request_id,
+                    operator_input, skill_id, skill_version, status, tokens_used
+                )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                780,
+                999996,
+                "attention_today",
+                "historical-0021-run",
+                None,
+                "attention_today",
+                "1",
+                "completed",
+                0,
+            ),
+        )
+        connection.commit()
+
+    _upgrade(repo_root, database_path, "head")
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD,)
+        assert "admin_agent_automations" in _tables(database_path)
+        automation_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(admin_agent_automations)"
+            )
+        }
+        assert {
+            "owner_tg_user_id",
+            "channel_id",
+            "skill_id",
+            "skill_version",
+            "operator_input",
+            "cadence_kind",
+            "local_time",
+            "weekday",
+            "timezone",
+            "enabled",
+            "next_run_at",
+            "last_scheduled_for",
+            "claim_token",
+            "claimed_at",
+            "request_id",
+            "definition_fingerprint",
+            "created_at",
+            "updated_at",
+        } <= automation_columns
+        assert "ix_admin_agent_automations_due" in {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA index_list(admin_agent_automations)"
+            )
+        }
+
+        run_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(admin_agent_runs)")
+        }
+        assert {"automation_id", "scheduled_for"} <= run_columns
+        assert connection.execute(
+            """
+            SELECT automation_id, scheduled_for
+            FROM admin_agent_runs
+            WHERE request_id = 'historical-0021-run'
+            """
+        ).fetchone() == (None, None)
 
 
 def test_fresh_head_contains_agent_tables_and_matches_registered_orm(tmp_path) -> None:

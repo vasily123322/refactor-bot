@@ -19,6 +19,7 @@ from app.core.db import AsyncSessionLocal
 from app.domain.ai_auto_task import AIAutoTask
 from app.domain.models import Channel, Client
 from app.repositories.ai_auto_tasks import AIAutoTaskRepo
+from app.services.admin_agent_automations import AdminAgentAutomationTickService
 from app.bot.bot_instance import bot as tg_bot
 
 TASK_DAILY_TOPICS = "daily_topics"
@@ -211,8 +212,8 @@ class AIAutoTasksWorker:
                 logger.exception("AIAutoTasksWorker: tick error")
             await asyncio.sleep(self.interval_seconds)
 
-    async def _tick(self) -> None:
-        now = datetime.now(timezone.utc)
+    async def _tick(self, now: datetime | None = None) -> None:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
 
         async with AsyncSessionLocal() as session:
             result = await session.execute(
@@ -245,6 +246,10 @@ class AIAutoTasksWorker:
                     repo = AIAutoTaskRepo(session)
                     await repo.update_last_run(task.channel_id, task.task_type, now)
                     await session.commit()
+
+        # E4 shares this existing 60-second heartbeat. The Admin Agent path has
+        # its own durable claim/no-replay semantics and never calls _send_to_owner.
+        await AdminAgentAutomationTickService().tick(now_utc=now)
 
     async def _send_to_owner(self, channel_id: int, text: str) -> None:
         """Send the result to the channel owner."""

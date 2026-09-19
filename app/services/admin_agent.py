@@ -25,6 +25,7 @@ from app.services.ai_generation import AIGenerationService
 from app.services.admin_agent_context import EditorialContextService
 from app.services.admin_agent_skills import (
     RESUME_EXPLICIT,
+    AdminAgentSkillSpec,
     SKILL_REGISTRY,
 )
 from app.services.scheduling import as_utc
@@ -822,6 +823,27 @@ async def _find_idempotent_run(
         )
     )
     return result.scalar_one_or_none()
+
+
+def _assert_exact_occurrence_run(
+    run: AdminAgentRun,
+    *,
+    skill: AdminAgentSkillSpec,
+    automation_id: int,
+    scheduled_for: datetime,
+    operator_input: dict,
+) -> None:
+    if (
+        str(run.skill_id or "") != str(skill.skill_id)
+        or str(run.skill_version or "") != str(skill.version)
+        or int(run.automation_id or 0) != int(automation_id)
+        or run.scheduled_for is None
+        or _utc(run.scheduled_for) != _utc(scheduled_for)
+        or dict(run.operator_input or {}) != dict(operator_input)
+    ):
+        raise AgentIdempotencyConflict(
+            "request_id already exists with different scheduled occurrence"
+        )
 
 
 class AdminAgentRunner:
@@ -1715,31 +1737,89 @@ class AdminAgentRunner:
         *,
         channel_id: int,
         owner_tg_user_id: int,
+        request_id: str | None = None,
+        skill: AdminAgentSkillSpec | None = None,
+        automation_id: int | None = None,
+        scheduled_for: datetime | None = None,
     ) -> AdminAgentRun:
+        key = str(request_id or "").strip() or None
+        exact_skill = skill or SKILL_REGISTRY.current_for_scenario(
+            SCENARIO_ATTENTION_TODAY
+        )
+        if exact_skill.scenario != SCENARIO_ATTENTION_TODAY:
+            raise ValueError("skill scenario mismatch for attention_today")
+        if skill is not None:
+            self.limits = AgentLimits(**dict(exact_skill.execution_limits))
+
+        if key is not None:
+            existing = await _find_idempotent_run(
+                self.session,
+                channel_id=channel_id,
+                owner_tg_user_id=owner_tg_user_id,
+                scenario=SCENARIO_ATTENTION_TODAY,
+                request_id=key,
+            )
+            if existing is not None:
+                if automation_id is not None and scheduled_for is not None:
+                    _assert_exact_occurrence_run(
+                        existing,
+                        skill=exact_skill,
+                        automation_id=automation_id,
+                        scheduled_for=scheduled_for,
+                        operator_input={},
+                    )
+                return existing
+
         self._reset_execution_state()
-        skill = SKILL_REGISTRY.current_for_scenario(SCENARIO_ATTENTION_TODAY)
         run = AdminAgentRun(
             owner_tg_user_id=int(owner_tg_user_id),
             channel_id=int(channel_id),
             scenario=SCENARIO_ATTENTION_TODAY,
-            request_id=None,
-            skill_id=skill.skill_id,
-            skill_version=skill.version,
+            request_id=key,
+            operator_input=({} if automation_id is not None else None),
+            skill_id=exact_skill.skill_id,
+            skill_version=exact_skill.version,
+            automation_id=(int(automation_id) if automation_id is not None else None),
+            scheduled_for=(_utc(scheduled_for) if scheduled_for is not None else None),
             workflow_phase=PHASE_CREATED,
             status=RUN_RUNNING,
-            started_at=self.now_utc,
+            started_at=datetime.now(timezone.utc),
         )
         self.session.add(run)
-        await self.session.commit()
-        await self.session.refresh(run)
+        try:
+            await self.session.commit()
+            await self.session.refresh(run)
+        except IntegrityError:
+            await self.session.rollback()
+            if key is None:
+                raise
+            existing = await _find_idempotent_run(
+                self.session,
+                channel_id=channel_id,
+                owner_tg_user_id=owner_tg_user_id,
+                scenario=SCENARIO_ATTENTION_TODAY,
+                request_id=key,
+            )
+            if existing is None:
+                raise
+            if automation_id is not None and scheduled_for is not None:
+                _assert_exact_occurrence_run(
+                    existing,
+                    skill=exact_skill,
+                    automation_id=automation_id,
+                    scheduled_for=scheduled_for,
+                    operator_input={},
+                )
+            return existing
+
         run_id = int(run.id)
         await self._event(
             run,
             "run_started",
             payload={
                 "scenario": SCENARIO_ATTENTION_TODAY,
-                "skill_id": skill.skill_id,
-                "skill_version": skill.version,
+                "skill_id": exact_skill.skill_id,
+                "skill_version": exact_skill.version,
             },
         )
 
@@ -1901,10 +1981,20 @@ class AdminAgentRunner:
         channel_id: int,
         owner_tg_user_id: int,
         request_id: str,
+        skill: AdminAgentSkillSpec | None = None,
+        automation_id: int | None = None,
+        scheduled_for: datetime | None = None,
     ) -> AdminAgentRun:
         key = str(request_id or "").strip()
         if not key:
             raise ValueError("drafts_tomorrow requires request_id")
+        exact_skill = skill or SKILL_REGISTRY.current_for_scenario(
+            SCENARIO_DRAFTS_TOMORROW
+        )
+        if exact_skill.scenario != SCENARIO_DRAFTS_TOMORROW:
+            raise ValueError("skill scenario mismatch for drafts_tomorrow")
+        if skill is not None:
+            self.limits = AgentLimits(**dict(exact_skill.execution_limits))
 
         existing = await _find_idempotent_run(
             self.session,
@@ -1914,17 +2004,27 @@ class AdminAgentRunner:
             request_id=key,
         )
         if existing is not None:
+            if automation_id is not None and scheduled_for is not None:
+                _assert_exact_occurrence_run(
+                    existing,
+                    skill=exact_skill,
+                    automation_id=automation_id,
+                    scheduled_for=scheduled_for,
+                    operator_input={},
+                )
             return existing
 
         self._reset_execution_state()
-        skill = SKILL_REGISTRY.current_for_scenario(SCENARIO_DRAFTS_TOMORROW)
         run = AdminAgentRun(
             owner_tg_user_id=int(owner_tg_user_id),
             channel_id=int(channel_id),
             scenario=SCENARIO_DRAFTS_TOMORROW,
             request_id=key,
-            skill_id=skill.skill_id,
-            skill_version=skill.version,
+            operator_input=({} if automation_id is not None else None),
+            skill_id=exact_skill.skill_id,
+            skill_version=exact_skill.version,
+            automation_id=(int(automation_id) if automation_id is not None else None),
+            scheduled_for=(_utc(scheduled_for) if scheduled_for is not None else None),
             workflow_phase=PHASE_CREATED,
             status=RUN_RUNNING,
             started_at=self.now_utc,
@@ -1943,6 +2043,14 @@ class AdminAgentRunner:
                 request_id=key,
             )
             if existing is not None:
+                if automation_id is not None and scheduled_for is not None:
+                    _assert_exact_occurrence_run(
+                        existing,
+                        skill=exact_skill,
+                        automation_id=automation_id,
+                        scheduled_for=scheduled_for,
+                        operator_input={},
+                    )
                 return existing
             raise
 
@@ -1952,8 +2060,8 @@ class AdminAgentRunner:
             "run_started",
             payload={
                 "scenario": SCENARIO_DRAFTS_TOMORROW,
-                "skill_id": skill.skill_id,
-                "skill_version": skill.version,
+                "skill_id": exact_skill.skill_id,
+                "skill_version": exact_skill.version,
             },
         )
 
@@ -2043,11 +2151,21 @@ class AdminAgentRunner:
         request_id: str,
         brief: str,
         post_count: int,
+        skill: AdminAgentSkillSpec | None = None,
+        automation_id: int | None = None,
+        scheduled_for: datetime | None = None,
     ) -> AdminAgentRun:
         key = str(request_id or "").strip()
         if not key:
             raise ValueError("prepare_content_series requires request_id")
         operator_input = _normalize_content_series_input(brief, post_count)
+        exact_skill = skill or SKILL_REGISTRY.current_for_scenario(
+            SCENARIO_PREPARE_CONTENT_SERIES
+        )
+        if exact_skill.scenario != SCENARIO_PREPARE_CONTENT_SERIES:
+            raise ValueError("skill scenario mismatch for prepare_content_series")
+        if skill is not None:
+            self.limits = AgentLimits(**dict(exact_skill.execution_limits))
 
         existing = await _find_idempotent_run(
             self.session,
@@ -2061,18 +2179,27 @@ class AdminAgentRunner:
                 raise AgentIdempotencyConflict(
                     "request_id already exists with different operator input"
                 )
+            if automation_id is not None and scheduled_for is not None:
+                _assert_exact_occurrence_run(
+                    existing,
+                    skill=exact_skill,
+                    automation_id=automation_id,
+                    scheduled_for=scheduled_for,
+                    operator_input=operator_input,
+                )
             return existing
 
         self._reset_execution_state()
-        skill = SKILL_REGISTRY.current_for_scenario(SCENARIO_PREPARE_CONTENT_SERIES)
         run = AdminAgentRun(
             owner_tg_user_id=int(owner_tg_user_id),
             channel_id=int(channel_id),
             scenario=SCENARIO_PREPARE_CONTENT_SERIES,
             request_id=key,
             operator_input=operator_input,
-            skill_id=skill.skill_id,
-            skill_version=skill.version,
+            skill_id=exact_skill.skill_id,
+            skill_version=exact_skill.version,
+            automation_id=(int(automation_id) if automation_id is not None else None),
+            scheduled_for=(_utc(scheduled_for) if scheduled_for is not None else None),
             workflow_phase=PHASE_CREATED,
             status=RUN_RUNNING,
             started_at=self.now_utc,
@@ -2095,6 +2222,14 @@ class AdminAgentRunner:
                     raise AgentIdempotencyConflict(
                         "request_id already exists with different operator input"
                     )
+                if automation_id is not None and scheduled_for is not None:
+                    _assert_exact_occurrence_run(
+                        existing,
+                        skill=exact_skill,
+                        automation_id=automation_id,
+                        scheduled_for=scheduled_for,
+                        operator_input=operator_input,
+                    )
                 return existing
             raise
 
@@ -2104,8 +2239,8 @@ class AdminAgentRunner:
             "run_started",
             payload={
                 "scenario": SCENARIO_PREPARE_CONTENT_SERIES,
-                "skill_id": skill.skill_id,
-                "skill_version": skill.version,
+                "skill_id": exact_skill.skill_id,
+                "skill_version": exact_skill.version,
                 "post_count": operator_input["post_count"],
             },
         )
@@ -2186,6 +2321,66 @@ class AdminAgentRunner:
                     PHASE_SERIES_PERSISTED,
                 },
             )
+
+    async def run_exact_skill(
+        self,
+        *,
+        skill: AdminAgentSkillSpec,
+        channel_id: int,
+        owner_tg_user_id: int,
+        request_id: str,
+        operator_input: dict,
+        automation_id: int,
+        scheduled_for: datetime,
+    ) -> AdminAgentRun:
+        """Internal-only exact-version entrypoint for a claimed automation occurrence."""
+
+        exact = SKILL_REGISTRY.resolve(skill.skill_id, skill.version)
+        if exact.skill_id != skill.skill_id or str(exact.version) != str(skill.version):
+            raise ValueError("resolved skill version mismatch")
+        self.now_utc = as_utc(scheduled_for)
+        self.limits = AgentLimits(**dict(exact.execution_limits))
+
+        if exact.scenario == SCENARIO_ATTENTION_TODAY:
+            if operator_input:
+                raise ValueError("attention_today automation input must be empty")
+            return await self.run_attention_today(
+                channel_id=channel_id,
+                owner_tg_user_id=owner_tg_user_id,
+                request_id=request_id,
+                skill=exact,
+                automation_id=automation_id,
+                scheduled_for=scheduled_for,
+            )
+        if exact.scenario == SCENARIO_DRAFTS_TOMORROW:
+            if operator_input:
+                raise ValueError("drafts_tomorrow automation input must be empty")
+            return await self.run_drafts_tomorrow(
+                channel_id=channel_id,
+                owner_tg_user_id=owner_tg_user_id,
+                request_id=request_id,
+                skill=exact,
+                automation_id=automation_id,
+                scheduled_for=scheduled_for,
+            )
+        if exact.scenario == SCENARIO_PREPARE_CONTENT_SERIES:
+            if set(operator_input) != {"brief", "post_count"}:
+                raise ValueError("prepare_content_series automation input is malformed")
+            normalized = _normalize_content_series_input(
+                operator_input["brief"],
+                operator_input["post_count"],
+            )
+            return await self.run_prepare_content_series(
+                channel_id=channel_id,
+                owner_tg_user_id=owner_tg_user_id,
+                request_id=request_id,
+                brief=str(normalized["brief"]),
+                post_count=int(normalized["post_count"]),
+                skill=exact,
+                automation_id=automation_id,
+                scheduled_for=scheduled_for,
+            )
+        raise ValueError("unsupported exact skill scenario")
 
     async def resume_prepare_content_series(
         self,
