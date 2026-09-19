@@ -10,8 +10,8 @@ import app.domain  # noqa: F401 register complete ORM metadata
 from app.core.db import Base
 
 
-PREVIOUS_HEAD = "20260919_0015"
-HEAD = "20260919_0016"
+PREVIOUS_HEAD = "20260919_0016"
+HEAD = "20260919_0017"
 
 
 def _upgrade(repo_root: Path, database_path: Path, target: str) -> None:
@@ -46,13 +46,17 @@ def _tables(database_path: Path) -> set[str]:
         }
 
 
-def test_admin_agent_migration_upgrades_existing_0015_schema(tmp_path) -> None:
+def test_admin_agent_draft_migration_upgrades_existing_0016_schema(tmp_path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    database_path = tmp_path / "existing-0015.db"
+    database_path = tmp_path / "existing-0016.db"
     _upgrade(repo_root, database_path, PREVIOUS_HEAD)
 
-    assert "admin_agent_runs" not in _tables(database_path)
-    assert "admin_agent_events" not in _tables(database_path)
+    assert {"admin_agent_runs", "admin_agent_events"} <= _tables(database_path)
+    with sqlite3.connect(database_path) as connection:
+        before_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(admin_agent_runs)")
+        }
+        assert "request_id" not in before_columns
 
     _upgrade(repo_root, database_path, "head")
 
@@ -68,6 +72,7 @@ def test_admin_agent_migration_upgrades_existing_0015_schema(tmp_path) -> None:
             "owner_tg_user_id",
             "channel_id",
             "scenario",
+            "request_id",
             "status",
             "model",
             "tokens_used",
@@ -77,6 +82,11 @@ def test_admin_agent_migration_upgrades_existing_0015_schema(tmp_path) -> None:
             "finished_at",
             "created_at",
         }
+        indexes = {
+            row[1]: bool(row[2])
+            for row in connection.execute("PRAGMA index_list(admin_agent_runs)")
+        }
+        assert indexes["uq_admin_agent_run_idempotency"] is True
         assert {
             row[1]
             for row in connection.execute("PRAGMA table_info(admin_agent_events)")
