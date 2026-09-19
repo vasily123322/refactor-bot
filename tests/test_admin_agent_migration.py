@@ -11,7 +11,7 @@ from app.core.db import Base
 
 
 PREVIOUS_HEAD = "20260919_0018"
-HEAD = "20260919_0019"
+HEAD = "20260919_0020"
 
 
 def _upgrade(repo_root: Path, database_path: Path, target: str) -> None:
@@ -91,6 +91,7 @@ def test_admin_agent_resumable_migration_upgrades_existing_0018_schema(tmp_path)
             "channel_id",
             "scenario",
             "request_id",
+            "operator_input",
             "skill_id",
             "skill_version",
             "workflow_phase",
@@ -155,7 +156,7 @@ def test_admin_agent_resumable_migration_upgrades_existing_0018_schema(tmp_path)
         } <= artifact_columns
         historical = connection.execute(
             """
-            SELECT request_id, skill_id, skill_version, workflow_phase, checkpoint
+            SELECT request_id, operator_input, skill_id, skill_version, workflow_phase, checkpoint
             FROM admin_agent_runs
             WHERE request_id IN (
                 'historical-a-run',
@@ -166,9 +167,9 @@ def test_admin_agent_resumable_migration_upgrades_existing_0018_schema(tmp_path)
             """
         ).fetchall()
         assert historical == [
-            ("historical-a-run", None, None, None, None),
-            ("historical-b-run", None, None, None, None),
-            ("historical-c-source-run", None, None, None, None),
+            ("historical-a-run", None, None, None, None, None),
+            ("historical-b-run", None, None, None, None, None),
+            ("historical-c-source-run", None, None, None, None, None),
         ]
         assert {
             row[1]
