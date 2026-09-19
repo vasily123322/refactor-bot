@@ -7,6 +7,7 @@ import {
   AssistantSkillCatalog,
   mergeAssistantApproval,
   mergeAssistantRun,
+  mergeAssistantSeriesApproval,
 } from './AssistantPanel';
 import {
   ChannelRequestOwnership,
@@ -14,7 +15,12 @@ import {
   resolveChannelDataView,
   runExclusiveOperation,
 } from './asyncControl';
-import type { AssistantApprovalView, AssistantRunView, AssistantSkillView } from './api';
+import type {
+  AssistantApprovalView,
+  AssistantRunView,
+  AssistantSeriesApprovalView,
+  AssistantSkillView,
+} from './api';
 import type { Channel } from './types';
 
 function attentionRunView(summary: string): AssistantRunView {
@@ -311,6 +317,56 @@ function approvalView(
   };
 }
 
+
+function seriesApprovalView(
+  state: AssistantSeriesApprovalView['state'] = 'pending_review',
+  count = 8,
+): AssistantSeriesApprovalView {
+  const partial = state === 'partial_failed';
+  return {
+    id: 81,
+    channel_id: 7,
+    source_run_id: 33,
+    action_type: 'schedule_content_series',
+    state,
+    request_id: 'series-approval-request-81',
+    timezone: 'Europe/Berlin',
+    item_count: count,
+    series_title: 'Очень длинное название серии для редакционного плана',
+    source_plan_fingerprint: 'd'.repeat(64),
+    action_fingerprint: 'f'.repeat(64),
+    execution_key: '1'.repeat(64),
+    reviewer_tg_user_id: state === 'pending_review' ? null : 7001,
+    failure_reason: partial ? 'ordinal 3: content revision changed' : null,
+    reviewed_at: state === 'pending_review' ? null : '2026-09-19T01:00:00Z',
+    executed_at: state === 'executed' ? '2026-09-19T01:00:02Z' : null,
+    created_at: '2026-09-19T00:40:00Z',
+    items: Array.from({ length: count }, (_, index) => {
+      const ordinal = index + 1;
+      const itemExecuted = state === 'executed' || (partial && ordinal <= 2);
+      const itemStale = partial && ordinal === 3;
+      return {
+        id: 810 + ordinal,
+        ordinal,
+        content_item_id: 200 + index,
+        captured_content_revision: ordinal === 2 ? 2 : 1,
+        content_title: `Пост ${ordinal}: очень длинный русский заголовок для mobile review`,
+        local_date: '2026-09-20',
+        local_time: `${12 + ordinal}:30`,
+        resolved_scheduled_at: `2026-09-20T${10 + ordinal}:30:00Z`,
+        item_fingerprint: String(ordinal).repeat(64).slice(0, 64),
+        execution_key: String(ordinal + 1).repeat(64).slice(0, 64),
+        state: itemExecuted ? 'executed' : itemStale ? 'stale' : 'pending',
+        schedule_entry_id: itemExecuted ? 500 + ordinal : null,
+        publication_id: itemExecuted ? 600 + ordinal : null,
+        failure_reason: itemStale ? 'content revision changed' : null,
+        execution_started_at: itemExecuted ? '2026-09-19T01:00:01Z' : null,
+        executed_at: itemExecuted ? '2026-09-19T01:00:02Z' : null,
+      };
+    }),
+  };
+}
+
 describe('Assistant async ownership', () => {
   it('distinguishes initial loading, empty history and error', () => {
     expect(resolveChannelDataView(null, 7, 0)).toBe('loading');
@@ -362,6 +418,15 @@ describe('Assistant async ownership', () => {
     const approval = approvalView();
     const first = mergeAssistantApproval([], approval);
     const retry = mergeAssistantApproval(first, { ...approval });
+    expect(retry).toHaveLength(1);
+    expect(retry[0].id).toBe(approval.id);
+  });
+
+
+  it('series approval merge replaces an idempotent retry instead of duplicating review cards', () => {
+    const approval = seriesApprovalView();
+    const first = mergeAssistantSeriesApproval([], approval);
+    const retry = mergeAssistantSeriesApproval(first, { ...approval });
     expect(retry).toHaveLength(1);
     expect(retry[0].id).toBe(approval.id);
   });
@@ -484,7 +549,7 @@ describe('Assistant scenario rendering', () => {
     expect(html).not.toContain('<img src=x onerror=alert(1)>');
   });
 
-  it('renders an eight-item content series with plan metadata and editor-only actions', () => {
+  it('renders an eight-item series with exact bounded scheduling controls and no false scheduled state', () => {
     const html = renderToStaticMarkup(<AssistantBrief run={seriesRunView()} />);
     expect(html).toContain('Очень длинное название серии');
     expect(html).toContain('Bounded evergreen summary');
@@ -492,10 +557,81 @@ describe('Assistant scenario rendering', () => {
     expect(html.match(/Content #20/g)?.length ?? 0).toBeGreaterThan(0);
     expect(html).toContain('Угол:');
     expect(html).toContain('Цель:');
-    expect(html).not.toContain('Создать предложение');
-    expect(html).not.toContain('Подтвердить постановку в план');
-    expect(html).not.toContain('type="time"');
+    expect(html.match(/type="date"/g)).toHaveLength(8);
+    expect(html.match(/type="time"/g)).toHaveLength(8);
+    expect(html).toContain('Создать предложение расписания');
+    expect(html).toContain('ScheduleEntry и Publication не создаются');
+    expect(html).not.toContain('Поставлено в план');
     expect(html).not.toContain('Telegram сейчас не отправляется');
+  });
+
+  it('series review card shows exact batch effect, captured revisions and explicit decisions', () => {
+    const html = renderToStaticMarkup(
+      <AssistantBrief
+        run={seriesRunView()}
+        seriesApprovals={[seriesApprovalView()]}
+      />,
+    );
+    expect(html).toContain('Ожидает подтверждения');
+    expect(html).toContain('run #33');
+    expect(html).toContain('fingerprint dddddddddddd');
+    expect(html).toContain('8 постов · Europe/Berlin');
+    expect(html).toContain(
+      'После подтверждения будет создано 8 canonical ScheduleEntry + 8 Publication.',
+    );
+    expect(html).toContain('Telegram сейчас не отправляется');
+    expect(html).toContain('существующим canonical worker');
+    expect(html).toContain('captured revision 2');
+    expect(html).toContain('Подтвердить постановку серии в план');
+    expect(html).toContain('Отклонить');
+    expect(html).not.toContain('Поставлено в план');
+  });
+
+  it('executed series review shows every canonical pair and Planner action', () => {
+    const html = renderToStaticMarkup(
+      <AssistantBrief
+        run={seriesRunView()}
+        seriesApprovals={[seriesApprovalView('executed')]}
+      />,
+    );
+    expect(html).toContain('Поставлено в план');
+    expect(html.match(/ScheduleEntry #50/g)?.length ?? 0).toBeGreaterThan(0);
+    expect(html.match(/Publication #60/g)?.length ?? 0).toBeGreaterThan(0);
+    expect(html).toContain('ScheduleEntry #508');
+    expect(html).toContain('Publication #608');
+    expect(html).toContain('Открыть Planner');
+    expect(html).not.toContain('Подтвердить постановку серии в план');
+  });
+
+  it('partial_failed series review distinguishes executed, stale and pending ordinals textually', () => {
+    const html = renderToStaticMarkup(
+      <AssistantBrief
+        run={seriesRunView()}
+        seriesApprovals={[seriesApprovalView('partial_failed')]}
+      />,
+    );
+    expect(html).toContain('Частично выполнено');
+    expect(html).toContain('ScheduleEntry #501');
+    expect(html).toContain('ScheduleEntry #502');
+    expect(html).toContain('3. Пост 3');
+    expect(html).toContain('stale');
+    expect(html).toContain('content revision changed');
+    expect(html).toContain('4. Пост 4');
+    expect(html).toContain('pending');
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('Создать предложение расписания');
+  });
+
+  it('rejected series review is terminal and offers a fresh explicit proposal surface', () => {
+    const html = renderToStaticMarkup(
+      <AssistantBrief
+        run={seriesRunView()}
+        seriesApprovals={[seriesApprovalView('rejected')]}
+      />,
+    );
+    expect(html).toContain('Отклонено');
+    expect(html).toContain('Создать предложение расписания');
+    expect(html).not.toContain('Подтвердить постановку серии в план');
   });
 
   it('renders exactly three draft references with existing editor action and long Russian title', () => {
