@@ -18,7 +18,6 @@ from app.services.scheduling import as_utc
 @dataclass(frozen=True, slots=True)
 class PublishedContentPlanRow:
     publication_id: int
-    has_legacy_post_task_link: bool
     scheduled_at: datetime
     title: str
     autodeleted: bool
@@ -84,7 +83,7 @@ async def list_published_content_plan_rows(
     start_at: datetime,
     end_at: datetime,
 ) -> list[PublishedContentPlanRow]:
-    """List canonical published rows without depending on legacy PostTask presence."""
+    """List canonical published Content Plan rows."""
     try:
         safe_channel_id = int(channel_id)
         start = as_utc(start_at)
@@ -144,7 +143,6 @@ async def list_published_content_plan_rows(
         result.append(
             PublishedContentPlanRow(
                 publication_id=publication_id,
-                has_legacy_post_task_link=publication.legacy_post_task_id is not None,
                 scheduled_at=scheduled_at,
                 title=_title(item, revision),
                 autodeleted=deleted,
