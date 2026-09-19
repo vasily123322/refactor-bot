@@ -961,6 +961,7 @@ class AdminAgentAutomationTickService:
                 claim_token=claim_token,
                 scheduled_for=scheduled_for,
                 after_utc=scheduled_for,
+                outcome=OUTCOME_RUN_RECORDED,
             )
 
     async def tick(self, *, now_utc: datetime | None = None) -> int:
