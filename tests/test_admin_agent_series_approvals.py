@@ -722,14 +722,14 @@ def test_series_multiple_exact_recovery_outcomes_fail_closed(monkeypatch) -> Non
                 monkeypatch.setattr(service, "_finalize_item", crash_after_bridge)
                 with pytest.raises(RuntimeError, match="synthetic recovery ambiguity seed"):
                     await service.approve(
-                        batch_id=proposal.id,
-                        owner_tg_user_id=owner.tg_user_id,
-                        channel_id=channel.id,
-                        reviewer_tg_user_id=owner.tg_user_id,
+                        batch_id=proposal_id,
+                        owner_tg_user_id=owner_id,
+                        channel_id=channel_id,
+                        reviewer_tg_user_id=owner_id,
                     )
                 monkeypatch.setattr(service, "_finalize_item", original_finalize)
 
-                items = await service.items_for_batch(proposal.id)
+                items = await service.items_for_batch(proposal_id)
                 first = items[0]
                 assert first.state == ITEM_EXECUTING
                 existing_schedule = (
@@ -756,10 +756,10 @@ def test_series_multiple_exact_recovery_outcomes_fail_closed(monkeypatch) -> Non
                     now_utc=NOW + timedelta(seconds=31),
                 )
                 failed = await recovery_service.approve(
-                    batch_id=proposal.id,
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
-                    reviewer_tg_user_id=owner.tg_user_id,
+                    batch_id=proposal_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    reviewer_tg_user_id=owner_id,
                 )
                 assert failed is not None
                 assert failed.state == STATE_FAILED
