@@ -520,7 +520,9 @@ def test_studio_automation_history_cursor_is_deterministic(monkeypatch) -> None:
                 assert created.status_code == 201
                 automation_id = int(created.json()["id"])
 
-                scheduled_for = datetime(2026, 9, 19, 9, 30, tzinfo=timezone.utc)
+                first_scheduled_for = datetime(
+                    2026, 9, 19, 9, 30, tzinfo=timezone.utc
+                )
                 async with Session() as session:
                     rows = []
                     for index in range(4):
@@ -533,7 +535,7 @@ def test_studio_automation_history_cursor_is_deterministic(monkeypatch) -> None:
                             skill_id="drafts_tomorrow",
                             skill_version="1",
                             automation_id=automation_id,
-                            scheduled_for=scheduled_for,
+                            scheduled_for=first_scheduled_for + timedelta(minutes=index),
                             workflow_phase="completed",
                             checkpoint={},
                             status="completed",
@@ -542,7 +544,7 @@ def test_studio_automation_history_cursor_is_deterministic(monkeypatch) -> None:
                         session.add(row)
                         rows.append(row)
                     await session.commit()
-                    expected_ids = sorted((int(row.id) for row in rows), reverse=True)
+                    expected_ids = [int(row.id) for row in reversed(rows)]
 
                 first = await client.get(
                     f"/api/studio/channels/{channel.id}/assistant/automations/{automation_id}/runs",
