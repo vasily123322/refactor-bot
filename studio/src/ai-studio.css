@@ -25,6 +25,12 @@
   background: color-mix(in srgb, var(--tg-theme-bg-color, #0b1020) 48%, transparent);
 }
 .ai-run-main, .ai-run-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.ai-stat-card strong,
+.ai-stat-card span,
+.ai-run-main strong,
+.ai-run-meta {
+  font-variant-numeric: tabular-nums;
+}
 .ai-run-main strong { font-size: 12px; }
 .ai-run-main > span:not(.ai-run-kind), .ai-run-meta span { color: var(--tg-theme-hint-color, #94a3b8); font-size: 9px; }
 .ai-run-kind,
