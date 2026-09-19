@@ -94,7 +94,7 @@ describe('Assistant completed rendering', () => {
   it('renders completed run facts and escapes long Russian/HTML-like text', () => {
     const unsafe = '<img src=x onerror=alert(1)> Очень длинный русский результат '.repeat(12);
     const html = renderToStaticMarkup(<AssistantBrief run={runView(unsafe)} />);
-    expect(html).toContain('Operational');
+    expect(html).toContain('Просрочена ожидающая публикация');
     expect(html).toContain('ScheduleEntry #4');
     expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
     expect(html).not.toContain('<img src=x onerror=alert(1)>');
