@@ -221,7 +221,6 @@ class CanonicalRepeatReservationVerifier:
         canonical_shape = (
             successor.execution_mode == CANONICAL_EXECUTION_MODE
             and successor.repeat_source_publication_id == safe_source_id
-            and successor.legacy_post_task_id is None
             and successor_meta.get("canonical_repeat_posttask_free") is True
             and successor_schedule_meta.get("canonical_repeat_posttask_free") is True
         )
