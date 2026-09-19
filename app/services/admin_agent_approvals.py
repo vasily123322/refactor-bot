@@ -5,7 +5,7 @@ from datetime import datetime, time, timedelta, timezone
 from hashlib import sha256
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -166,6 +166,39 @@ class AdminAgentApprovalService:
                     )
                     .order_by(AdminAgentApproval.id.desc())
                     .limit(max(1, min(int(limit), 50)))
+                )
+            ).scalars()
+        )
+
+    async def latest_for_source_run(
+        self,
+        *,
+        owner_tg_user_id: int,
+        channel_id: int,
+        source_run_id: int,
+        limit: int = 8,
+    ) -> list[AdminAgentApproval]:
+        latest_ids = (
+            select(func.max(AdminAgentApproval.id).label("approval_id"))
+            .where(
+                AdminAgentApproval.owner_tg_user_id == int(owner_tg_user_id),
+                AdminAgentApproval.channel_id == int(channel_id),
+                AdminAgentApproval.source_admin_agent_run_id == int(source_run_id),
+                AdminAgentApproval.action_type == ACTION_SCHEDULE_DRAFT_TOMORROW,
+            )
+            .group_by(AdminAgentApproval.content_item_id)
+            .subquery()
+        )
+        return list(
+            (
+                await self.session.execute(
+                    select(AdminAgentApproval)
+                    .join(
+                        latest_ids,
+                        AdminAgentApproval.id == latest_ids.c.approval_id,
+                    )
+                    .order_by(AdminAgentApproval.id.desc())
+                    .limit(max(1, min(int(limit), 8)))
                 )
             ).scalars()
         )
