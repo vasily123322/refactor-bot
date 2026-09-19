@@ -766,10 +766,26 @@ export const studioApi = {
     request<AssistantAutomationView>(
       `/api/studio/channels/${channelId}/assistant/automations/${automationId}`,
     ),
-  assistantAutomationRuns: (channelId: number, automationId: number, limit = 20) =>
-    request<AssistantAutomationRunSummaryView[]>(
-      `/api/studio/channels/${channelId}/assistant/automations/${automationId}/runs?limit=${encodeURIComponent(String(limit))}`,
-    ),
+  assistantAutomationRuns: (
+    channelId: number,
+    automationId: number,
+    options: {
+      limit?: number;
+      beforeScheduledFor?: string;
+      beforeId?: number;
+    } = {},
+  ) => {
+    const query = new URLSearchParams({
+      limit: String(options.limit ?? 20),
+    });
+    if (options.beforeScheduledFor !== undefined && options.beforeId !== undefined) {
+      query.set('before_scheduled_for', options.beforeScheduledFor);
+      query.set('before_id', String(options.beforeId));
+    }
+    return request<AssistantAutomationRunSummaryView[]>(
+      `/api/studio/channels/${channelId}/assistant/automations/${automationId}/runs?${query}`,
+    );
+  },
   createAssistantAutomation: (
     channelId: number,
     input: AssistantAutomationCreateInput,
