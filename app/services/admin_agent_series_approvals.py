@@ -807,6 +807,8 @@ class AdminAgentSeriesApprovalService:
             or str(run.skill_id or "") != SUPPORTED_SKILL_ID
             or str(run.skill_version or "") != SUPPORTED_SKILL_VERSION
             or str(run.status) != RUN_COMPLETED
+            or str(run.workflow_phase or "") != "completed"
+            or run.checkpoint is not None
         ):
             return "source run contract changed"
         result = run.result
