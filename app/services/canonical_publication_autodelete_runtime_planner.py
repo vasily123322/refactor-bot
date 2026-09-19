@@ -75,8 +75,6 @@ class CanonicalPublicationAutodeleteRuntimePlanner:
     """Pure canonical-only non-repeat time-based autodelete runtime proof.
 
     Runtime is derived only from a terminal attempt produced by canonical delivery.
-    Physical PostTask retirement alone never transfers this authority.
-
     Normal live delivery materializes its timer after admin handling, matching the legacy
     scheduling boundary, so an existing durable due time may be later than primary
     provider completion plus the configured duration. This terminal planner accepts such
@@ -123,7 +121,6 @@ class CanonicalPublicationAutodeleteRuntimePlanner:
                 )
                 .where(
                     Publication.id == safe_publication_id,
-                    Publication.legacy_post_task_id.is_(None),
                     Publication.status == "published",
                     ScheduleEntry.status == "completed",
                     PublicationAttempt.status == "published",
