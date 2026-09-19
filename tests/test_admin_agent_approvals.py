@@ -638,3 +638,70 @@ def test_simultaneous_approve_has_one_atomic_execution_winner(
 
     asyncio.run(run())
 
+
+
+def test_request_id_scope_does_not_leak_and_ineligible_draft_goes_stale() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                first_owner, first_channel = await _setup_channel(
+                    session,
+                    tg_user_id=9918,
+                )
+                second_owner, second_channel = await _setup_channel(
+                    session,
+                    tg_user_id=9919,
+                )
+                first_item = await _draft(
+                    session,
+                    channel_id=first_channel.id,
+                    owner_tg_user_id=first_owner.tg_user_id,
+                )
+                second_item = await _draft(
+                    session,
+                    channel_id=second_channel.id,
+                    owner_tg_user_id=second_owner.tg_user_id,
+                )
+                now = datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc)
+                service = AdminAgentApprovalService(session, now_utc=now)
+
+                first = await service.create_schedule_draft_tomorrow(
+                    owner_tg_user_id=first_owner.tg_user_id,
+                    channel_id=first_channel.id,
+                    content_item_id=first_item.id,
+                    local_time_value="12:00",
+                    request_id="approval-shared-scope-0001",
+                )
+                second = await service.create_schedule_draft_tomorrow(
+                    owner_tg_user_id=second_owner.tg_user_id,
+                    channel_id=second_channel.id,
+                    content_item_id=second_item.id,
+                    local_time_value="13:00",
+                    request_id="approval-shared-scope-0001",
+                )
+                assert first.id != second.id
+                assert first.owner_tg_user_id != second.owner_tg_user_id
+                assert first.channel_id != second.channel_id
+                assert first.content_item_id == first_item.id
+                assert second.content_item_id == second_item.id
+
+                await ContentRepo(session).set_status(first_item.id, "archived")
+                stale = await service.approve(
+                    approval_id=first.id,
+                    owner_tg_user_id=first_owner.tg_user_id,
+                    channel_id=first_channel.id,
+                    reviewer_tg_user_id=first_owner.tg_user_id,
+                )
+                assert stale is not None
+                assert stale.state == STATE_STALE
+                assert "no longer eligible" in str(stale.failure_reason)
+                assert await _counts(session, first_channel.id) == (0, 0)
+                assert await _counts(session, second_channel.id) == (0, 0)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
