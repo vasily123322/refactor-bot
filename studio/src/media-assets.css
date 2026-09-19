@@ -16,6 +16,7 @@
 .rich-media-library-head > div:last-child { display: flex; gap: 5px; }
 .rich-media-library-head button,
 .rich-media-register button,
+.rich-media-history-controls button,
 .rich-media-collection-editor button {
   border: 1px solid color-mix(in srgb, #a855f7 26%, transparent);
   border-radius: 7px;
@@ -68,6 +69,13 @@
 }
 .rich-media-select { width: 100%; }
 .rich-media-caption { width: 100%; min-height: 62px; resize: vertical; }
+.rich-media-history-controls {
+  display: grid;
+  gap: 6px;
+  padding: 0 10px 10px;
+}
+.rich-media-history-controls .rich-media-error { margin: 0; }
+.rich-media-history-controls button { justify-self: start; }
 .rich-media-error {
   margin: 0 10px 8px;
   border-radius: 7px;
