@@ -4,6 +4,7 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -41,6 +42,11 @@ class AdminAgentRun(Base):
             "skill_id",
             "skill_version",
         ),
+        UniqueConstraint(
+            "automation_id",
+            "scheduled_for",
+            name="uq_admin_agent_run_automation_occurrence",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -53,6 +59,10 @@ class AdminAgentRun(Base):
     operator_input: Mapped[dict | None] = mapped_column(JSON)
     skill_id: Mapped[str | None] = mapped_column(String(64))
     skill_version: Mapped[str | None] = mapped_column(String(32))
+    automation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("admin_agent_automations.id", ondelete="SET NULL"), index=True
+    )
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     workflow_phase: Mapped[str | None] = mapped_column(String(64))
     checkpoint: Mapped[dict | None] = mapped_column(JSON)
     execution_claim_token: Mapped[str | None] = mapped_column(String(64))
@@ -68,6 +78,70 @@ class AdminAgentRun(Base):
     finished_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class AdminAgentAutomation(Base):
+    """Durable bounded recurring definition for one exact Admin Agent skill version."""
+
+    __tablename__ = "admin_agent_automations"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_tg_user_id",
+            "channel_id",
+            "request_id",
+            name="uq_admin_agent_automation_request",
+        ),
+        CheckConstraint(
+            "cadence_kind IN ('daily','weekly')",
+            name="ck_admin_agent_automation_cadence_kind",
+        ),
+        CheckConstraint(
+            "(cadence_kind = 'daily' AND weekday IS NULL) OR "
+            "(cadence_kind = 'weekly' AND weekday BETWEEN 0 AND 6)",
+            name="ck_admin_agent_automation_weekday",
+        ),
+        Index(
+            "ix_admin_agent_automations_due",
+            "enabled",
+            "next_run_at",
+        ),
+        Index(
+            "ix_admin_agent_automations_owner_channel",
+            "owner_tg_user_id",
+            "channel_id",
+        ),
+        Index(
+            "ix_admin_agent_automations_skill_version",
+            "skill_id",
+            "skill_version",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    owner_tg_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    channel_id: Mapped[int] = mapped_column(
+        ForeignKey("channels.id", ondelete="CASCADE"), index=True
+    )
+    skill_id: Mapped[str] = mapped_column(String(64))
+    skill_version: Mapped[str] = mapped_column(String(32))
+    operator_input: Mapped[dict] = mapped_column(JSON, default=dict)
+    cadence_kind: Mapped[str] = mapped_column(String(16))
+    local_time: Mapped[str] = mapped_column(String(5))
+    weekday: Mapped[int | None] = mapped_column(Integer)
+    timezone: Mapped[str] = mapped_column(String(64))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    last_scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claim_token: Mapped[str | None] = mapped_column(String(64))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    request_id: Mapped[str] = mapped_column(String(128))
+    definition_fingerprint: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 
