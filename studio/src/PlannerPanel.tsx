@@ -7,6 +7,7 @@ import {
   ExclusiveOperationLock,
   resolveScopedDataView,
   runExclusiveOperation,
+  type ChannelRequestToken,
   type ScopedLoadState,
 } from './asyncControl';
 import { plannerAttemptLabel } from './plannerAttempts';
@@ -85,11 +86,29 @@ export function PlannerPanel({
     [channel?.id, weekStart],
   );
   const requestOwnershipRef = useRef(new ChannelRequestOwnership());
+  const operationContextOwnershipRef = useRef(new ChannelRequestOwnership());
+  const operationContextRef = useRef<{
+    scopeKey: string | null;
+    token: ChannelRequestToken | null;
+  }>({ scopeKey: null, token: null });
   const validDataScopeRef = useRef<string | null>(null);
   const operationLocksRef = useRef(new Map<string, ExclusiveOperationLock>());
   const channelIdRef = useRef<number | null>(channel?.id ?? null);
   const scopeKeyRef = useRef(scopeKey);
-  channelIdRef.current = channel?.id ?? null;
+  const currentChannelId = channel?.id ?? null;
+  if (operationContextRef.current.scopeKey !== scopeKey) {
+    operationContextRef.current.scopeKey = scopeKey;
+    if (currentChannelId === null) {
+      operationContextOwnershipRef.current.invalidate();
+      operationContextRef.current.token = null;
+    } else {
+      operationContextRef.current.token = operationContextOwnershipRef.current.begin(
+        currentChannelId,
+        scopeKey,
+      );
+    }
+  }
+  channelIdRef.current = currentChannelId;
   scopeKeyRef.current = scopeKey;
 
   const load = useCallback(async (): Promise<boolean> => {
@@ -208,28 +227,27 @@ export function PlannerPanel({
 
     const operationChannelId = channel.id;
     const operationScopeKey = scopeKey;
+    const operationContextToken = operationContextRef.current.token;
+    if (operationContextToken === null) return;
+    const isCurrent = () => operationContextOwnershipRef.current.isCurrent(
+      operationContextToken,
+      channelIdRef.current,
+      scopeKeyRef.current,
+    );
     const resourceKey = `schedule:${operationChannelId}:${entry.schedule_id}`;
     const operationKey = `reschedule:${operationChannelId}:${entry.schedule_id}`;
     await runScheduleOperation(resourceKey, operationKey, async () => {
       setError(null);
       try {
         const updated = await studioApi.reschedule(operationChannelId, entry.schedule_id, next);
-        if (
-          channelIdRef.current !== operationChannelId
-          || scopeKeyRef.current !== operationScopeKey
-        ) {
-          return;
-        }
+        if (!isCurrent()) return;
         setEntries((current) =>
           current.map((row) => (row.schedule_id === updated.schedule_id ? updated : row)),
         );
         setEditingId(null);
         await load();
       } catch (reason) {
-        if (
-          channelIdRef.current === operationChannelId
-          && scopeKeyRef.current === operationScopeKey
-        ) {
+        if (isCurrent()) {
           emitStudioHaptic('action-error');
           setError(errorText(reason));
         }
@@ -244,26 +262,25 @@ export function PlannerPanel({
 
     const operationChannelId = channel.id;
     const operationScopeKey = scopeKey;
+    const operationContextToken = operationContextRef.current.token;
+    if (operationContextToken === null) return;
+    const isCurrent = () => operationContextOwnershipRef.current.isCurrent(
+      operationContextToken,
+      channelIdRef.current,
+      scopeKeyRef.current,
+    );
     const resourceKey = `schedule:${operationChannelId}:${entry.schedule_id}`;
     const operationKey = `cancel:${operationChannelId}:${entry.schedule_id}`;
     await runScheduleOperation(resourceKey, operationKey, async () => {
       setError(null);
       try {
         const updated = await studioApi.cancelSchedule(operationChannelId, entry.schedule_id);
-        if (
-          channelIdRef.current !== operationChannelId
-          || scopeKeyRef.current !== operationScopeKey
-        ) {
-          return;
-        }
+        if (!isCurrent()) return;
         setEntries((current) =>
           current.map((row) => (row.schedule_id === updated.schedule_id ? updated : row)),
         );
       } catch (reason) {
-        if (
-          channelIdRef.current === operationChannelId
-          && scopeKeyRef.current === operationScopeKey
-        ) {
+        if (isCurrent()) {
           emitStudioHaptic('action-error');
           setError(errorText(reason));
         }
