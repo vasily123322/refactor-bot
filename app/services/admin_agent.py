@@ -742,6 +742,19 @@ class AdminAgentRunner:
 
     async def _persist_validated_drafts(self, run: AdminAgentRun) -> None:
         drafts, target_local_date, timezone_name, context_summary = self._validated_checkpoint(run)
+        existing_artifact_count = int(
+            (
+                await self.session.execute(
+                    select(func.count(AdminAgentRunArtifact.id)).where(
+                        AdminAgentRunArtifact.run_id == int(run.id)
+                    )
+                )
+            ).scalar_one()
+        )
+        if existing_artifact_count:
+            raise AgentResumeError(
+                "generation_validated run already has conflicting durable artifacts"
+            )
         self._step()
         await self._event(
             run,
