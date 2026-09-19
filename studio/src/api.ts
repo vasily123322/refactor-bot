@@ -218,6 +218,60 @@ export type SourceWorkerHealthView = {
   totals: SourceWorkerTotalsView;
 };
 
+export type AssistantAttentionItem = {
+  fact_id: string;
+  category: string;
+  severity: string;
+  title: string;
+  detail: string;
+  refs: {
+    schedule_entry_id?: number;
+    publication_id?: number;
+    content_item_id?: number;
+    source_connector_id?: number;
+  };
+  suggested_action: string;
+};
+
+export type AssistantRunResult = {
+  scenario: 'attention_today';
+  summary: string;
+  attention_items: AssistantAttentionItem[];
+  timezone: string;
+  generated_by: 'llm' | 'deterministic_fallback';
+  tool_names: string[];
+  execution_limits: {
+    max_steps: number;
+    max_tool_calls: number;
+    max_llm_calls: number;
+    max_seconds: number;
+  };
+};
+
+export type AssistantEventView = {
+  id: number;
+  sequence: number;
+  event_type: string;
+  tool_name: string | null;
+  payload: Record<string, unknown>;
+  created_at: string | null;
+};
+
+export type AssistantRunView = {
+  id: number;
+  channel_id: number;
+  scenario: string;
+  status: string;
+  model: string | null;
+  tokens_used: number;
+  result: AssistantRunResult | null;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string | null;
+  events: AssistantEventView[];
+};
+
 export const studioApi = {
   me: () => request<StudioUser>('/api/studio/me'),
   channels: () => request<Channel[]>('/api/studio/channels'),
@@ -378,6 +432,19 @@ export const studioApi = {
     request<LocalBatchEnrichmentResult>(
       `/api/studio/channels/${channelId}/candidates/enrich/local-batch`,
       { method: 'POST', body: JSON.stringify({ limit }) },
+    ),
+  assistantRuns: (channelId: number, limit = 10) =>
+    request<AssistantRunView[]>(
+      `/api/studio/channels/${channelId}/assistant/runs?limit=${encodeURIComponent(String(limit))}`,
+    ),
+  createAssistantRun: (channelId: number, scenario: 'attention_today') =>
+    request<AssistantRunView>(`/api/studio/channels/${channelId}/assistant/runs`, {
+      method: 'POST',
+      body: JSON.stringify({ scenario }),
+    }),
+  assistantRun: (channelId: number, runId: number) =>
+    request<AssistantRunView>(
+      `/api/studio/channels/${channelId}/assistant/runs/${runId}`,
     ),
   aiActivity: (channelId: number, limit = 50) =>
     request<AIActivityView>(
