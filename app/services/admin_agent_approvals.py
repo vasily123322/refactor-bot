@@ -500,15 +500,17 @@ class AdminAgentApprovalService:
 
     async def _finalize_executed(
         self,
-        approval: AdminAgentApproval,
         *,
+        approval_id: int,
+        owner_tg_user_id: int,
+        channel_id: int,
         schedule_entry_id: int,
         publication_id: int,
     ) -> AdminAgentApproval:
         current = await self._load(
-            approval_id=int(approval.id),
-            owner_tg_user_id=int(approval.owner_tg_user_id),
-            channel_id=int(approval.channel_id),
+            approval_id=int(approval_id),
+            owner_tg_user_id=int(owner_tg_user_id),
+            channel_id=int(channel_id),
             for_update=True,
         )
         if current is None:
@@ -559,7 +561,9 @@ class AdminAgentApprovalService:
             if schedule_id <= 0:
                 raise ApprovalExecutionError("canonical schedule result is missing")
             return await self._finalize_executed(
-                approval,
+                approval_id=approval_id,
+                owner_tg_user_id=owner_tg_user_id,
+                channel_id=channel_id,
                 schedule_entry_id=schedule_id,
                 publication_id=int(publication.id),
             )
@@ -604,7 +608,9 @@ class AdminAgentApprovalService:
             recovery, schedule, publication = await self._recover_existing(approval)
             if recovery == "match" and schedule is not None and publication is not None:
                 return await self._finalize_executed(
-                    approval,
+                    approval_id=int(approval.id),
+                    owner_tg_user_id=int(approval.owner_tg_user_id),
+                    channel_id=int(approval.channel_id),
                     schedule_entry_id=int(schedule.id),
                     publication_id=int(publication.id),
                 )
