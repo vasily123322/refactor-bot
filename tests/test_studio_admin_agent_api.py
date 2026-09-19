@@ -18,6 +18,7 @@ from app.api.studio.config import StudioConfig
 from app.core.config import settings
 from app.core.db import Base
 from app.domain.content.models import ContentItem
+from app.repositories.ai_settings import ChannelAISettingsRepo
 from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
 from app.services.ai_generation import AIGenerationService
@@ -68,6 +69,9 @@ def test_studio_assistant_runs_are_owner_scoped_bounded_and_draft_idempotent(mon
             async with Session() as session:
                 owner = await ClientsRepo(session).create_or_get(9701, "owner", "Owner")
                 channel = await ChannelsRepo(session).create(owner.id, -1009701, "Owned")
+                ai = await ChannelAISettingsRepo(session).get_or_create(channel.id)
+                ai.enabled = False
+                await session.commit()
                 other = await ClientsRepo(session).create_or_get(9702, "other", "Other")
                 foreign = await ChannelsRepo(session).create(other.id, -1009702, "Foreign")
 
