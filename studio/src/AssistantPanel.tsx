@@ -89,7 +89,8 @@ function DraftApprovalCard({
   targetLocalDate,
   timezone,
   approval,
-  busy,
+  proposalBusy,
+  reviewBusy,
   onOpenContent,
   onOpenPlanner,
   onCreateProposal,
@@ -100,7 +101,8 @@ function DraftApprovalCard({
   targetLocalDate: string;
   timezone: string;
   approval: AssistantApprovalView | null;
-  busy: boolean;
+  proposalBusy: boolean;
+  reviewBusy: boolean;
   onOpenContent?: (contentId: number) => void;
   onOpenPlanner?: VoidFunction;
   onCreateProposal?: (contentId: number, localTime: string) => Promise<void>;
@@ -184,14 +186,14 @@ function DraftApprovalCard({
             <div className="assistant-approval-actions">
               <button
                 className="button primary assistant-important-action"
-                disabled={busy}
+                disabled={reviewBusy}
                 onClick={() => void onApprove?.(approval.id)}
               >
-                {busy ? 'Подтверждаю…' : 'Подтвердить постановку в план'}
+                {reviewBusy ? 'Подтверждаю…' : 'Подтвердить постановку в план'}
               </button>
               <button
                 className="button secondary"
-                disabled={busy}
+                disabled={reviewBusy}
                 onClick={() => void onReject?.(approval.id)}
               >
                 Отклонить
@@ -202,10 +204,10 @@ function DraftApprovalCard({
             <div className="assistant-approval-actions">
               <button
                 className="button secondary"
-                disabled={busy}
+                disabled={reviewBusy}
                 onClick={() => void onApprove?.(approval.id)}
               >
-                {busy ? 'Проверяю…' : 'Проверить выполнение'}
+                {reviewBusy ? 'Проверяю…' : 'Проверить выполнение'}
               </button>
             </div>
           )}
@@ -233,15 +235,15 @@ function DraftApprovalCard({
               type="time"
               value={localTime}
               onChange={(event) => setLocalTime(event.target.value)}
-              disabled={busy}
+              disabled={proposalBusy}
               required
             />
             <button
               className="button secondary"
-              disabled={busy || !onCreateProposal || !localTime}
+              disabled={proposalBusy || !onCreateProposal || !localTime}
               onClick={() => void onCreateProposal?.(draft.content_item_id, localTime)}
             >
-              {busy ? 'Создаю предложение…' : 'Создать предложение'}
+              {proposalBusy ? 'Создаю предложение…' : 'Создать предложение'}
             </button>
           </div>
           <small>
@@ -295,9 +297,10 @@ export function AssistantBrief({
         <div className="assistant-drafts">
           {result.drafts.map((draft) => {
             const approval = latestApprovalForDraft(approvals, draft.content_item_id);
-            const busyKey = approval
-              ? `approval:${approval.id}`
-              : `proposal:${draft.content_item_id}`;
+            const proposalBusy = busyKeys.has(`proposal:${draft.content_item_id}`);
+            const reviewBusy = approval
+              ? busyKeys.has(`approval:${approval.id}`)
+              : false;
             return (
               <DraftApprovalCard
                 key={draft.content_item_id}
@@ -305,7 +308,8 @@ export function AssistantBrief({
                 targetLocalDate={result.target_local_date}
                 timezone={result.timezone}
                 approval={approval}
-                busy={busyKeys.has(busyKey)}
+                proposalBusy={proposalBusy}
+                reviewBusy={reviewBusy}
                 onOpenContent={onOpenContent}
                 onOpenPlanner={onOpenPlanner}
                 onCreateProposal={onCreateProposal}
@@ -505,7 +509,7 @@ export function AssistantPanel({
         if (channelIdRef.current === channelId) {
           setError({ channelId, message: errorMessage(reason) });
         }
-        throw reason;
+        return null;
       } finally {
         if (channelIdRef.current === channelId) {
           setBusyApprovalKeys((previous) => {
