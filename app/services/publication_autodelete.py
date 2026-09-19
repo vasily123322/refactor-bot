@@ -348,7 +348,6 @@ class PublicationAutodeleteService:
             .join(Channel, Channel.id == Publication.channel_id)
             .where(
                 Publication.id == int(publication_id),
-                Publication.legacy_post_task_id.is_(None),
                 Publication.status == "published",
                 ScheduleEntry.status == "completed",
             )
