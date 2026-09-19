@@ -10,9 +10,10 @@ from sqlalchemy import create_engine
 
 import app.domain  # noqa: F401 register the complete ORM schema
 from app.core.db import Base
+from migration_snapshots.schema_20260809 import Base as FrozenBaselineBase
 
 
-HEAD = "20260918_0014"
+HEAD = "20260919_0015"
 
 
 def _run_alembic(
@@ -71,34 +72,44 @@ def test_alembic_baseline_is_frozen_and_followup_revisions_are_idempotent(
     repo_root = Path(__file__).resolve().parents[1]
     database_path = tmp_path / "baseline.db"
     current_orm_tables = set(Base.metadata.tables)
-    followup_tables = {
-        "scheduler_task_leases",
+    frozen_baseline_tables = set(FrozenBaselineBase.metadata.tables)
+    retained_followup_tables = {
         "publication_autodelete_leases",
         "publication_autodelete_view_states",
         "publication_delivery_leases",
         "publication_delivery_actions",
         "publication_autodelete_actions",
-        "legacy_time_views_delete_actions",
         "posting_dedupe_locks",
         "studio_channel_onboarding_requests",
         "channel_dm_reply_commands",
         "channel_dm_reply_intents",
         "canonical_runtime_safety_audits",
     }
-    assert followup_tables <= current_orm_tables
+    dropped_legacy_tables = {
+        "post_tasks",
+        "scheduler_task_leases",
+        "legacy_time_views_delete_actions",
+    }
+
+    assert "post_tasks" in frozen_baseline_tables
+    assert "post_tasks" not in current_orm_tables
+    assert "legacy_post_task_id" in FrozenBaselineBase.metadata.tables[
+        "publications"
+    ].columns
+    assert "legacy_post_task_id" not in Base.metadata.tables["publications"].columns
+    assert retained_followup_tables <= current_orm_tables
+    assert dropped_legacy_tables.isdisjoint(current_orm_tables)
 
     baseline = _run_alembic(repo_root, database_path, "20260809_0001")
     assert baseline.returncode == 0, baseline.stdout + baseline.stderr
 
-    baseline_tables = _table_names(database_path)
-    assert baseline_tables == (
-        current_orm_tables - followup_tables | {"alembic_version"}
-    )
+    assert _table_names(database_path) == frozen_baseline_tables | {"alembic_version"}
     assert _version(database_path) == ("20260809_0001",)
 
     head = _run_alembic(repo_root, database_path, "head")
     assert head.returncode == 0, head.stdout + head.stderr
     assert _table_names(database_path) == current_orm_tables | {"alembic_version"}
+    assert dropped_legacy_tables.isdisjoint(_table_names(database_path))
     assert _version(database_path) == (HEAD,)
 
     repeated = _run_alembic(repo_root, database_path, "head")
@@ -113,13 +124,11 @@ def test_followup_revisions_adopt_tables_precreated_by_legacy_create_all(
     repo_root = Path(__file__).resolve().parents[1]
     database_path = tmp_path / "legacy-precreated.db"
     followup_tables = (
-        "scheduler_task_leases",
         "publication_autodelete_leases",
         "publication_autodelete_view_states",
         "publication_delivery_leases",
         "publication_delivery_actions",
         "publication_autodelete_actions",
-        "legacy_time_views_delete_actions",
         "posting_dedupe_locks",
         "studio_channel_onboarding_requests",
         "channel_dm_reply_commands",
