@@ -145,12 +145,10 @@ def test_attention_run_is_channel_scoped_persistent_and_timezone_aware(monkeypat
                 assert f"source:{source.id}:degraded" in fact_ids
                 assert "ai:disabled" in fact_ids
                 serialized = repr(items)
-                assert str(foreign_schedule.id) not in {
-                    str(ref)
+                assert all(
+                    item.get("refs", {}).get("schedule_entry_id") != foreign_schedule.id
                     for item in items
-                    for ref in item.get("refs", {}).values()
-                    if ref == foreign_schedule.id and item["category"] == "schedule"
-                }
+                )
                 assert "foreign failure" not in serialized
                 assert "foreign.xml" not in serialized
 
