@@ -93,6 +93,33 @@ function automationRunSummary(run: AssistantAutomationRunSummaryView): string {
   return `#${run.id} · ${run.status}${phase} · ${run.tokens_used} tokens${model}`;
 }
 
+export type AutomationControl =
+  | 'pause'
+  | 'enable'
+  | 'resume'
+  | 'history'
+  | 'replacement';
+
+export function automationAvailableControls(
+  automation: AssistantAutomationView,
+): AutomationControl[] {
+  const controls: AutomationControl[] = [];
+  if (automation.enabled) controls.push('pause');
+  if (
+    !automation.enabled
+    && automation.health === 'paused'
+    && automation.disabled_reason === 'manual_pause'
+  ) controls.push('enable');
+  if (automation.latest_run?.resumable) controls.push('resume');
+  controls.push('history');
+  if (
+    automation.migration_available
+    && automation.suggested_skill_id
+    && automation.suggested_skill_version
+  ) controls.push('replacement');
+  return controls;
+}
+
 export function automationDataView(
   state: ChannelLoadState | null,
   channelId: number,
@@ -689,12 +716,9 @@ export function AssistantAutomations({
             && historyState?.channelId === channel.id
             && historyState.scopeKey === historyScopeKey
             && historyState.phase === 'error-without-valid-data';
-          const canEnable = (
-            !automation.enabled
-            && automation.health === 'paused'
-            && automation.disabled_reason === 'manual_pause'
-          );
-          const canPause = automation.enabled;
+          const controls = automationAvailableControls(automation);
+          const canEnable = controls.includes('enable');
+          const canPause = controls.includes('pause');
           return (
             <article className="assistant-automation-row assistant-automation-row-e5" key={automation.id}>
               <div className="assistant-automation-main">
@@ -738,7 +762,7 @@ export function AssistantAutomations({
                         : canPause ? 'Приостановить' : 'Включить'}
                     </button>
                   )}
-                  {automation.latest_run?.resumable && (
+                  {controls.includes('resume') && automation.latest_run?.resumable && (
                     <button
                       className="button secondary"
                       disabled={resumeBusyIds.has(automation.id)}
@@ -764,7 +788,7 @@ export function AssistantAutomations({
                   >
                     {historySelected ? 'Скрыть историю' : 'История запусков'}
                   </button>
-                  {automation.migration_available
+                  {controls.includes('replacement')
                     && automation.suggested_skill_id
                     && automation.suggested_skill_version && (
                     <button
