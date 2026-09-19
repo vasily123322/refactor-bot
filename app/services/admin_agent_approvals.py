@@ -655,7 +655,7 @@ class AdminAgentApprovalService:
         transition = await self.session.execute(
             update(AdminAgentApproval)
             .where(
-                AdminAgentApproval.id == int(approval.id),
+                AdminAgentApproval.id == int(approval_id),
                 AdminAgentApproval.owner_tg_user_id == int(owner_tg_user_id),
                 AdminAgentApproval.channel_id == int(channel_id),
                 AdminAgentApproval.state == STATE_PENDING_REVIEW,
