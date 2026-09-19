@@ -13,8 +13,6 @@ from app.domain.publishing.models import Publication, PublicationAttempt, Schedu
 
 
 HEALTHY_LIVE_LEASE = "healthy_live_lease"
-LEGACY_TRANSPORT_RELINKED = "legacy_transport_relinked"
-LEGACY_TRANSPORT_LINKED = "legacy_transport_linked"
 DURABLE_DELIVERY_EVIDENCE = "durable_delivery_evidence"
 SCHEDULE_MISMATCH = "schedule_mismatch"
 ATTEMPT_MISMATCH = "attempt_mismatch"
@@ -22,8 +20,6 @@ MISSING_LEASE = "missing_lease"
 EXPIRED_LEASE = "expired_lease"
 
 _FINDING_PRECEDENCE = (
-    LEGACY_TRANSPORT_RELINKED,
-    LEGACY_TRANSPORT_LINKED,
     DURABLE_DELIVERY_EVIDENCE,
     SCHEDULE_MISMATCH,
     ATTEMPT_MISMATCH,
@@ -54,7 +50,6 @@ class CanonicalPublicationDeliveryInflightAuditItem:
     findings: tuple[str, ...]
     lease_state: str
     lease_expires_at: datetime | None
-    legacy_post_task_id: int | None
     schedule_entry_id: int | None
     attempt_count: int
 
@@ -91,13 +86,6 @@ class CanonicalPublicationDeliveryInflightAuditService:
             or int(schedule.channel_id) != int(publication.channel_id)
         )
 
-    @staticmethod
-    def _canonical_attempt_present(attempts: list[PublicationAttempt]) -> bool:
-        for attempt in attempts:
-            meta = attempt.meta
-            if isinstance(meta, Mapping) and meta.get("canonical_delivery") is True:
-                return True
-        return False
 
     @staticmethod
     def _attempt_mismatch(
@@ -229,11 +217,6 @@ class CanonicalPublicationDeliveryInflightAuditService:
             lease = leases.get(publication_id)
             findings: set[str] = set()
 
-            if publication.legacy_post_task_id is not None:
-                if self._canonical_attempt_present(attempts):
-                    findings.add(LEGACY_TRANSPORT_RELINKED)
-                else:
-                    findings.add(LEGACY_TRANSPORT_LINKED)
             if self._has_durable_delivery_evidence(publication, attempts):
                 findings.add(DURABLE_DELIVERY_EVIDENCE)
             if self._schedule_mismatch(publication, schedule):
@@ -266,11 +249,6 @@ class CanonicalPublicationDeliveryInflightAuditService:
                     findings=ordered_findings,
                     lease_state=lease_state,
                     lease_expires_at=lease_expires_at,
-                    legacy_post_task_id=(
-                        int(publication.legacy_post_task_id)
-                        if publication.legacy_post_task_id is not None
-                        else None
-                    ),
                     schedule_entry_id=(
                         int(publication.schedule_entry_id)
                         if publication.schedule_entry_id is not None
