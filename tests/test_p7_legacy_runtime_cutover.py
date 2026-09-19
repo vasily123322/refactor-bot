@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.domain.legacy_time_views_delete_action import LegacyTimeViewsDeleteAction
-from app.domain.models import PostTask
-from app.domain.scheduler import SchedulerTaskLease
+from app.core.db import Base
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,7 +74,10 @@ def test_p7_retired_runtime_modules_are_deleted() -> None:
     assert [path for path in retired if (ROOT / path).exists()] == []
 
 
-def test_p7_preserves_p8_schema_and_durable_evidence_models() -> None:
-    assert PostTask.__tablename__ == "post_tasks"
-    assert SchedulerTaskLease.__tablename__ == "scheduler_task_leases"
-    assert LegacyTimeViewsDeleteAction.__tablename__ == "legacy_time_views_delete_actions"
+def test_p8_retired_schema_identity_is_absent_from_current_orm() -> None:
+    assert "post_tasks" not in Base.metadata.tables
+    assert "scheduler_task_leases" not in Base.metadata.tables
+    assert "legacy_time_views_delete_actions" not in Base.metadata.tables
+    assert "legacy_post_task_id" not in Base.metadata.tables["publications"].columns
+    assert (ROOT / "app/domain/scheduler.py").exists() is False
+    assert (ROOT / "app/domain/legacy_time_views_delete_action.py").exists() is False

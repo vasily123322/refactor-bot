@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from sqlalchemy import (
-    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -14,7 +13,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.db import Base
+from .base import Base
 
 
 class ScheduleEntry(Base):
@@ -47,14 +46,6 @@ class ScheduleEntry(Base):
     )
 
 
-class PostingDedupeLock(Base):
-    """Stable database mutex row for one PostingService dedupe identity."""
-
-    __tablename__ = "posting_dedupe_locks"
-
-    dedupe_key: Mapped[str] = mapped_column(String(255), primary_key=True)
-
-
 class Publication(Base):
     """Observable delivery state for one content revision and destination."""
 
@@ -62,18 +53,7 @@ class Publication(Base):
     __table_args__ = (
         Index("ix_publications_channel_status", "channel_id", "status"),
         Index("ix_publications_content", "content_item_id", "content_revision"),
-        UniqueConstraint(
-            "repeat_source_publication_id",
-            name="uq_publication_repeat_source",
-        ),
-        UniqueConstraint(
-            "posting_dedupe_key",
-            name="uq_publication_posting_dedupe",
-        ),
-        CheckConstraint(
-            "execution_mode IS NULL OR execution_mode IN ('canonical', 'intentional_legacy')",
-            name="ck_publication_execution_mode",
-        ),
+        UniqueConstraint("legacy_post_task_id", name="uq_publication_legacy_task"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -88,9 +68,9 @@ class Publication(Base):
         ForeignKey("channels.id", ondelete="CASCADE"), index=True
     )
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
-    execution_mode: Mapped[str | None] = mapped_column(String(32))
-    repeat_source_publication_id: Mapped[int | None] = mapped_column(Integer)
-    posting_dedupe_key: Mapped[str | None] = mapped_column(String(255))
+    legacy_post_task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("post_tasks.id", ondelete="SET NULL"), index=True
+    )
     telegram_message_ids: Mapped[list[int] | None] = mapped_column(JSON)
     result_link: Mapped[str | None] = mapped_column(String(2048))
     last_error: Mapped[str | None] = mapped_column(Text)
@@ -128,35 +108,3 @@ class PublicationAttempt(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     finished_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
-
-
-
-class CanonicalRuntimeSafetyAudit(Base):
-    """Durable no-replay/provenance snapshot for retired legacy runtime state."""
-
-    __tablename__ = "canonical_runtime_safety_audits"
-    __table_args__ = (
-        UniqueConstraint(
-            "source_fingerprint",
-            name="uq_canonical_runtime_safety_audit_source",
-        ),
-        Index(
-            "ix_canonical_runtime_safety_audit_publication",
-            "publication_id",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    publication_id: Mapped[int | None] = mapped_column(
-        ForeignKey("publications.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
-    state: Mapped[str] = mapped_column(String(32), nullable=False)
-    evidence: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    created_at: Mapped[DateTime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    updated_at: Mapped[DateTime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )

@@ -114,7 +114,6 @@ class CanonicalPublicationDeliveryCapabilityClaimService(
             requirements=CanonicalPublicationDeliveryClaimRequirements(
                 require_empty_runtime_options=False,
                 require_nonrepeat=not bool(allow_repeat),
-                require_transport_retired=True,
             ),
         )
         if claim is None:

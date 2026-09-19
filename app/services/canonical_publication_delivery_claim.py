@@ -17,6 +17,7 @@ from app.services.canonical_publication_delivery_planner import (
     CanonicalPublicationDeliveryPlan,
     CanonicalPublicationDeliveryPlanner,
 )
+from app.services.canonical_runtime_safety import has_no_replay_barrier
 
 
 DEFAULT_PUBLICATION_DELIVERY_LEASE_SECONDS = 180
@@ -59,7 +60,6 @@ class CanonicalPublicationDeliveryClaimRequirements:
 
     require_empty_runtime_options: bool = False
     require_nonrepeat: bool = False
-    require_transport_retired: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,9 +79,8 @@ class CanonicalPublicationDeliveryClaimService:
     inserting the typed delivery lease. Any conflict rolls the whole transaction back.
 
     Runtime authority restrictions live here rather than in the canonical planner so
-    canonical eligibility remains transport-independent. In particular a caller may
-    require ``legacy_post_task_id IS NULL`` under the Publication row lock before it is
-    allowed to take delivery authority from the legacy scheduler.
+    canonical eligibility remains transport-independent. Durable no-replay evidence is
+    checked under the same claim transaction before any provider authority is granted.
 
     Normal claim never deletes/reuses an expired lease. An expired delivery lease may
     represent an ambiguous Telegram side effect and is therefore a recovery barrier.
@@ -160,11 +159,6 @@ class CanonicalPublicationDeliveryClaimService:
     ) -> bool:
         if requirements is None:
             return True
-        if (
-            requirements.require_transport_retired
-            and publication.legacy_post_task_id is not None
-        ):
-            return False
         if requirements.require_empty_runtime_options:
             try:
                 if plan.runtime_options():
@@ -208,6 +202,12 @@ class CanonicalPublicationDeliveryClaimService:
                 await self.session.rollback()
                 return None
             publication, schedule = locked
+            if await has_no_replay_barrier(
+                self.session,
+                publication_id=safe_publication_id,
+            ):
+                await self.session.rollback()
+                return None
 
             plan = await CanonicalPublicationDeliveryPlanner(self.session).plan(
                 safe_publication_id,
@@ -331,6 +331,12 @@ class CanonicalPublicationDeliveryClaimService:
         token = uuid.uuid4().hex
         holder_value = str(holder).strip()[:64] or "publication-delivery-recovery"
         try:
+            if await has_no_replay_barrier(
+                self.session,
+                publication_id=int(reference.publication_id),
+            ):
+                await self.session.rollback()
+                return None
             result = await self.session.execute(
                 update(PublicationDeliveryLease)
                 .where(

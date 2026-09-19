@@ -14,6 +14,7 @@ from app.domain.publication_autodelete import (
     PublicationAutodeleteAction,
     PublicationAutodeleteLease,
 )
+from app.services.canonical_runtime_safety import has_no_replay_barrier
 from app.services.publication_autodelete_lease import PublicationAutodeleteLeaseHandle
 
 
@@ -144,6 +145,12 @@ class PublicationAutodeleteActionLedger:
             if lease is None:
                 await self.session.rollback()
                 return PublicationAutodeleteActionReserveResult(outcome="ineligible")
+            if await has_no_replay_barrier(
+                self.session,
+                publication_id=publication_id,
+            ):
+                await self.session.rollback()
+                return PublicationAutodeleteActionReserveResult(outcome="ambiguous")
 
             rows = (
                 await self.session.execute(

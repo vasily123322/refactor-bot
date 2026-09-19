@@ -248,7 +248,6 @@ async def materialize_new_canonical_occurrence(
                 posting_dedupe_key=(
                     str(dedupe_key) if dedupe_key is not None else None
                 ),
-                legacy_post_task_id=None,
                 meta=deepcopy(canonical_meta),
             )
             session.add_all([schedule, publication])
@@ -257,7 +256,7 @@ async def materialize_new_canonical_occurrence(
             publication.schedule_entry_id = int(schedule.id)
 
             if rule.get("enabled") is True:
-                # A direct canonical repeat root has no PostTask identity. Its durable
+                # A direct canonical repeat root uses its durable Publication identity.
                 # Publication identity is therefore the root group anchor consumed by the
                 # already PostTask-free Stage 5 continuation path.
                 repeat_group_id = int(publication.id)

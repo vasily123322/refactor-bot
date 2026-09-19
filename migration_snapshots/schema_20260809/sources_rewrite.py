@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, func
+from sqlalchemy.orm import Mapped, mapped_column
+
+from .base import Base
+
+
+class CandidateRewriteRun(Base):
+    __tablename__ = "candidate_rewrite_runs"
+    __table_args__ = (
+        Index(
+            "ix_candidate_rewrite_candidate_status",
+            "candidate_id",
+            "status",
+            "id",
+        ),
+        Index("ix_candidate_rewrite_input_hash", "candidate_id", "input_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    candidate_id: Mapped[int] = mapped_column(
+        ForeignKey("content_candidates.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str | None] = mapped_column(String(191), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_chars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )

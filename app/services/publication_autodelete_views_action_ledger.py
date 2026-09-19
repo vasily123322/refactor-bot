@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.publication_autodelete import PublicationAutodeleteLease
 from app.domain.publishing.models import Publication
+from app.services.canonical_runtime_safety import has_no_replay_barrier
 from app.services.publication_autodelete_lease import PublicationAutodeleteLeaseHandle
 
 
@@ -274,6 +275,12 @@ class PublicationAutodeleteViewsActionLedger:
             if lease is None:
                 await self.session.rollback()
                 return PublicationAutodeleteViewsActionReserveResult(outcome="ineligible")
+            if await has_no_replay_barrier(
+                self.session,
+                publication_id=publication_id,
+            ):
+                await self.session.rollback()
+                return PublicationAutodeleteViewsActionReserveResult(outcome="ambiguous")
 
             publication = (
                 await self.session.execute(

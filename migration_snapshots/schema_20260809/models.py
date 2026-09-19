@@ -13,8 +13,8 @@ from sqlalchemy import (
     UniqueConstraint,
     Index,
 )
-from app.core.db import Base
-from app.domain.mixins import (
+from .base import Base
+from .mixins import (
     TimestampHelpersMixin,
     OwnerHelpersMixin,
     ActivatableHelpersMixin,
@@ -147,6 +147,21 @@ class Subscriber(CreatedAtMixin, TimestampHelpersMixin, Base):
     username: Mapped[str | None] = mapped_column(String(64))
     full_name: Mapped[str | None] = mapped_column(String(128))
     tags: Mapped[list[str] | None] = mapped_column(JSON)
+
+
+class PostTask(CreatedAtMixin, TimestampHelpersMixin, Base):
+    __tablename__ = "post_tasks"
+    __table_args__ = (Index("ix_post_dedupe", "dedupe_key", unique=True),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    channel_id: Mapped[int] = mapped_column(
+        ForeignKey("channels.id", ondelete="CASCADE")
+    )
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    payload: Mapped[dict] = mapped_column(JSON)
+    dedupe_key: Mapped[str | None] = mapped_column(String(255))
+    scheduled_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(Text)
 
 
 # --- AI / Нейропостинг ---

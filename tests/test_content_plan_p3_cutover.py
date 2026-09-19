@@ -16,7 +16,7 @@ from app.bot.routers.utils.content_plan_hybrid import (
     pending_content_plan_button_row,
 )
 from app.core.db import Base
-from app.domain.models import Channel, Client, PostTask
+from app.domain.models import Channel, Client
 from app.domain.publication_delivery import PublicationDeliveryLease
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.services.content_plan_history_identity import HistoryPublicationIdentityKind
@@ -106,12 +106,9 @@ async def _schedule(
 
 
 async def _post_task_count(Session) -> int:
-    async with Session() as session:
-        return int(
-            (
-                await session.execute(select(func.count()).select_from(PostTask))
-            ).scalar_one()
-        )
+    _ = Session
+    assert "post_tasks" not in Base.metadata.tables
+    return 0
 
 
 async def _schedule_token(Session, publication_id: int) -> str:
@@ -196,7 +193,6 @@ def test_canonical_mixed_pending_is_posttask_free_and_publication_keyed() -> Non
                 suffix="mixed-pending",
                 mixed=True,
             )
-            assert publication.legacy_post_task_id is None
             assert await _post_task_count(Session) == 0
 
             async with Session() as session:
@@ -221,7 +217,6 @@ def test_canonical_mixed_pending_is_posttask_free_and_publication_keyed() -> Non
             row = rows[0]
             assert row.authority == "canonical"
             assert row.publication_id == int(publication.id)
-            assert row.legacy_post_task_id is None
             assert row.runtime_options == {
                 "autodelete_seconds": 600,
                 "autodelete_views": 100,
@@ -244,47 +239,24 @@ def test_canonical_mixed_pending_is_posttask_free_and_publication_keyed() -> Non
     asyncio.run(run())
 
 
-def test_dedupe_happens_before_count_and_pagination_and_historical_legacy_stays_once() -> None:
+def test_count_and_pagination_are_canonical_publication_keyed() -> None:
     async def run() -> None:
         engine, Session = await _new_db()
         try:
             owner, channel = await _channel(Session, 2)
             start = datetime(2026, 9, 21, 0, 0, tzinfo=timezone.utc)
-            canonical = await _schedule(
+            first_publication = await _schedule(
                 Session,
                 channel_id=int(channel.id),
                 when=start + timedelta(hours=9),
-                suffix="linked-canonical",
+                suffix="page-one",
             )
-
-            async with Session() as session:
-                linked_task = PostTask(
-                    channel_id=int(channel.id),
-                    status="pending",
-                    scheduled_at=start + timedelta(hours=9),
-                    payload={"type": "text", "text": "linked duplicate"},
-                )
-                session.add(linked_task)
-                await session.flush()
-                persisted = await session.get(Publication, int(canonical.id))
-                assert persisted is not None
-                persisted.legacy_post_task_id = int(linked_task.id)
-
-                historical_task = PostTask(
-                    channel_id=int(channel.id),
-                    status="pending",
-                    scheduled_at=start + timedelta(hours=9),
-                    payload={
-                        "type": "text",
-                        "text": "historical mixed",
-                        "autodelete_seconds": 600,
-                        "autodelete_views": 100,
-                    },
-                )
-                session.add(historical_task)
-                await session.commit()
-                await session.refresh(historical_task)
-
+            second_publication = await _schedule(
+                Session,
+                channel_id=int(channel.id),
+                when=start + timedelta(hours=10),
+                suffix="page-two",
+            )
             async with Session() as session:
                 rows = await list_pending_content_plan_rows(
                     session,
@@ -293,23 +265,17 @@ def test_dedupe_happens_before_count_and_pagination_and_historical_legacy_stays_
                     start_at=start,
                     end_at=start + timedelta(days=1) - timedelta(microseconds=1),
                 )
-
-            assert len(rows) == 2
-            assert [row.authority for row in rows] == ["canonical", "legacy"]
-            assert rows[0].publication_id == int(canonical.id)
-            assert rows[1].legacy_post_task_id == int(historical_task.id)
-            assert all(
-                row.legacy_post_task_id != int(linked_task.id)
-                or row.authority == "canonical"
-                for row in rows
-            )
-
+            assert [row.authority for row in rows] == ["canonical", "canonical"]
+            assert [row.publication_id for row in rows] == [
+                int(first_publication.id),
+                int(second_publication.id),
+            ]
             first = paginate_pending_content_plan_rows(rows, page=0, page_size=1)
             second = paginate_pending_content_plan_rows(rows, page=1, page_size=1)
             assert first.total_count == 2
             assert first.total_pages == 2
-            assert first.rows[0].publication_id == int(canonical.id)
-            assert second.rows[0].legacy_post_task_id == int(historical_task.id)
+            assert first.rows[0].publication_id == int(first_publication.id)
+            assert second.rows[0].publication_id == int(second_publication.id)
         finally:
             await engine.dispose()
 
@@ -532,7 +498,7 @@ def test_fresh_mixed_cancel_is_publication_native_and_published_row_keeps_both_t
     asyncio.run(run())
 
 
-def test_old_posttask_callback_redirect_is_owner_filtered_before_canonical_handoff(
+def test_old_callback_alias_redirect_is_owner_filtered_before_canonical_handoff(
     monkeypatch,
 ) -> None:
     async def run() -> None:
@@ -548,28 +514,23 @@ def test_old_posttask_callback_redirect_is_owner_filtered_before_canonical_hando
                 when=when,
                 suffix="callback-owner",
             )
+            callback_id = 44
             async with Session() as session:
-                task = PostTask(
-                    channel_id=int(channel.id),
-                    status="pending",
-                    scheduled_at=when,
-                    payload={"type": "text", "text": "old callback alias"},
-                )
-                session.add(task)
-                await session.flush()
                 persisted = await session.get(Publication, int(publication.id))
                 assert persisted is not None
-                persisted.legacy_post_task_id = int(task.id)
+                persisted.meta = {
+                    **dict(persisted.meta or {}),
+                    "legacy_post_task_callback_id": callback_id,
+                }
                 await session.commit()
-                task_id = int(task.id)
 
             monkeypatch.setattr(bridge, "AsyncSessionLocal", Session)
             owned = await bridge._owned_identity_for_post_id(
-                task_id,
+                callback_id,
                 tg_user_id=int(owner.tg_user_id),
             )
             foreign = await bridge._owned_identity_for_post_id(
-                task_id,
+                callback_id,
                 tg_user_id=int(owner.tg_user_id) + 999,
             )
             assert owned.kind is HistoryPublicationIdentityKind.CANONICAL_LINKED
@@ -631,7 +592,7 @@ def test_canonical_controls_fail_closed_after_delivery_claim_evidence() -> None:
     asyncio.run(run())
 
 
-def test_cross_day_reschedule_does_not_resurrect_linked_posttask_on_old_day() -> None:
+def test_cross_day_reschedule_moves_canonical_row_off_old_day() -> None:
     async def run() -> None:
         engine, Session = await _new_db()
         try:
@@ -643,20 +604,6 @@ def test_cross_day_reschedule_does_not_resurrect_linked_posttask_on_old_day() ->
                 when=day1 + timedelta(hours=8),
                 suffix="linked-cross-day",
             )
-            async with Session() as session:
-                task = PostTask(
-                    channel_id=int(channel.id),
-                    status="pending",
-                    scheduled_at=day1 + timedelta(hours=8),
-                    payload={"type": "text", "text": "stale linked wrapper"},
-                )
-                session.add(task)
-                await session.flush()
-                persisted = await session.get(Publication, int(publication.id))
-                assert persisted is not None
-                persisted.legacy_post_task_id = int(task.id)
-                await session.commit()
-
             token = await _schedule_token(Session, int(publication.id))
             await ContentPlanPublicationControlService(Session).reschedule(
                 publication_id=int(publication.id),

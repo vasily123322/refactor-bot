@@ -17,6 +17,7 @@ from app.domain.publishing.models import Publication, PublicationAttempt, Schedu
 from app.services.canonical_publication_delivery_claim import (
     CanonicalPublicationDeliveryLeaseHandle,
 )
+from app.services.canonical_runtime_safety import has_no_replay_barrier
 
 
 _ACTION_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9:_-]{0,159}$")
@@ -190,6 +191,12 @@ class CanonicalPublicationDeliveryActionLedger:
             if lifecycle is None:
                 await self.session.rollback()
                 return CanonicalPublicationDeliveryActionReserveResult(outcome="ineligible")
+            if await has_no_replay_barrier(
+                self.session,
+                publication_id=int(handle.publication_id),
+            ):
+                await self.session.rollback()
+                return CanonicalPublicationDeliveryActionReserveResult(outcome="conflict")
 
             existing = (
                 await self.session.execute(

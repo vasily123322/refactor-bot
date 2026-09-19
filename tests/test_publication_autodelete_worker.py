@@ -72,7 +72,6 @@ async def _seed(
             ScheduleEntry, int(publication.schedule_entry_id or 0)
         )
         assert schedule is not None
-        assert publication.legacy_post_task_id is None
         publication.status = "published"
         schedule.status = "completed"
         publication.telegram_message_ids = list(message_ids or [99000 + seed_id])

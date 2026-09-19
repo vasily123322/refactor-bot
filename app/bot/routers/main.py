@@ -17,7 +17,6 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 import html
 from datetime import datetime, date, timezone, timedelta
 import re
-from sqlalchemy import select, func
 from contextlib import suppress
 from typing import Any, Mapping, Tuple
 from app.core.callbacks import CB
@@ -694,7 +693,6 @@ async def cb_ai_back_to_create(callback: CallbackQuery, state: FSMContext):
 @router.message(Command("remove_allrepeat"))
 @with_context_logging
 async def cmd_remove_allrepeat(message: Message):
-    # Доступ только администратору по ADMIN_USER_ID
     try:
         from app.core.config import settings as _settings
 
@@ -703,61 +701,22 @@ async def cmd_remove_allrepeat(message: Message):
             return await message.reply("Недоступно")
     except Exception:
         return await message.reply("Недоступно")
-    # 1) Уберём из контент‑плана все pending‑задачи автоповтора (чтобы не числились)
-    # 2) Снимем repeat_on и repeat_seconds у всех задач (любой статус), чтобы не генерировались новые повторы
-    # 3) Очистим поля автоудаления у всех записей (autodelete_at/effective/seconds) и проставим autodeleted=True
-    try:
-        from sqlalchemy import select
-        from app.core.db import AsyncSessionLocal
-        from app.domain.models import PostTask
 
-        removed_pending = 0
-        disabled_flags = 0
-        cleared_autodel = 0
+    try:
+        from app.core.db import AsyncSessionLocal
+        from app.services.admin_remove_allrepeat import AdminRemoveAllRepeatService
+
         async with AsyncSessionLocal() as session:
-            # Шаг 1: пометить pending‑повторы как skipped
-            res_p = await session.execute(
-                select(PostTask).where(PostTask.status == "pending")
-            )
-            pend = list(res_p.scalars().all())
-            for p in pend:
-                pl = dict(p.payload or {})
-                if bool(pl.get("repeat_on", False)) or (
-                    pl.get("repeat_group_id") is not None
-                ):
-                    p.status = "skipped"
-                    removed_pending += 1
-            await session.commit()
-            # Шаг 2: снять флаги повтора везде (любой статус)
-            res_all = await session.execute(select(PostTask))
-            all_posts = list(res_all.scalars().all())
-            for p in all_posts:
-                pl = dict(p.payload or {})
-                if bool(pl.get("repeat_on", False)) or ("repeat_seconds" in pl):
-                    pl["repeat_on"] = False
-                    pl.pop("repeat_seconds", None)
-                    p.payload = pl
-                    disabled_flags += 1
-                # Очистка автоудаления
-                if (
-                    ("autodelete_at" in pl)
-                    or ("autodelete_effective_seconds" in pl)
-                    or ("autodelete_seconds" in pl)
-                ):
-                    pl.pop("autodelete_at", None)
-                    pl.pop("autodelete_effective_seconds", None)
-                    pl.pop("autodelete_seconds", None)
-                    pl.pop("autodelete_views", None)
-                    pl["autodeleted"] = True
-                    pl["autodeleted_at"] = datetime.now(timezone.utc).isoformat()
-                    p.payload = pl
-                    cleared_autodel += 1
-            await session.commit()
+            result = await AdminRemoveAllRepeatService(session).execute()
         return await message.reply(
-            f"Готово: удалено из контент‑плана: {removed_pending}; отключено флагов повтора: {disabled_flags}; очищено автоудалений: {cleared_autodel}"
+            "Готово: "
+            f"отменено повторов: {result.removed_pending}; "
+            f"отключено правил: {result.disabled_flags}; "
+            f"очищено автоудалений: {result.cleared_autodelete}; "
+            f"защищено terminal: {result.protected_canonical}"
         )
-    except Exception as e:
-        return await message.reply(f"Ошибка: {e}")
+    except Exception as exc:
+        return await message.reply(f"Ошибка: {exc}")
 
 
 ## Перенесено в routers/settings.py: cb_post_replace_autosign_for_channel
@@ -1214,23 +1173,35 @@ async def _render_defer_header_text(channel_id: int, day: date) -> str:
         label = ("GMT+%d" % (mins // 60)) if mins >= 0 else ("GMT%d" % (mins // 60))
         cities = OFFSET_CITIES.get(mins, "")
         city = cities.split(",")[0] if cities else ""
-        # Подтянем pending-задачи на дату
-        from sqlalchemy import select
-        from app.domain.models import PostTask
+        from sqlalchemy import and_, select
+        from app.domain.content.models import ContentItem, ContentRevision
+        from app.domain.publishing.models import Publication, ScheduleEntry
         from datetime import datetime as _dt, timezone
 
         start_utc = _dt(day.year, day.month, day.day, 0, 0, tzinfo=timezone.utc)
         end_utc = _dt(day.year, day.month, day.day, 23, 59, tzinfo=timezone.utc)
-        res = await session.execute(
-            select(PostTask).where(
-                (PostTask.channel_id == channel_id)
-                & (PostTask.status == "pending")
-                & (PostTask.scheduled_at.is_not(None))
-                & (PostTask.scheduled_at >= start_utc)
-                & (PostTask.scheduled_at <= end_utc)
+        posts = (
+            await session.execute(
+                select(Publication, ScheduleEntry, ContentItem, ContentRevision)
+                .join(ScheduleEntry, ScheduleEntry.id == Publication.schedule_entry_id)
+                .join(ContentItem, ContentItem.id == Publication.content_item_id)
+                .join(
+                    ContentRevision,
+                    and_(
+                        ContentRevision.content_item_id == Publication.content_item_id,
+                        ContentRevision.revision == Publication.content_revision,
+                    ),
+                )
+                .where(
+                    Publication.channel_id == channel_id,
+                    Publication.status == "queued",
+                    ScheduleEntry.status == "pending",
+                    ScheduleEntry.scheduled_at >= start_utc,
+                    ScheduleEntry.scheduled_at <= end_utc,
+                )
+                .order_by(ScheduleEntry.scheduled_at.asc(), Publication.id.asc())
             )
-        )
-        posts = list(res.scalars().all())
+        ).all()
     # Заголовок даты
     months = [
         "января",
@@ -1252,11 +1223,11 @@ async def _render_defer_header_text(channel_id: int, day: date) -> str:
         body = "На эту дату посты не запланированы."
     else:
         lines = []
-        for p in posts:
+        for publication, schedule, item, revision in posts:
             try:
-                when = p.scheduled_at
+                when = schedule.scheduled_at
                 hm = _to_user_tz(when, "UTC").strftime("%H:%M")
-                t = p.payload or {}
+                t = revision.document if isinstance(revision.document, dict) else {}
                 if t.get("type") == "text":
                     title = (t.get("text") or "").strip().splitlines()[0][:40]
                 else:
@@ -3038,78 +3009,9 @@ async def _render_calendar(
     focus_date: datetime,
     selected_date: datetime | None,
 ) -> None:
-    # Оставляем текст как в сводке
-    # Получим количество постов за выбранную дату
-    from app.domain.models import PostTask, Channel
+    from app.bot.routers.shared_plan import render_calendar
 
-    async with AsyncSessionLocal() as session:
-        start = datetime(
-            (selected_date or focus_date).year,
-            (selected_date or focus_date).month,
-            (selected_date or focus_date).day,
-            0,
-            0,
-            0,
-            tzinfo=timezone.utc,
-        )
-        end = start.replace(hour=23, minute=59, second=59, microsecond=999999)
-        res = await session.execute(
-            select(func.count())
-            .select_from(PostTask)
-            .where(
-                (PostTask.channel_id == channel_id)
-                & (PostTask.status == "pending")
-                & (PostTask.scheduled_at >= start)
-                & (PostTask.scheduled_at <= end)
-            )
-        )
-        count = int(res.scalar() or 0)
-        ch = await session.get(Channel, channel_id)
-        ch_title = ch.title or str(ch.tg_chat_id)
-    try:
-        chat_info = await tg_bot.get_chat(ch.tg_chat_id)
-        uname = getattr(chat_info, "username", None)
-        if uname:
-            title_link = f'<a href="https://t.me/{html.escape(uname)}">{html.escape(ch_title)}</a>'
-        else:
-            title_link = html.escape(ch_title)
-    except Exception:
-        title_link = html.escape(ch_title)
-    months = [
-        "января",
-        "февраля",
-        "марта",
-        "апреля",
-        "мая",
-        "июня",
-        "июля",
-        "августа",
-        "сентября",
-        "октября",
-        "ноября",
-        "декабря",
-    ]
-    cur = selected_date or focus_date
-    text = f"На {cur.day} {months[cur.month - 1]} {cur.year} в канале {title_link} запланировано {count} постов."
-    kb = _build_calendar_kb(channel_id, focus_date, selected_date or focus_date)
-    with suppress(TelegramBadRequest):
-        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-
-
-## Перенесено в routers/content_plan.py: cb_cp_open_calendar
-
-## Перенесено в routers/content_plan.py: cb_cp_calendar_back
-
-## Перенесено в routers/content_plan.py: cb_cp_month_shift
-
-## Перенесено в routers/content_plan.py: cb_cp_pick_day
-
-
-## Перенесено в routers/content_plan.py: cb_cp_back_channels
-@router.message(F.text == "Отложенные посты")
-async def rp_scheduled_posts(message: Message):
-    # Заглушка: простой ответ, чтобы кнопка не была пустой
-    await message.answer("Скоро здесь появится список запланированных постов")
+    await render_calendar(callback, channel_id, focus_date, selected_date)
 
 
 @router.callback_query(F.data == "settings_channels_list")

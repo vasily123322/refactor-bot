@@ -11,7 +11,7 @@ import app.domain  # noqa: F401 register complete ORM metadata
 from app.core.db import Base
 from app.domain.content import PostDocument
 from app.domain.content.models import ContentRevision
-from app.domain.models import Channel, Client, PostTask
+from app.domain.models import Channel, Client
 from app.domain.publishing.models import Publication, PublicationAttempt, ScheduleEntry
 from app.repositories.content import ContentRepo
 from app.services.canonical_repeat_plan_reservation import (
@@ -67,7 +67,8 @@ async def _counts(session) -> tuple[int, int, int, int]:
     publications = int(
         (await session.execute(select(func.count(Publication.id)))).scalar_one()
     )
-    tasks = int((await session.execute(select(func.count(PostTask.id)))).scalar_one())
+    assert "post_tasks" not in Base.metadata.tables
+    tasks = 0
     revisions = int(
         (await session.execute(select(func.count(ContentRevision.id)))).scalar_one()
     )
@@ -105,7 +106,6 @@ def test_posting_supported_report_profiles_persist_only_canonical_owner(
                 persisted = await session.get(Publication, int(result.id))
                 assert persisted is not None
                 assert persisted.execution_mode == CANONICAL_EXECUTION_MODE
-                assert persisted.legacy_post_task_id is None
                 assert dict(persisted.meta or {}).get("runtime_options") == runtime_options
                 schedules, publications, tasks, _revisions = await _counts(session)
                 assert (schedules, publications, tasks) == (1, 1, 0)
@@ -240,7 +240,6 @@ def test_posting_mixed_positive_time_views_is_canonical_and_posttask_free() -> N
                 persisted = await session.get(Publication, int(result.id))
                 assert persisted is not None
                 assert persisted.execution_mode == CANONICAL_EXECUTION_MODE
-                assert persisted.legacy_post_task_id is None
                 assert dict(persisted.meta or {}).get("runtime_options") == runtime_options
                 schedules, publications, tasks, _revisions = await _counts(session)
                 assert (schedules, publications, tasks) == (1, 1, 0)
@@ -305,7 +304,6 @@ def test_publication_bridge_supported_report_is_canonical_and_posttask_free() ->
                     },
                 )
                 assert publication.execution_mode == CANONICAL_EXECUTION_MODE
-                assert publication.legacy_post_task_id is None
                 schedules, publications, tasks, _revisions = await _counts(session)
                 assert (schedules, publications, tasks) == (1, 1, 0)
         finally:
@@ -337,7 +335,6 @@ def test_publication_bridge_mixed_is_canonical_and_posttask_free() -> None:
                     },
                 )
                 assert publication.execution_mode == CANONICAL_EXECUTION_MODE
-                assert publication.legacy_post_task_id is None
                 schedules, publications, tasks, _revisions = await _counts(session)
                 assert (schedules, publications, tasks) == (1, 1, 0)
         finally:
@@ -437,7 +434,6 @@ def test_fresh_canonical_repeat_report_continues_without_posttask() -> None:
                 assert root is not None
                 schedule = await session.get(ScheduleEntry, int(root.schedule_entry_id or 0))
                 assert schedule is not None
-                assert root.legacy_post_task_id is None
                 assert dict(root.meta or {}).get("repeat_group_id") == root_id
                 assert dict(root.meta or {}).get("runtime_options") == {
                     "autodelete_seconds": 600,
@@ -481,7 +477,6 @@ def test_fresh_canonical_repeat_report_continues_without_posttask() -> None:
                 )
                 assert child is not None and child_schedule is not None
                 assert child.execution_mode == CANONICAL_EXECUTION_MODE
-                assert child.legacy_post_task_id is None
                 assert child.repeat_source_publication_id == root_id
                 assert dict(child.meta or {}).get("runtime_options") == {
                     "autodelete_seconds": 600,

@@ -18,6 +18,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Unmanaged legacy startup may pre-create current ORM tables before Alembic
+    # adoption. Keep this explicit revision non-destructive and adoptable.
     op.create_table(
         "canonical_runtime_safety_audits",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -46,12 +48,14 @@ def upgrade() -> None:
             "source_fingerprint",
             name="uq_canonical_runtime_safety_audit_source",
         ),
+        if_not_exists=True,
     )
     op.create_index(
         "ix_canonical_runtime_safety_audit_publication",
         "canonical_runtime_safety_audits",
         ["publication_id"],
         unique=False,
+        if_not_exists=True,
     )
 
 

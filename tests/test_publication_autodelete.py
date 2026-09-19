@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.db import Base
 from app.domain.content import PostDocument
-from app.domain.models import Channel, Client, PostTask
+from app.domain.models import Channel, Client
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.repositories.content import ContentRepo
 from app.services.publication_autodelete import (
@@ -42,7 +42,6 @@ async def _seed(
     due_at: datetime,
     seed_id: int = 1,
     message_ids: list[int] | None = None,
-    unlink: bool = True,
     repeat: bool = False,
     runtime_options: dict | None = None,
 ) -> tuple[int, int, int, int]:
@@ -81,25 +80,7 @@ async def _seed(
         )
         schedule_id = int(publication.schedule_entry_id or 0)
         schedule = await session.get(ScheduleEntry, schedule_id)
-        task = await session.get(PostTask, int(publication.legacy_post_task_id or 0))
         assert schedule is not None
-
-        # Canonical profiles are PostTask-free. Only the guard case that explicitly
-        # asks for a linked compatibility transport should synthesize one.
-        if task is None and not unlink:
-            task = PostTask(
-                channel_id=int(channel.id),
-                status="pending",
-                payload=dict(options),
-                dedupe_key=f"test-autodelete-compat:{int(publication.id)}",
-                scheduled_at=schedule.scheduled_at,
-            )
-            session.add(task)
-            await session.flush()
-            publication.legacy_post_task_id = int(task.id)
-
-        if task is not None:
-            task.status = "done"
         publication.status = "published"
         schedule.status = "completed"
         publication.telegram_message_ids = list(message_ids or [98001, 98002])
@@ -112,15 +93,11 @@ async def _seed(
                 "deleted": False,
             },
         }
-        task_id = int(task.id) if task is not None else 0
-        if unlink and task is not None:
-            publication.legacy_post_task_id = None
-            await session.delete(task)
         await session.commit()
-        return int(channel.id), int(publication.id), schedule_id, task_id
+        return int(channel.id), int(publication.id), schedule_id, 0
 
 
-def test_due_unlinked_publication_deletes_without_post_task(tmp_path) -> None:
+def test_due_canonical_publication_deletes_without_retired_transport(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'canonical-autodelete.db'}"
@@ -130,7 +107,7 @@ def test_due_unlinked_publication_deletes_without_post_task(tmp_path) -> None:
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
-            _, publication_id, _, task_id = await _seed(
+            _, publication_id, _, _ = await _seed(
                 Session,
                 due_at=now - timedelta(minutes=1),
             )
@@ -147,7 +124,6 @@ def test_due_unlinked_publication_deletes_without_post_task(tmp_path) -> None:
             assert provider.calls == [(-10078001, 98001), (-10078001, 98002)]
 
             async with Session() as session:
-                assert await session.get(PostTask, task_id) is None
                 publication = await session.get(Publication, publication_id)
                 assert publication is not None
                 runtime = publication.meta[AUTODELETE_RUNTIME_META_KEY]
@@ -159,7 +135,7 @@ def test_due_unlinked_publication_deletes_without_post_task(tmp_path) -> None:
     asyncio.run(run())
 
 
-def test_linked_or_future_publication_never_calls_provider(tmp_path) -> None:
+def test_future_publication_never_calls_provider(tmp_path) -> None:
     async def run() -> None:
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{tmp_path / 'canonical-autodelete-guards.db'}"
@@ -169,12 +145,6 @@ def test_linked_or_future_publication_never_calls_provider(tmp_path) -> None:
                 await connection.run_sync(Base.metadata.create_all)
             Session = async_sessionmaker(engine, expire_on_commit=False)
             now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
-            _, linked_id, _, _ = await _seed(
-                Session,
-                due_at=now - timedelta(minutes=1),
-                seed_id=1,
-                unlink=False,
-            )
             _, future_id, _, _ = await _seed(
                 Session,
                 due_at=now + timedelta(minutes=30),
@@ -183,14 +153,10 @@ def test_linked_or_future_publication_never_calls_provider(tmp_path) -> None:
             provider = FakeProvider()
 
             async with Session() as session:
-                linked = await PublicationAutodeleteService(
-                    session, provider=provider
-                ).delete_if_due(linked_id, now=now)
                 future = await PublicationAutodeleteService(
                     session, provider=provider
                 ).delete_if_due(future_id, now=now)
 
-            assert linked.outcome == "ineligible"
             assert future.outcome == "not_due"
             assert provider.calls == []
         finally:

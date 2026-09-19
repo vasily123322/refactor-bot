@@ -58,9 +58,6 @@ class PreviewRequest(BaseModel):
 class PreviewResponse(BaseModel):
     mode: str
     primary_text: str
-    legacy_payload: dict[str, Any] | None
-    publishable_via_legacy: bool
-    reason: str | None = None
 
 
 class TelegramPreviewRequest(BaseModel):

@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
-from app.domain.models import Channel, Client, GrabSource, PostTask
+from app.domain.models import Channel, Client, GrabSource
 from app.services.content_plan_history_identity import (
     HistoryPublicationIdentityKind,
     resolve_history_publication_identity,
@@ -104,24 +104,14 @@ async def _resolve_grab_source_target(
 async def _resolve_post_task_target(
     session: AsyncSession, post_task_id: int
 ) -> int | None:
-    """Resolve legacy callback authorization without making PostTask canonical authority."""
+    """Resolve an old callback only through its durable canonical alias."""
     identity = await resolve_history_publication_identity(
         session,
         legacy_post_task_id=int(post_task_id),
     )
     if identity.kind is HistoryPublicationIdentityKind.CANONICAL_LINKED:
         return identity.channel_id
-    if identity.kind is HistoryPublicationIdentityKind.FAIL_CLOSED:
-        return None
-
-    task = await session.get(PostTask, int(post_task_id))
-    if task is None:
-        return None
-    try:
-        channel_id = int(task.channel_id)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return channel_id if channel_id > 0 else None
+    return None
 
 
 async def _resolve_channel_target(

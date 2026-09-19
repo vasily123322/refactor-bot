@@ -3,14 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.publishing.models import Publication
-from app.services.publication_execution_mode import (
-    CANONICAL_EXECUTION_MODE,
-    INTENTIONAL_LEGACY_EXECUTION_MODE,
-)
+from app.services.publication_execution_mode import CANONICAL_EXECUTION_MODE
 
 
 LEGACY_POST_TASK_CALLBACK_ID_META_KEY = "legacy_post_task_callback_id"
@@ -34,20 +31,18 @@ async def resolve_history_publication_identity(
     *,
     legacy_post_task_id: int,
 ) -> HistoryPublicationIdentity:
-    """Resolve a legacy callback key to durable canonical identity without PostTask.
+    """Resolve a supported historical callback alias without PostTask schema.
 
-    The compatibility key may still be the live ``legacy_post_task_id`` link or the
-    narrow durable alias written before that link is retired. Canonical ownership is
-    accepted only when exactly one persisted ``execution_mode=canonical`` Publication
-    owns the key. Intentional legacy remains on PostTask; malformed, mixed or duplicate
-    ownership fails closed. No channel/time/content heuristic participates.
+    The only supported historical identity is the durable alias written into
+    Publication.metadata before P8. Missing aliases are expired; duplicates,
+    malformed rows, or non-canonical ownership fail closed.
     """
 
     try:
-        task_id = int(legacy_post_task_id)
+        callback_id = int(legacy_post_task_id)
     except (TypeError, ValueError, OverflowError):
         return HistoryPublicationIdentity(HistoryPublicationIdentityKind.FAIL_CLOSED)
-    if task_id <= 0:
+    if callback_id <= 0:
         return HistoryPublicationIdentity(HistoryPublicationIdentityKind.FAIL_CLOSED)
 
     rows = list(
@@ -57,16 +52,12 @@ async def resolve_history_publication_identity(
                     Publication.id,
                     Publication.channel_id,
                     Publication.execution_mode,
-                    Publication.legacy_post_task_id,
                 )
                 .where(
-                    or_(
-                        Publication.legacy_post_task_id == task_id,
-                        Publication.meta[
-                            LEGACY_POST_TASK_CALLBACK_ID_META_KEY
-                        ].as_integer()
-                        == task_id,
-                    )
+                    Publication.meta[
+                        LEGACY_POST_TASK_CALLBACK_ID_META_KEY
+                    ].as_integer()
+                    == callback_id
                 )
                 .order_by(Publication.id.asc())
                 .limit(3)
@@ -75,30 +66,10 @@ async def resolve_history_publication_identity(
     )
     if not rows:
         return HistoryPublicationIdentity(HistoryPublicationIdentityKind.LEGACY_ONLY)
-
-    canonical_rows = []
-    legacy_rows = []
-    invalid = False
-    for row in rows:
-        mode = row.execution_mode
-        if mode == CANONICAL_EXECUTION_MODE:
-            canonical_rows.append(row)
-            continue
-        if (
-            mode == INTENTIONAL_LEGACY_EXECUTION_MODE
-            and row.legacy_post_task_id is not None
-            and int(row.legacy_post_task_id) == task_id
-        ):
-            legacy_rows.append(row)
-            continue
-        invalid = True
-
-    if invalid or legacy_rows and canonical_rows or len(canonical_rows) > 1:
+    if len(rows) != 1 or rows[0].execution_mode != CANONICAL_EXECUTION_MODE:
         return HistoryPublicationIdentity(HistoryPublicationIdentityKind.FAIL_CLOSED)
-    if not canonical_rows:
-        return HistoryPublicationIdentity(HistoryPublicationIdentityKind.LEGACY_ONLY)
 
-    row = canonical_rows[0]
+    row = rows[0]
     try:
         publication_id = int(row.id)
         channel_id = int(row.channel_id)

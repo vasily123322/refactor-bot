@@ -10,13 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.content import PostDocument
 from app.domain.content.models import ContentItem, ContentRevision
-from app.domain.models import Channel, Client, PostTask
+from app.domain.models import Channel, Client
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.publication_execution_mode import CANONICAL_EXECUTION_MODE
 from app.services.scheduling import as_utc
 
 
-PendingContentPlanAuthority = Literal["canonical", "legacy"]
+PendingContentPlanAuthority = Literal["canonical"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,8 +24,7 @@ class PendingContentPlanRow:
     authority: PendingContentPlanAuthority
     scheduled_at: datetime
     title: str
-    publication_id: int | None
-    legacy_post_task_id: int | None
+    publication_id: int
     runtime_options: dict[str, Any]
     repeat_enabled: bool
     repeat_seconds: int | None
@@ -33,11 +32,7 @@ class PendingContentPlanRow:
 
     @property
     def identity(self) -> tuple[str, int]:
-        if self.authority == "canonical" and self.publication_id is not None:
-            return ("publication", int(self.publication_id))
-        if self.legacy_post_task_id is not None:
-            return ("post_task", int(self.legacy_post_task_id))
-        raise ValueError("pending content-plan row has no identity")
+        return ("publication", int(self.publication_id))
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,16 +73,6 @@ def _canonical_title(item: ContentItem, revision: ContentRevision) -> str:
     return "Без названия"
 
 
-def _legacy_title(task: PostTask) -> str:
-    payload = _mapping(task.payload)
-    if payload.get("type") == "text":
-        value = str(payload.get("text") or "")
-    else:
-        value = str(payload.get("caption") or payload.get("text") or "")
-    first = " ".join(value.strip().splitlines()[:1]).strip()
-    return (first or "Медиа")[:120]
-
-
 def _repeat_from_canonical(
     publication: Publication,
     schedule: ScheduleEntry,
@@ -106,16 +91,6 @@ def _repeat_from_canonical(
     return enabled, seconds, group_id
 
 
-def _repeat_from_legacy(task: PostTask) -> tuple[bool, int | None, int | None]:
-    payload = _mapping(task.payload)
-    seconds = _positive_int(payload.get("repeat_seconds"))
-    enabled = bool(payload.get("repeat_on")) and seconds is not None
-    group_id = _positive_int(payload.get("repeat_group_id"))
-    if enabled and group_id is None:
-        group_id = _positive_int(task.id)
-    return enabled, seconds if enabled else None, group_id
-
-
 async def list_pending_content_plan_rows(
     session: AsyncSession,
     *,
@@ -125,13 +100,7 @@ async def list_pending_content_plan_rows(
     end_at: datetime,
     show_repeats: bool = True,
 ) -> list[PendingContentPlanRow]:
-    """Return the pending Content Plan authority set before pagination.
-
-    Canonical Publication/ScheduleEntry rows are primary. A PostTask is included only
-    as a historical compatibility row when no canonical execution-mode Publication in
-    this result explicitly links to that task. No payload/time/title heuristic links
-    the two populations.
-    """
+    """Return canonical pending Content Plan rows before pagination."""
 
     try:
         safe_channel_id = int(channel_id)
@@ -143,7 +112,7 @@ async def list_pending_content_plan_rows(
     if safe_channel_id <= 0 or safe_user_id <= 0 or end < start:
         return []
 
-    canonical_rows = (
+    rows = (
         await session.execute(
             select(Publication, ScheduleEntry, ContentItem, ContentRevision)
             .join(
@@ -186,8 +155,7 @@ async def list_pending_content_plan_rows(
     ).all()
 
     result: list[PendingContentPlanRow] = []
-    linked_task_ids: set[int] = set()
-    for publication, schedule, item, revision in canonical_rows:
+    for publication, schedule, item, revision in rows:
         try:
             publication_id = int(publication.id)
             scheduled_at = as_utc(schedule.scheduled_at)
@@ -195,13 +163,6 @@ async def list_pending_content_plan_rows(
             continue
         if publication_id <= 0:
             continue
-        if publication.legacy_post_task_id is not None:
-            try:
-                linked_task_id = int(publication.legacy_post_task_id)
-            except (TypeError, ValueError, OverflowError):
-                linked_task_id = 0
-            if linked_task_id > 0:
-                linked_task_ids.add(linked_task_id)
         repeat_enabled, repeat_seconds, repeat_group_id = _repeat_from_canonical(
             publication, schedule
         )
@@ -211,87 +172,9 @@ async def list_pending_content_plan_rows(
                 scheduled_at=scheduled_at,
                 title=_canonical_title(item, revision),
                 publication_id=publication_id,
-                legacy_post_task_id=(
-                    int(publication.legacy_post_task_id)
-                    if publication.legacy_post_task_id is not None
-                    else None
+                runtime_options=_mapping(
+                    _mapping(publication.meta).get("runtime_options")
                 ),
-                runtime_options=_mapping(_mapping(publication.meta).get("runtime_options")),
-                repeat_enabled=repeat_enabled,
-                repeat_seconds=repeat_seconds,
-                repeat_group_id=repeat_group_id,
-            )
-        )
-
-    # A canonical link suppresses its compatibility PostTask globally for the
-    # channel, not only when the authoritative ScheduleEntry also falls inside this
-    # day. Otherwise a canonical cross-day reschedule could resurrect a stale legacy
-    # wrapper on the old day because PostTask.scheduled_at is intentionally no longer
-    # authoritative.
-    canonical_link_ids = (
-        await session.execute(
-            select(Publication.legacy_post_task_id)
-            .join(Channel, Channel.id == Publication.channel_id)
-            .join(Client, Client.id == Channel.owner_id)
-            .where(
-                Publication.channel_id == safe_channel_id,
-                Client.tg_user_id == safe_user_id,
-                Publication.execution_mode == CANONICAL_EXECUTION_MODE,
-                Publication.legacy_post_task_id.is_not(None),
-            )
-        )
-    ).scalars()
-    for raw_task_id in canonical_link_ids:
-        try:
-            task_id = int(raw_task_id)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if task_id > 0:
-            linked_task_ids.add(task_id)
-
-    legacy_rows = list(
-        (
-            await session.execute(
-                select(PostTask)
-                .join(Channel, Channel.id == PostTask.channel_id)
-                .join(Client, Client.id == Channel.owner_id)
-                .where(
-                    PostTask.channel_id == safe_channel_id,
-                    Client.tg_user_id == safe_user_id,
-                    PostTask.status == "pending",
-                    PostTask.scheduled_at >= start,
-                    PostTask.scheduled_at <= end,
-                )
-                .order_by(PostTask.scheduled_at.asc(), PostTask.id.asc())
-            )
-        ).scalars()
-    )
-    for task in legacy_rows:
-        try:
-            task_id = int(task.id)
-            scheduled_at = as_utc(task.scheduled_at)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if task_id <= 0 or task_id in linked_task_ids:
-            continue
-        repeat_enabled, repeat_seconds, repeat_group_id = _repeat_from_legacy(task)
-        payload = _mapping(task.payload)
-        result.append(
-            PendingContentPlanRow(
-                authority="legacy",
-                scheduled_at=scheduled_at,
-                title=_legacy_title(task),
-                publication_id=None,
-                legacy_post_task_id=task_id,
-                runtime_options={
-                    key: payload[key]
-                    for key in (
-                        "autodelete_seconds",
-                        "autodelete_views",
-                        "autodelete_report",
-                    )
-                    if key in payload
-                },
                 repeat_enabled=repeat_enabled,
                 repeat_seconds=repeat_seconds,
                 repeat_group_id=repeat_group_id,
@@ -299,13 +182,13 @@ async def list_pending_content_plan_rows(
         )
 
     if not show_repeats:
-        latest_by_group: dict[tuple[str, int], PendingContentPlanRow] = {}
+        latest_by_group: dict[int, PendingContentPlanRow] = {}
         non_repeat: list[PendingContentPlanRow] = []
         for row in result:
             if not row.repeat_enabled or row.repeat_group_id is None:
                 non_repeat.append(row)
                 continue
-            key = (row.authority, int(row.repeat_group_id))
+            key = int(row.repeat_group_id)
             previous = latest_by_group.get(key)
             if previous is None or (row.scheduled_at, row.identity) > (
                 previous.scheduled_at,
@@ -314,14 +197,7 @@ async def list_pending_content_plan_rows(
                 latest_by_group[key] = row
         result = [*non_repeat, *latest_by_group.values()]
 
-    authority_order = {"canonical": 0, "legacy": 1}
-    result.sort(
-        key=lambda row: (
-            row.scheduled_at,
-            authority_order[row.authority],
-            row.identity[1],
-        )
-    )
+    result.sort(key=lambda row: (row.scheduled_at, row.publication_id))
     return result
 
 

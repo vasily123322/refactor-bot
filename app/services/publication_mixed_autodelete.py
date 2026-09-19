@@ -225,9 +225,8 @@ class PublicationMixedAutodeleteService:
     and reserve DELETE authority through the same SQL PublicationAutodeleteActionLedger.
     The trigger source is deliberately absent from the authority fingerprint.
 
-    Historical linked PostTask rows and any pre-existing views meta-ledger evidence are
-    fail-closed here. Their established compatibility owners remain responsible until the
-    later drain stages.
+    Pre-existing views meta-ledger evidence remains fail-closed and is never
+    reinterpreted as clean SQL authority.
     """
 
     def __init__(
@@ -269,13 +268,6 @@ class PublicationMixedAutodeleteService:
         if intent != "mixed" or seconds is None or views is None:
             return None, PublicationMixedAutodeleteResult(publication_id, "ineligible")
 
-        if publication.legacy_post_task_id is not None:
-            return None, PublicationMixedAutodeleteResult(
-                publication_id,
-                "ineligible",
-                threshold=views,
-                message_count=len(ids),
-            )
         if AUTODELETE_VIEWS_ACTIONS_META_KEY in meta:
             # Old meta-ledger evidence is never reinterpreted as a clean SQL authority.
             return None, PublicationMixedAutodeleteResult(

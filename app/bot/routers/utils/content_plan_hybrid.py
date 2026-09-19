@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -10,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.routers.shared import offset_minutes_from_tz
 from app.services.content_plan_pending_rows import PendingContentPlanRow
-from app.services.content_plan_publication_links import legacy_content_plan_open_callback
 from app.services.content_plan_published_rows import (
     PublishedContentPlanRow,
     list_published_content_plan_rows,
@@ -111,19 +109,8 @@ def pending_content_plan_button_row(
 
     suffix = "".join(f"  {badge}" for badge in badges)
     text = f"{_local_hm(row.scheduled_at, tz_code)} ⏳ {row.title[:40]}{suffix}"
-    if row.authority == "canonical":
-        if row.publication_id is None:
-            raise ValueError("canonical pending row has no Publication identity")
-        callback_identity = publication_open_callback(row.publication_id, date_iso)
-        canonical_identity = callback_identity
-    else:
-        if row.legacy_post_task_id is None:
-            raise ValueError("legacy pending row has no PostTask compatibility identity")
-        callback_identity = legacy_content_plan_open_callback(
-            post_task_id=row.legacy_post_task_id,
-            date_iso=date_iso,
-        )
-        canonical_identity = None
+    callback_identity = publication_open_callback(row.publication_id, date_iso)
+    canonical_identity = callback_identity
 
     return TimedContentPlanButtonRow(
         scheduled_at=row.scheduled_at,
@@ -169,48 +156,10 @@ async def canonical_only_published_button_rows(
     return rendered
 
 
-def _row_callback_identity(row: TimedContentPlanButtonRow) -> str | None:
-    if row.canonical_presentation_identity is not None:
-        return row.canonical_presentation_identity
-    if not row.buttons:
-        return None
-    callback_data = row.buttons[0].callback_data
-    if not isinstance(callback_data, str):
-        return None
-    # A linked compatibility row may carry an extra legacy repeat-off button. Its first
-    # button already has exact canonical Publication identity, so the entire compatibility
-    # row can disappear once the one canonical presentation row is present.
-    if callback_data.startswith("cp_open_pub:"):
-        return callback_data
-    return callback_data if len(row.buttons) == 1 else None
-
-
 def merge_timed_content_plan_rows(
-    legacy_rows: list[TimedContentPlanButtonRow],
-    canonical_rows: list[TimedContentPlanButtonRow],
+    pending_rows: list[TimedContentPlanButtonRow],
+    published_rows: list[TimedContentPlanButtonRow],
 ) -> list[list[InlineKeyboardButton]]:
-    canonical_identity_counts = Counter(
-        row.canonical_presentation_identity
-        for row in canonical_rows
-        if row.canonical_presentation_identity is not None
-    )
-    legacy_identity_counts = Counter(
-        identity
-        for row in legacy_rows
-        if (identity := _row_callback_identity(row)) is not None
-    )
-
-    filtered_legacy_rows: list[TimedContentPlanButtonRow] = []
-    for row in legacy_rows:
-        identity = _row_callback_identity(row)
-        if (
-            identity is not None
-            and canonical_identity_counts[identity] == 1
-            and legacy_identity_counts[identity] == 1
-        ):
-            continue
-        filtered_legacy_rows.append(row)
-
-    combined = [*filtered_legacy_rows, *canonical_rows]
+    combined = [*pending_rows, *published_rows]
     combined.sort(key=lambda item: item.scheduled_at)
     return [item.buttons for item in combined]

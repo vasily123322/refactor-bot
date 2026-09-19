@@ -33,11 +33,6 @@ class PublicationAutodeleteLeaseHandle:
 class PublicationAutodeleteLeaseService:
     """Cross-process ownership lease for canonical Publication delete attempts.
 
-    Linked Publications remain rejected by default so the time-based worker preserves
-    its historical canonical-only contract. Views workers may explicitly opt into
-    linked rows because their evaluator revalidates the current PostTask intent before
-    every destructive phase.
-
     An expired publication-level lease may be reclaimed, but it no longer implies that
     Telegram deletion is safe to replay. Time-autodelete provider authority is guarded
     independently by the per-message one-way action ledger: a prior ``reserved`` or
@@ -55,7 +50,6 @@ class PublicationAutodeleteLeaseService:
         holder: str,
         ttl_seconds: int = DEFAULT_PUBLICATION_AUTODELETE_LEASE_SECONDS,
         now: datetime | None = None,
-        allow_linked: bool = False,
     ) -> PublicationAutodeleteLeaseHandle | None:
         try:
             safe_publication_id = int(publication_id)
@@ -74,9 +68,6 @@ class PublicationAutodeleteLeaseService:
             Publication.id == safe_publication_id,
             Publication.status == "published",
         ]
-        if not allow_linked:
-            conditions.append(Publication.legacy_post_task_id.is_(None))
-
         try:
             eligible_id = (
                 await self.session.execute(select(Publication.id).where(*conditions))

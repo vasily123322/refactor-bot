@@ -22,7 +22,7 @@ from app.core.schema import (
 )
 
 
-HEAD = "20260918_0014"
+HEAD = "20260919_0015"
 
 
 def _upgrade(repo_root: Path, database_path: Path, target: str) -> None:
@@ -214,8 +214,8 @@ def test_managed_static_pool_enforces_foreign_keys_on_reopened_connection(
                 with pytest.raises(IntegrityError):
                     await connection.exec_driver_sql(
                         """
-                        INSERT INTO scheduler_task_leases
-                            (task_id, lease_token, holder, expires_at, created_at, updated_at)
+                        INSERT INTO publication_delivery_leases
+                            (publication_id, lease_token, holder, expires_at, created_at, updated_at)
                         VALUES
                             (999999, 'fk-enforced-test', 'test', CURRENT_TIMESTAMP,
                              CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -241,8 +241,8 @@ def test_managed_sqlite_with_existing_foreign_key_violation_fails_closed(
         with sqlite3.connect(database_path) as connection:
             connection.execute(
                 """
-                INSERT INTO scheduler_task_leases
-                    (task_id, lease_token, holder, expires_at, created_at, updated_at)
+                INSERT INTO publication_delivery_leases
+                    (publication_id, lease_token, holder, expires_at, created_at, updated_at)
                 VALUES
                     (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
@@ -283,7 +283,7 @@ def test_managed_database_at_head_with_missing_table_fails_shape_guard(tmp_path)
         database_path = tmp_path / "managed-missing-table.db"
         _upgrade(repo_root, database_path, "head")
         with sqlite3.connect(database_path) as connection:
-            connection.execute("DROP TABLE scheduler_task_leases")
+            connection.execute("DROP TABLE publication_delivery_leases")
             connection.commit()
 
         engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
@@ -298,7 +298,7 @@ def test_managed_database_at_head_with_missing_table_fails_shape_guard(tmp_path)
             assert inspected.at_head is True
             with pytest.raises(
                 DatabaseSchemaShapeError,
-                match=r"missing tables=scheduler_task_leases",
+                match=r"missing tables=publication_delivery_leases",
             ):
                 await bootstrap_database_schema(
                     engine,
