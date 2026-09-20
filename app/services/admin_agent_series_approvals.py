@@ -24,6 +24,7 @@ from app.services.admin_agent import (
     SCENARIO_PREPARE_CONTENT_SERIES,
     _resolve_channel_timezone,
 )
+from app.services.admin_agent_execution_fence import fence_execution_claim
 from app.services.publication_bridge import LegacyPublicationBridge
 from app.services.scheduling import as_utc
 
@@ -1211,9 +1212,11 @@ class AdminAgentSeriesApprovalService:
     async def _finalize_item(
         self,
         *,
+        batch: AdminAgentApprovalBatch,
         item: AdminAgentApprovalBatchItem,
         schedule: ScheduleEntry,
         publication: Publication,
+        claim_token: str,
     ) -> None:
         current = await self.session.get(AdminAgentApprovalBatchItem, int(item.id))
         if current is None:
@@ -1222,6 +1225,19 @@ class AdminAgentSeriesApprovalService:
             return
         if str(current.state) != ITEM_EXECUTING:
             raise SeriesApprovalStateConflict("batch item is no longer executing")
+
+        # Fence the item finalize to the same current batch owner that was allowed
+        # to create/recover its canonical pair.
+        await self.session.commit()
+        if not await fence_execution_claim(
+            self.session,
+            owner_model=AdminAgentApprovalBatch,
+            owner_id=int(batch.id),
+            claim_token=claim_token,
+        ):
+            await self.session.rollback()
+            raise SeriesApprovalStateConflict("batch execution claim was lost")
+
         current.schedule_entry_id = int(schedule.id)
         current.publication_id = int(publication.id)
         current.state = ITEM_EXECUTED
@@ -1259,10 +1275,16 @@ class AdminAgentSeriesApprovalService:
         item: AdminAgentApprovalBatchItem,
         claim_token: str,
     ) -> tuple[ScheduleEntry, Publication]:
-        if not await self._claim_still_owned(
-            batch_id=int(batch.id),
+        # End any read-only validation transaction before the guarded write.
+        # queue() commits the canonical pair while this batch-row fence is held.
+        await self.session.commit()
+        if not await fence_execution_claim(
+            self.session,
+            owner_model=AdminAgentApprovalBatch,
+            owner_id=int(batch.id),
             claim_token=claim_token,
         ):
+            await self.session.rollback()
             raise SeriesApprovalStateConflict("batch execution claim was lost")
         reviewer = int(batch.reviewer_tg_user_id or batch.owner_tg_user_id)
         metadata = {
@@ -1386,9 +1408,11 @@ class AdminAgentSeriesApprovalService:
                     and publication is not None
                 ):
                     await self._finalize_item(
+                        batch=batch,
                         item=item,
                         schedule=schedule,
                         publication=publication,
+                        claim_token=claim_token,
                     )
                     completed_count += 1
                     continue
@@ -1442,9 +1466,11 @@ class AdminAgentSeriesApprovalService:
                     claim_token=claim_token,
                 )
                 await self._finalize_item(
+                    batch=batch,
                     item=item,
                     schedule=schedule,
                     publication=publication,
+                    claim_token=claim_token,
                 )
                 completed_count += 1
             except (SeriesApprovalExecutionError, SeriesApprovalStateConflict):
@@ -1471,9 +1497,11 @@ class AdminAgentSeriesApprovalService:
                         and publication is not None
                     ):
                         await self._finalize_item(
+                            batch=current_batch,
                             item=current_item,
                             schedule=schedule,
                             publication=publication,
+                            claim_token=claim_token,
                         )
                         completed_count += 1
                         continue
@@ -1495,6 +1523,28 @@ class AdminAgentSeriesApprovalService:
                 raise SeriesApprovalExecutionError(
                     "canonical series scheduling attempt failed"
                 ) from exc
+
+        # The final batch state is canonical execution bookkeeping too. Fence it
+        # so an executor that lost the lease after its last item commit cannot
+        # clear the takeover owner's claim or mark the batch executed.
+        await self.session.commit()
+        if not await fence_execution_claim(
+            self.session,
+            owner_model=AdminAgentApprovalBatch,
+            owner_id=int(batch.id),
+            claim_token=claim_token,
+        ):
+            await self.session.rollback()
+            latest = await self._load(
+                batch_id=int(batch.id),
+                owner_tg_user_id=int(batch.owner_tg_user_id),
+                channel_id=int(batch.channel_id),
+            )
+            if latest is None:
+                raise SeriesApprovalExecutionError(
+                    "batch disappeared during execution"
+                )
+            return latest
 
         current = await self._load(
             batch_id=int(batch.id),

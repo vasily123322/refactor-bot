@@ -15,6 +15,7 @@ from app.domain.content import PostDocument, validate_native_document_capabiliti
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.admin_agent import SCENARIO_DRAFTS_TOMORROW, _resolve_channel_timezone
+from app.services.admin_agent_execution_fence import fence_execution_claim
 from app.services.publication_bridge import LegacyPublicationBridge
 from app.services.scheduling import as_utc
 
@@ -132,6 +133,7 @@ class AdminAgentApprovalService:
             AdminAgentApproval.owner_tg_user_id == int(owner_tg_user_id),
             AdminAgentApproval.channel_id == int(channel_id),
         )
+        stmt = stmt.execution_options(populate_existing=True)
         if for_update:
             stmt = stmt.with_for_update()
         return (await self.session.execute(stmt)).scalar_one_or_none()
@@ -570,9 +572,32 @@ class AdminAgentApprovalService:
         approval_id: int,
         owner_tg_user_id: int,
         channel_id: int,
+        claim_token: str,
         schedule_entry_id: int,
         publication_id: int,
     ) -> AdminAgentApproval:
+        # Recovery reads may have opened a SQLite read transaction. End it before
+        # the guarded write so this fence is the first statement in the commit
+        # transaction that records the terminal approval state.
+        await self.session.commit()
+        if not await fence_execution_claim(
+            self.session,
+            owner_model=AdminAgentApproval,
+            owner_id=int(approval_id),
+            claim_token=claim_token,
+        ):
+            await self.session.rollback()
+            current = await self._load(
+                approval_id=int(approval_id),
+                owner_tg_user_id=int(owner_tg_user_id),
+                channel_id=int(channel_id),
+            )
+            if current is None:
+                raise ApprovalExecutionError("approval disappeared during execution")
+            if current.state == STATE_EXECUTED:
+                return current
+            raise ApprovalStateConflict("approval execution claim was lost")
+
         current = await self._load(
             approval_id=int(approval_id),
             owner_tg_user_id=int(owner_tg_user_id),
@@ -599,6 +624,8 @@ class AdminAgentApprovalService:
     async def _execute_claimed(
         self,
         approval: AdminAgentApproval,
+        *,
+        claim_token: str,
     ) -> AdminAgentApproval:
         approval_id = int(approval.id)
         owner_tg_user_id = int(approval.owner_tg_user_id)
@@ -613,6 +640,27 @@ class AdminAgentApprovalService:
             ),
             "admin_agent_fingerprint": str(approval.action_fingerprint),
         }
+
+        # Keep the claim fence and canonical queue commit in one transaction.
+        # A takeover that commits first makes this guarded write affect zero rows;
+        # a fence that wins first prevents takeover until queue() commits.
+        await self.session.commit()
+        if not await fence_execution_claim(
+            self.session,
+            owner_model=AdminAgentApproval,
+            owner_id=approval_id,
+            claim_token=claim_token,
+        ):
+            await self.session.rollback()
+            current = await self._load(
+                approval_id=approval_id,
+                owner_tg_user_id=owner_tg_user_id,
+                channel_id=channel_id,
+            )
+            if current is None:
+                raise ApprovalExecutionError("approval disappeared during execution")
+            return current
+
         try:
             publication = await LegacyPublicationBridge(self.session).queue(
                 content_item_id=int(approval.content_item_id),
@@ -630,6 +678,7 @@ class AdminAgentApprovalService:
                 approval_id=approval_id,
                 owner_tg_user_id=owner_tg_user_id,
                 channel_id=channel_id,
+                claim_token=claim_token,
                 schedule_entry_id=schedule_id,
                 publication_id=int(publication.id),
             )
@@ -640,7 +689,11 @@ class AdminAgentApprovalService:
                 owner_tg_user_id=owner_tg_user_id,
                 channel_id=channel_id,
             )
-            if current is not None and current.state == STATE_EXECUTING:
+            if (
+                current is not None
+                and current.state == STATE_EXECUTING
+                and str(current.execution_claim_token or "") == str(claim_token)
+            ):
                 current.failure_reason = (
                     "canonical scheduling outcome unknown; retry approval to recover"
                 )
@@ -677,6 +730,7 @@ class AdminAgentApprovalService:
                     approval_id=int(approval.id),
                     owner_tg_user_id=int(approval.owner_tg_user_id),
                     channel_id=int(approval.channel_id),
+                    claim_token=str(approval.execution_claim_token or ""),
                     schedule_entry_id=int(schedule.id),
                     publication_id=int(publication.id),
                 )
@@ -703,12 +757,16 @@ class AdminAgentApprovalService:
                     reviewer_tg_user_id=reviewer_tg_user_id,
                     reason=stale_reason,
                 )
-            approval.execution_claim_token = _claim_token()
+            claim_token = _claim_token()
+            approval.execution_claim_token = claim_token
             approval.execution_claimed_at = self.now_utc
             approval.reviewer_tg_user_id = int(reviewer_tg_user_id)
             await self.session.commit()
             await self.session.refresh(approval)
-            return await self._execute_claimed(approval)
+            return await self._execute_claimed(
+                approval,
+                claim_token=claim_token,
+            )
 
         if approval.state != STATE_PENDING_REVIEW:
             return approval
@@ -774,7 +832,10 @@ class AdminAgentApprovalService:
                 reviewer_tg_user_id=reviewer_tg_user_id,
                 reason=stale_after_claim,
             )
-        return await self._execute_claimed(claimed)
+        return await self._execute_claimed(
+            claimed,
+            claim_token=claim_token,
+        )
 
     async def reject(
         self,
