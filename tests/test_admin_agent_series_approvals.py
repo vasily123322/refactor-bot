@@ -1319,6 +1319,113 @@ def test_series_concurrent_approve_has_single_batch_winner(
 
 
 
+def test_expired_claim_takeover_fences_resumed_series_executor(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    async def run() -> None:
+        database_path = tmp_path / "expired-series-claim.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as setup:
+                owner, channel = await _setup_channel(setup, 13013)
+                source = await _source_run(
+                    setup,
+                    monkeypatch,
+                    owner=owner,
+                    channel=channel,
+                    count=2,
+                    request_id="series-source-expired-claim-0001",
+                )
+                proposal = await AdminAgentSeriesApprovalService(
+                    setup,
+                    now_utc=NOW,
+                ).create(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    source_run_id=source.id,
+                    request_id="series-expired-claim-0001",
+                    slots=_slots(2),
+                )
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
+                batch_id = int(proposal.id)
+
+            paused = asyncio.Event()
+            release = asyncio.Event()
+            queue_calls = 0
+            original_queue = LegacyPublicationBridge.queue
+
+            async def counted_queue(self, **kwargs):
+                nonlocal queue_calls
+                queue_calls += 1
+                return await original_queue(self, **kwargs)
+
+            monkeypatch.setattr(LegacyPublicationBridge, "queue", counted_queue)
+
+            async with Session() as first_session, Session() as second_session:
+                first_service = AdminAgentSeriesApprovalService(
+                    first_session,
+                    now_utc=NOW,
+                )
+                original_queue_item = first_service._queue_item
+
+                async def delayed_queue_item(*, batch, item, claim_token):
+                    paused.set()
+                    await asyncio.wait_for(release.wait(), timeout=5)
+                    return await original_queue_item(
+                        batch=batch,
+                        item=item,
+                        claim_token=claim_token,
+                    )
+
+                monkeypatch.setattr(
+                    first_service,
+                    "_queue_item",
+                    delayed_queue_item,
+                )
+                first_task = asyncio.create_task(
+                    first_service.approve(
+                        batch_id=batch_id,
+                        owner_tg_user_id=owner_id,
+                        channel_id=channel_id,
+                        reviewer_tg_user_id=owner_id,
+                    )
+                )
+                await asyncio.wait_for(paused.wait(), timeout=5)
+
+                takeover = await AdminAgentSeriesApprovalService(
+                    second_session,
+                    now_utc=NOW + timedelta(seconds=31),
+                ).approve(
+                    batch_id=batch_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    reviewer_tg_user_id=owner_id,
+                )
+                assert takeover is not None and takeover.state == STATE_EXECUTED
+
+                release.set()
+                with pytest.raises(
+                    SeriesApprovalStateConflict,
+                    match="execution claim was lost",
+                ):
+                    await asyncio.wait_for(first_task, timeout=5)
+
+            async with Session() as verify:
+                assert await _counts(verify, channel_id) == (2, 2, 0)
+                stored = await verify.get(AdminAgentApprovalBatch, batch_id)
+                assert stored is not None and stored.state == STATE_EXECUTED
+                assert queue_calls == 2
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_claim_ownership_check_bypasses_stale_identity_map(
     monkeypatch,
     tmp_path,

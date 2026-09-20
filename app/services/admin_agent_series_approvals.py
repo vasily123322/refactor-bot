@@ -24,6 +24,11 @@ from app.services.admin_agent import (
     SCENARIO_PREPARE_CONTENT_SERIES,
     _resolve_channel_timezone,
 )
+from app.services.admin_agent_execution_fence import (
+    approval_execution_fence_key,
+    hold_execution_fence,
+    set_execution_fence,
+)
 from app.services.publication_bridge import LegacyPublicationBridge
 from app.services.scheduling import as_utc
 
@@ -1235,6 +1240,29 @@ class AdminAgentSeriesApprovalService:
         item.failure_reason = current.failure_reason
         item.executed_at = current.executed_at
 
+    async def _finalize_item_if_owned(
+        self,
+        *,
+        batch: AdminAgentApprovalBatch,
+        item: AdminAgentApprovalBatchItem,
+        schedule: ScheduleEntry,
+        publication: Publication,
+        claim_token: str,
+    ) -> bool:
+        if not await hold_execution_fence(
+            self.session,
+            fence_key=approval_execution_fence_key(str(batch.execution_key)),
+            claim_token=claim_token,
+        ):
+            await self.session.rollback()
+            return False
+        await self._finalize_item(
+            item=item,
+            schedule=schedule,
+            publication=publication,
+        )
+        return True
+
     async def _claim_still_owned(
         self,
         *,
@@ -1259,8 +1287,9 @@ class AdminAgentSeriesApprovalService:
         item: AdminAgentApprovalBatchItem,
         claim_token: str,
     ) -> tuple[ScheduleEntry, Publication]:
-        if not await self._claim_still_owned(
-            batch_id=int(batch.id),
+        if not await hold_execution_fence(
+            self.session,
+            fence_key=approval_execution_fence_key(str(batch.execution_key)),
             claim_token=claim_token,
         ):
             raise SeriesApprovalStateConflict("batch execution claim was lost")
@@ -1385,11 +1414,24 @@ class AdminAgentSeriesApprovalService:
                     and schedule is not None
                     and publication is not None
                 ):
-                    await self._finalize_item(
+                    finalized = await self._finalize_item_if_owned(
+                        batch=batch,
                         item=item,
                         schedule=schedule,
                         publication=publication,
+                        claim_token=claim_token,
                     )
+                    if not finalized:
+                        latest = await self._load(
+                            batch_id=int(batch.id),
+                            owner_tg_user_id=int(batch.owner_tg_user_id),
+                            channel_id=int(batch.channel_id),
+                        )
+                        if latest is None:
+                            raise SeriesApprovalExecutionError(
+                                "batch disappeared after execution claim was lost"
+                            )
+                        return latest
                     completed_count += 1
                     continue
                 if recovery == "conflict":
@@ -1441,11 +1483,24 @@ class AdminAgentSeriesApprovalService:
                     item=item,
                     claim_token=claim_token,
                 )
-                await self._finalize_item(
+                finalized = await self._finalize_item_if_owned(
+                    batch=batch,
                     item=item,
                     schedule=schedule,
                     publication=publication,
+                    claim_token=claim_token,
                 )
+                if not finalized:
+                    latest = await self._load(
+                        batch_id=batch_id,
+                        owner_tg_user_id=int(batch.owner_tg_user_id),
+                        channel_id=int(batch.channel_id),
+                    )
+                    if latest is None:
+                        raise SeriesApprovalExecutionError(
+                            "batch disappeared after execution claim was lost"
+                        )
+                    return latest
                 completed_count += 1
             except (SeriesApprovalExecutionError, SeriesApprovalStateConflict):
                 await self.session.rollback()
@@ -1470,11 +1525,24 @@ class AdminAgentSeriesApprovalService:
                         and schedule is not None
                         and publication is not None
                     ):
-                        await self._finalize_item(
+                        finalized = await self._finalize_item_if_owned(
+                            batch=current_batch,
                             item=current_item,
                             schedule=schedule,
                             publication=publication,
+                            claim_token=claim_token,
                         )
+                        if not finalized:
+                            latest = await self._load(
+                                batch_id=batch_id,
+                                owner_tg_user_id=int(batch.owner_tg_user_id),
+                                channel_id=int(batch.channel_id),
+                            )
+                            if latest is None:
+                                raise SeriesApprovalExecutionError(
+                                    "batch disappeared after execution claim was lost"
+                                )
+                            return latest
                         completed_count += 1
                         continue
                     if recovery == "conflict":
@@ -1508,6 +1576,24 @@ class AdminAgentSeriesApprovalService:
             return current
         if str(current.state) != STATE_EXECUTING:
             return current
+        if str(current.execution_claim_token or "") != str(claim_token):
+            return current
+        if not await hold_execution_fence(
+            self.session,
+            fence_key=approval_execution_fence_key(str(current.execution_key)),
+            claim_token=claim_token,
+        ):
+            await self.session.rollback()
+            latest = await self._load(
+                batch_id=int(batch.id),
+                owner_tg_user_id=int(batch.owner_tg_user_id),
+                channel_id=int(batch.channel_id),
+            )
+            if latest is None:
+                raise SeriesApprovalExecutionError(
+                    "batch disappeared after execution claim was lost"
+                )
+            return latest
         current.state = STATE_EXECUTED
         current.failure_reason = None
         current.executed_at = self.now_utc
@@ -1579,6 +1665,20 @@ class AdminAgentSeriesApprovalService:
                     reviewer_tg_user_id=int(reviewer_tg_user_id),
                 )
             )
+            if int(transition.rowcount or 0) == 1:
+                fenced = await set_execution_fence(
+                    self.session,
+                    fence_key=approval_execution_fence_key(str(batch.execution_key)),
+                    claim_token=new_token,
+                    previous_claim_token=(
+                        str(old_token) if old_token is not None else None
+                    ),
+                )
+                if not fenced:
+                    await self.session.rollback()
+                    raise SeriesApprovalExecutionError(
+                        "series approval execution fence conflict"
+                    )
             await self.session.commit()
             if int(transition.rowcount or 0) != 1:
                 return await self._load(
@@ -1632,6 +1732,18 @@ class AdminAgentSeriesApprovalService:
                 failure_reason=None,
             )
         )
+        if int(transition.rowcount or 0) == 1:
+            fenced = await set_execution_fence(
+                self.session,
+                fence_key=approval_execution_fence_key(str(batch.execution_key)),
+                claim_token=claim_token,
+                previous_claim_token=None,
+            )
+            if not fenced:
+                await self.session.rollback()
+                raise SeriesApprovalExecutionError(
+                    "series approval execution fence conflict"
+                )
         await self.session.commit()
         if int(transition.rowcount or 0) != 1:
             return await self.approve(

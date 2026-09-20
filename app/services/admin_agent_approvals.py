@@ -15,6 +15,11 @@ from app.domain.content import PostDocument, validate_native_document_capabiliti
 from app.domain.content.models import ContentItem, ContentRevision
 from app.domain.publishing.models import Publication, ScheduleEntry
 from app.services.admin_agent import SCENARIO_DRAFTS_TOMORROW, _resolve_channel_timezone
+from app.services.admin_agent_execution_fence import (
+    approval_execution_fence_key,
+    hold_execution_fence,
+    set_execution_fence,
+)
 from app.services.publication_bridge import LegacyPublicationBridge
 from app.services.scheduling import as_utc
 
@@ -127,10 +132,14 @@ class AdminAgentApprovalService:
         channel_id: int,
         for_update: bool = False,
     ) -> AdminAgentApproval | None:
-        stmt = select(AdminAgentApproval).where(
-            AdminAgentApproval.id == int(approval_id),
-            AdminAgentApproval.owner_tg_user_id == int(owner_tg_user_id),
-            AdminAgentApproval.channel_id == int(channel_id),
+        stmt = (
+            select(AdminAgentApproval)
+            .where(
+                AdminAgentApproval.id == int(approval_id),
+                AdminAgentApproval.owner_tg_user_id == int(owner_tg_user_id),
+                AdminAgentApproval.channel_id == int(channel_id),
+            )
+            .execution_options(populate_existing=True)
         )
         if for_update:
             stmt = stmt.with_for_update()
@@ -572,40 +581,68 @@ class AdminAgentApprovalService:
         channel_id: int,
         schedule_entry_id: int,
         publication_id: int,
+        execution_key: str,
+        claim_token: str,
     ) -> AdminAgentApproval:
+        if not await hold_execution_fence(
+            self.session,
+            fence_key=approval_execution_fence_key(execution_key),
+            claim_token=claim_token,
+        ):
+            await self.session.rollback()
+            current = await self._load(
+                approval_id=int(approval_id),
+                owner_tg_user_id=int(owner_tg_user_id),
+                channel_id=int(channel_id),
+            )
+            if current is None:
+                raise ApprovalExecutionError("approval disappeared during execution")
+            return current
+
+        transition = await self.session.execute(
+            update(AdminAgentApproval)
+            .where(
+                AdminAgentApproval.id == int(approval_id),
+                AdminAgentApproval.owner_tg_user_id == int(owner_tg_user_id),
+                AdminAgentApproval.channel_id == int(channel_id),
+                AdminAgentApproval.state == STATE_EXECUTING,
+                AdminAgentApproval.execution_claim_token == str(claim_token),
+            )
+            .values(
+                schedule_entry_id=int(schedule_entry_id),
+                publication_id=int(publication_id),
+                state=STATE_EXECUTED,
+                executed_at=self.now_utc,
+                failure_reason=None,
+                execution_claim_token=None,
+                execution_claimed_at=None,
+            )
+        )
+        await self.session.commit()
         current = await self._load(
             approval_id=int(approval_id),
             owner_tg_user_id=int(owner_tg_user_id),
             channel_id=int(channel_id),
-            for_update=True,
         )
         if current is None:
             raise ApprovalExecutionError("approval disappeared during execution")
-        if current.state == STATE_EXECUTED:
-            return current
-        if current.state != STATE_EXECUTING:
-            raise ApprovalStateConflict("approval is no longer executing")
-        current.schedule_entry_id = int(schedule_entry_id)
-        current.publication_id = int(publication_id)
-        current.state = STATE_EXECUTED
-        current.executed_at = self.now_utc
-        current.failure_reason = None
-        current.execution_claim_token = None
-        current.execution_claimed_at = None
-        await self.session.commit()
-        await self.session.refresh(current)
         return current
 
     async def _execute_claimed(
         self,
         approval: AdminAgentApproval,
+        *,
+        claim_token: str,
     ) -> AdminAgentApproval:
         approval_id = int(approval.id)
         owner_tg_user_id = int(approval.owner_tg_user_id)
         channel_id = int(approval.channel_id)
+        execution_key = str(approval.execution_key or "")
+        if not execution_key:
+            raise ApprovalExecutionError("approval execution key is missing")
         metadata = {
             "admin_agent_approval_id": approval_id,
-            "admin_agent_execution_key": str(approval.execution_key),
+            "admin_agent_execution_key": execution_key,
             "admin_agent_action_type": ACTION_SCHEDULE_DRAFT_TOMORROW,
             "admin_agent_owner_tg_user_id": owner_tg_user_id,
             "admin_agent_reviewer_tg_user_id": int(
@@ -614,6 +651,23 @@ class AdminAgentApprovalService:
             "admin_agent_fingerprint": str(approval.action_fingerprint),
         }
         try:
+            if not await hold_execution_fence(
+                self.session,
+                fence_key=approval_execution_fence_key(execution_key),
+                claim_token=claim_token,
+            ):
+                await self.session.rollback()
+                latest = await self._load(
+                    approval_id=approval_id,
+                    owner_tg_user_id=owner_tg_user_id,
+                    channel_id=channel_id,
+                )
+                if latest is None:
+                    raise ApprovalExecutionError(
+                        "approval disappeared after execution claim was lost"
+                    )
+                return latest
+
             publication = await LegacyPublicationBridge(self.session).queue(
                 content_item_id=int(approval.content_item_id),
                 content_revision=int(approval.content_revision),
@@ -632,19 +686,29 @@ class AdminAgentApprovalService:
                 channel_id=channel_id,
                 schedule_entry_id=schedule_id,
                 publication_id=int(publication.id),
+                execution_key=execution_key,
+                claim_token=claim_token,
             )
         except Exception as exc:
             await self.session.rollback()
-            current = await self._load(
-                approval_id=approval_id,
-                owner_tg_user_id=owner_tg_user_id,
-                channel_id=channel_id,
-            )
-            if current is not None and current.state == STATE_EXECUTING:
-                current.failure_reason = (
-                    "canonical scheduling outcome unknown; retry approval to recover"
+            transition = await self.session.execute(
+                update(AdminAgentApproval)
+                .where(
+                    AdminAgentApproval.id == approval_id,
+                    AdminAgentApproval.state == STATE_EXECUTING,
+                    AdminAgentApproval.execution_claim_token == str(claim_token),
                 )
+                .values(
+                    failure_reason=(
+                        "canonical scheduling outcome unknown; "
+                        "retry approval to recover"
+                    )
+                )
+            )
+            if int(transition.rowcount or 0) == 1:
                 await self.session.commit()
+            else:
+                await self.session.rollback()
             if isinstance(exc, (ApprovalExecutionError, ApprovalStateConflict)):
                 raise
             raise ApprovalExecutionError("canonical scheduling attempt failed") from exc
@@ -672,13 +736,21 @@ class AdminAgentApprovalService:
 
         if approval.state == STATE_EXECUTING:
             recovery, schedule, publication = await self._recover_existing(approval)
-            if recovery == "match" and schedule is not None and publication is not None:
+            if (
+                recovery == "match"
+                and schedule is not None
+                and publication is not None
+                and approval.execution_key
+                and approval.execution_claim_token
+            ):
                 return await self._finalize_executed(
                     approval_id=int(approval.id),
                     owner_tg_user_id=int(approval.owner_tg_user_id),
                     channel_id=int(approval.channel_id),
                     schedule_entry_id=int(schedule.id),
                     publication_id=int(publication.id),
+                    execution_key=str(approval.execution_key),
+                    claim_token=str(approval.execution_claim_token),
                 )
             if recovery == "conflict":
                 return await self._mark_failed(
@@ -692,7 +764,8 @@ class AdminAgentApprovalService:
             )
             if (
                 claimed_at is not None
-                and (self.now_utc - claimed_at).total_seconds() < _EXECUTION_CLAIM_SECONDS
+                and (self.now_utc - claimed_at).total_seconds()
+                < _EXECUTION_CLAIM_SECONDS
                 and approval.execution_claim_token
             ):
                 return approval
@@ -703,12 +776,84 @@ class AdminAgentApprovalService:
                     reviewer_tg_user_id=reviewer_tg_user_id,
                     reason=stale_reason,
                 )
-            approval.execution_claim_token = _claim_token()
-            approval.execution_claimed_at = self.now_utc
-            approval.reviewer_tg_user_id = int(reviewer_tg_user_id)
+
+            old_token = (
+                str(approval.execution_claim_token)
+                if approval.execution_claim_token is not None
+                else None
+            )
+            execution_key = str(approval.execution_key or _execution_key(approval))
+            new_token = _claim_token()
             await self.session.commit()
-            await self.session.refresh(approval)
-            return await self._execute_claimed(approval)
+            token_clause = (
+                AdminAgentApproval.execution_claim_token == old_token
+                if old_token is not None
+                else AdminAgentApproval.execution_claim_token.is_(None)
+            )
+            transition = await self.session.execute(
+                update(AdminAgentApproval)
+                .where(
+                    AdminAgentApproval.id == int(approval_id),
+                    AdminAgentApproval.owner_tg_user_id == int(owner_tg_user_id),
+                    AdminAgentApproval.channel_id == int(channel_id),
+                    AdminAgentApproval.state == STATE_EXECUTING,
+                    token_clause,
+                )
+                .values(
+                    execution_key=execution_key,
+                    execution_claim_token=new_token,
+                    execution_claimed_at=self.now_utc,
+                    reviewer_tg_user_id=int(reviewer_tg_user_id),
+                )
+            )
+            if int(transition.rowcount or 0) == 1:
+                fenced = await set_execution_fence(
+                    self.session,
+                    fence_key=approval_execution_fence_key(execution_key),
+                    claim_token=new_token,
+                    previous_claim_token=old_token,
+                )
+                if not fenced:
+                    await self.session.rollback()
+                    raise ApprovalExecutionError("approval execution fence conflict")
+            await self.session.commit()
+            if int(transition.rowcount or 0) != 1:
+                return await self.approve(
+                    approval_id=approval_id,
+                    owner_tg_user_id=owner_tg_user_id,
+                    channel_id=channel_id,
+                    reviewer_tg_user_id=reviewer_tg_user_id,
+                )
+
+            claimed = await self._load(
+                approval_id=approval_id,
+                owner_tg_user_id=owner_tg_user_id,
+                channel_id=channel_id,
+            )
+            if claimed is None:
+                raise ApprovalExecutionError(
+                    "approval disappeared after recovery claim"
+                )
+            recovery, schedule, publication = await self._recover_existing(claimed)
+            if recovery == "match" and schedule is not None and publication is not None:
+                return await self._finalize_executed(
+                    approval_id=int(claimed.id),
+                    owner_tg_user_id=int(claimed.owner_tg_user_id),
+                    channel_id=int(claimed.channel_id),
+                    schedule_entry_id=int(schedule.id),
+                    publication_id=int(publication.id),
+                    execution_key=execution_key,
+                    claim_token=new_token,
+                )
+            if recovery == "conflict":
+                return await self._mark_failed(
+                    claimed,
+                    reason="conflicting canonical results found for execution key",
+                )
+            return await self._execute_claimed(
+                claimed,
+                claim_token=new_token,
+            )
 
         if approval.state != STATE_PENDING_REVIEW:
             return approval
@@ -721,12 +866,8 @@ class AdminAgentApprovalService:
                 reason=stale_reason,
             )
 
-        execution_key = approval.execution_key or _execution_key(approval)
+        execution_key = str(approval.execution_key or _execution_key(approval))
         claim_token = _claim_token()
-        # End the read-only transaction before the compare-and-set. This matters
-        # on SQLite, where two concurrent readers upgrading to writers can contend.
-        # There are no staged writes here, and project sessions use
-        # expire_on_commit=False, so request-scoped ORM identity remains usable.
         await self.session.commit()
         transition = await self.session.execute(
             update(AdminAgentApproval)
@@ -746,10 +887,18 @@ class AdminAgentApprovalService:
                 failure_reason=None,
             )
         )
+        if int(transition.rowcount or 0) == 1:
+            fenced = await set_execution_fence(
+                self.session,
+                fence_key=approval_execution_fence_key(execution_key),
+                claim_token=claim_token,
+                previous_claim_token=None,
+            )
+            if not fenced:
+                await self.session.rollback()
+                raise ApprovalExecutionError("approval execution fence conflict")
         await self.session.commit()
         if int(transition.rowcount or 0) != 1:
-            # Another approver won the durable transition. Re-enter through the
-            # executing recovery path; a fresh claim prevents a second queue call.
             return await self.approve(
                 approval_id=approval_id,
                 owner_tg_user_id=owner_tg_user_id,
@@ -765,8 +914,6 @@ class AdminAgentApprovalService:
         if claimed is None:
             raise ApprovalExecutionError("approval disappeared after execution claim")
 
-        # Revalidate once more after the claim commit so edits or a competing
-        # canonical schedule that landed during review cannot be silently ignored.
         stale_after_claim = await self._stale_reason(claimed)
         if stale_after_claim is not None:
             return await self._mark_stale(
@@ -774,7 +921,10 @@ class AdminAgentApprovalService:
                 reviewer_tg_user_id=reviewer_tg_user_id,
                 reason=stale_after_claim,
             )
-        return await self._execute_claimed(claimed)
+        return await self._execute_claimed(
+            claimed,
+            claim_token=claim_token,
+        )
 
     async def reject(
         self,

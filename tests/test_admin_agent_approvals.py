@@ -991,6 +991,104 @@ def test_simultaneous_approve_has_one_atomic_execution_winner(
 
 
 
+def test_expired_claim_takeover_fences_resumed_single_executor(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    async def run() -> None:
+        database_path = tmp_path / "expired-single-claim.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            now = datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc)
+            async with Session() as setup:
+                owner, channel = await _setup_channel(setup, tg_user_id=9925)
+                item = await _draft(
+                    setup,
+                    channel_id=channel.id,
+                    owner_tg_user_id=owner.tg_user_id,
+                )
+                approval = await AdminAgentApprovalService(
+                    setup,
+                    now_utc=now,
+                ).create_schedule_draft_tomorrow(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    content_item_id=item.id,
+                    local_time_value="19:30",
+                    request_id="expired-single-claim-0001",
+                )
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
+                approval_id = int(approval.id)
+
+            paused = asyncio.Event()
+            release = asyncio.Event()
+            queue_calls = 0
+            original_queue = LegacyPublicationBridge.queue
+
+            async def counted_queue(self, **kwargs):
+                nonlocal queue_calls
+                queue_calls += 1
+                return await original_queue(self, **kwargs)
+
+            monkeypatch.setattr(LegacyPublicationBridge, "queue", counted_queue)
+
+            async with Session() as first_session, Session() as second_session:
+                first_service = AdminAgentApprovalService(first_session, now_utc=now)
+                original_execute = first_service._execute_claimed
+
+                async def delayed_execute(approval, *, claim_token):
+                    paused.set()
+                    await asyncio.wait_for(release.wait(), timeout=5)
+                    return await original_execute(
+                        approval,
+                        claim_token=claim_token,
+                    )
+
+                monkeypatch.setattr(
+                    first_service,
+                    "_execute_claimed",
+                    delayed_execute,
+                )
+                first_task = asyncio.create_task(
+                    first_service.approve(
+                        approval_id=approval_id,
+                        owner_tg_user_id=owner_id,
+                        channel_id=channel_id,
+                        reviewer_tg_user_id=owner_id,
+                    )
+                )
+                await asyncio.wait_for(paused.wait(), timeout=5)
+
+                takeover = await AdminAgentApprovalService(
+                    second_session,
+                    now_utc=now + timedelta(seconds=31),
+                ).approve(
+                    approval_id=approval_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    reviewer_tg_user_id=owner_id,
+                )
+                assert takeover is not None and takeover.state == STATE_EXECUTED
+
+                release.set()
+                resumed = await asyncio.wait_for(first_task, timeout=5)
+                assert resumed is not None and resumed.state == STATE_EXECUTED
+
+            async with Session() as verify:
+                assert await _counts(verify, channel_id) == (1, 1)
+                stored = await verify.get(AdminAgentApproval, approval_id)
+                assert stored is not None and stored.state == STATE_EXECUTED
+                assert queue_calls == 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_request_id_scope_does_not_leak_and_ineligible_draft_goes_stale() -> None:
     async def run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")

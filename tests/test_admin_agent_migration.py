@@ -11,7 +11,7 @@ from app.core.db import Base
 
 
 PREVIOUS_HEAD = "20260919_0018"
-HEAD = "20260920_0024"
+HEAD = "20260920_0025"
 
 
 def _run_upgrade(
@@ -699,6 +699,98 @@ def test_active_approval_uniqueness_migration_fails_on_duplicate_series_target(
         ).fetchone() == ("20260919_0023",)
 
 
+def test_execution_fence_migration_backfills_active_claims(tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    database_path = tmp_path / "execution-fence.db"
+    _upgrade(repo_root, database_path, "20260920_0024")
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO admin_agent_approvals
+                (
+                    owner_tg_user_id, channel_id, action_type, state,
+                    content_item_id, content_revision, timezone,
+                    target_local_date, local_time, resolved_scheduled_at,
+                    action_fingerprint, execution_key, request_id,
+                    execution_claim_token, execution_claimed_at
+                )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                8803,
+                99003,
+                "schedule_draft_tomorrow",
+                "executing",
+                701,
+                2,
+                "UTC",
+                "2026-09-21",
+                "14:00",
+                "2026-09-21 14:00:00+00:00",
+                "a" * 64,
+                "b" * 64,
+                "fence-single",
+                "c" * 64,
+                "2026-09-20 10:00:00+00:00",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO admin_agent_approval_batches
+                (
+                    owner_tg_user_id, channel_id, source_run_id, action_type, state,
+                    request_id, timezone, item_count, series_title,
+                    source_plan_fingerprint, action_fingerprint, execution_key,
+                    execution_claim_token, execution_claimed_at
+                )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                8804,
+                99004,
+                702,
+                "schedule_content_series",
+                "executing",
+                "fence-series",
+                "UTC",
+                2,
+                "Fence series",
+                "d" * 64,
+                "e" * 64,
+                "f" * 64,
+                "1" * 64,
+                "2026-09-20 10:00:00+00:00",
+            ),
+        )
+        connection.commit()
+
+    _upgrade(repo_root, database_path, "head")
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD,)
+        columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(admin_agent_execution_fences)"
+            )
+        }
+        assert {"fence_key", "claim_token", "created_at", "updated_at"} <= columns
+        rows = connection.execute(
+            """
+            SELECT fence_key, claim_token
+            FROM admin_agent_execution_fences
+            ORDER BY fence_key
+            """
+        ).fetchall()
+        assert rows == [
+            ("approval-execution:" + "b" * 64, "c" * 64),
+            ("approval-execution:" + "f" * 64, "1" * 64),
+        ]
+
+
 def test_fresh_head_contains_agent_tables_and_matches_registered_orm(tmp_path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     database_path = tmp_path / "fresh-head.db"
@@ -712,6 +804,7 @@ def test_fresh_head_contains_agent_tables_and_matches_registered_orm(tmp_path) -
         "admin_agent_run_artifacts",
         "admin_agent_approval_batches",
         "admin_agent_approval_batch_items",
+        "admin_agent_execution_fences",
     } <= tables
     assert tables == set(Base.metadata.tables) | {"alembic_version"}
 

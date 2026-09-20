@@ -221,6 +221,21 @@ class AdminAgentEvent(Base):
     )
 
 
+class AdminAgentExecutionFence(Base):
+    """Durable token fence held through approval canonical scheduling commits."""
+
+    __tablename__ = "admin_agent_execution_fences"
+
+    fence_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    claim_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class AdminAgentApproval(Base):
     """Durable, server-authored approval snapshot for one bounded mutation intent."""
 

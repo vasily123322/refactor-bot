@@ -20,7 +20,7 @@ from app.services.publication_autodelete_lease import PublicationAutodeleteLease
 
 
 PRE_DROP = "20260918_0014"
-HEAD = "20260920_0024"
+HEAD = "20260920_0025"
 
 
 def _run_alembic(
