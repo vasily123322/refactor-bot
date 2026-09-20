@@ -483,6 +483,16 @@ def test_proposal_captures_server_authority_tomorrow_and_is_idempotent() -> None
                         "admin_agent_scenario": "drafts_tomorrow",
                     },
                 )
+                source_run.result = {
+                    "scenario": "drafts_tomorrow",
+                    "drafts": [
+                        {
+                            "content_item_id": item.id,
+                            "content_revision": item.current_revision,
+                        }
+                    ],
+                }
+                await session.commit()
                 now = datetime(2026, 9, 19, 7, 0, tzinfo=timezone.utc)
                 service = AdminAgentApprovalService(session, now_utc=now)
                 approval = await service.create_schedule_draft_tomorrow(
