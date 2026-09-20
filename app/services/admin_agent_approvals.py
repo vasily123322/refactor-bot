@@ -650,6 +650,8 @@ class AdminAgentApprovalService:
             owner_model=AdminAgentApproval,
             owner_id=approval_id,
             claim_token=claim_token,
+            content_item_id=int(approval.content_item_id),
+            content_revision=int(approval.content_revision),
         ):
             await self.session.rollback()
             current = await self._load(
@@ -660,6 +662,29 @@ class AdminAgentApprovalService:
             if current is None:
                 raise ApprovalExecutionError("approval disappeared during execution")
             return current
+
+        # The ContentRevision fence above is shared with series execution. Recheck
+        # canonical state only after that durable target authority is held; this
+        # closes the cross-mode TOCTOU between preflight and queue().
+        if await self._conflicting_schedule_exists(
+            content_item_id=int(approval.content_item_id),
+            content_revision=int(approval.content_revision),
+        ):
+            current = await self._load(
+                approval_id=approval_id,
+                owner_tg_user_id=owner_tg_user_id,
+                channel_id=channel_id,
+                for_update=True,
+            )
+            if current is None:
+                raise ApprovalExecutionError("approval disappeared during execution")
+            return await self._mark_stale(
+                current,
+                reviewer_tg_user_id=int(
+                    current.reviewer_tg_user_id or current.owner_tg_user_id
+                ),
+                reason="canonical scheduling state already exists",
+            )
 
         try:
             publication = await LegacyPublicationBridge(self.session).queue(
