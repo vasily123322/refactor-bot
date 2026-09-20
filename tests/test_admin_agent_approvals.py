@@ -24,6 +24,7 @@ from app.services.admin_agent_approvals import (
     STATE_STALE,
     ApprovalExecutionError,
     ApprovalInputError,
+    ApprovalStateConflict,
     AdminAgentApprovalService,
 )
 from app.services.publication_bridge import LegacyPublicationBridge
@@ -248,6 +249,176 @@ def test_draft_approval_dst_invalid_wall_clock_fails_closed() -> None:
                         )
                     )
                 ).scalar_one() == 0
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_one_active_draft_approval_per_revision_and_terminal_reuse() -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                owner, channel = await _setup_channel(session, tg_user_id=9923)
+                item = await _draft(
+                    session,
+                    channel_id=channel.id,
+                    owner_tg_user_id=owner.tg_user_id,
+                    title="Active approval target",
+                )
+                service = AdminAgentApprovalService(
+                    session,
+                    now_utc=datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc),
+                )
+                revision_one = await service.create_schedule_draft_tomorrow(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    content_item_id=item.id,
+                    local_time_value="14:00",
+                    request_id="active-single-r1-0001",
+                )
+                assert revision_one.content_revision == 1
+
+                with pytest.raises(ApprovalStateConflict, match="active approval"):
+                    await service.create_schedule_draft_tomorrow(
+                        owner_tg_user_id=owner.tg_user_id,
+                        channel_id=channel.id,
+                        content_item_id=item.id,
+                        local_time_value="14:30",
+                        request_id="active-single-r1-0002",
+                    )
+
+                await ContentRepo(session).append_revision(
+                    item.id,
+                    PostDocument(
+                        blocks=[
+                            {
+                                "id": "active-r2",
+                                "type": "text",
+                                "text": "Revision two remains independently reviewable.",
+                            }
+                        ]
+                    ),
+                    created_by_tg_user_id=owner.tg_user_id,
+                    source="studio",
+                    status="draft",
+                )
+                revision_two = await service.create_schedule_draft_tomorrow(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    content_item_id=item.id,
+                    local_time_value="15:00",
+                    request_id="active-single-r2-0001",
+                )
+                assert revision_two.content_revision == 2
+
+                with pytest.raises(ApprovalStateConflict, match="active approval"):
+                    await service.create_schedule_draft_tomorrow(
+                        owner_tg_user_id=owner.tg_user_id,
+                        channel_id=channel.id,
+                        content_item_id=item.id,
+                        local_time_value="15:30",
+                        request_id="active-single-r2-0002",
+                    )
+
+                rejected = await service.reject(
+                    approval_id=revision_two.id,
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    reviewer_tg_user_id=owner.tg_user_id,
+                )
+                assert rejected is not None and rejected.state == STATE_REJECTED
+
+                fresh = await service.create_schedule_draft_tomorrow(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    content_item_id=item.id,
+                    local_time_value="16:00",
+                    request_id="active-single-r2-0003",
+                )
+                assert fresh.id != revision_two.id
+                assert fresh.content_revision == 2
+                assert fresh.state == STATE_PENDING_REVIEW
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_concurrent_draft_proposals_have_one_active_winner(tmp_path) -> None:
+    async def run() -> None:
+        database_path = tmp_path / "concurrent-draft-proposal.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as setup:
+                owner, channel = await _setup_channel(setup, tg_user_id=9924)
+                item = await _draft(
+                    setup,
+                    channel_id=channel.id,
+                    owner_tg_user_id=owner.tg_user_id,
+                    title="Concurrent active target",
+                )
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
+                item_id = int(item.id)
+
+            async with Session() as first_session, Session() as second_session:
+                first_service = AdminAgentApprovalService(
+                    first_session,
+                    now_utc=datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc),
+                )
+                second_service = AdminAgentApprovalService(
+                    second_session,
+                    now_utc=datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc),
+                )
+                results = await asyncio.wait_for(
+                    asyncio.gather(
+                        first_service.create_schedule_draft_tomorrow(
+                            owner_tg_user_id=owner_id,
+                            channel_id=channel_id,
+                            content_item_id=item_id,
+                            local_time_value="17:00",
+                            request_id="active-single-concurrent-a",
+                        ),
+                        second_service.create_schedule_draft_tomorrow(
+                            owner_tg_user_id=owner_id,
+                            channel_id=channel_id,
+                            content_item_id=item_id,
+                            local_time_value="17:30",
+                            request_id="active-single-concurrent-b",
+                        ),
+                        return_exceptions=True,
+                    ),
+                    timeout=5,
+                )
+
+            winners = [row for row in results if isinstance(row, AdminAgentApproval)]
+            conflicts = [row for row in results if isinstance(row, ApprovalStateConflict)]
+            assert len(winners) == 1
+            assert len(conflicts) == 1
+            async with Session() as verify:
+                active = list(
+                    (
+                        await verify.execute(
+                            select(AdminAgentApproval).where(
+                                AdminAgentApproval.channel_id == channel_id,
+                                AdminAgentApproval.content_item_id == item_id,
+                                AdminAgentApproval.content_revision == 1,
+                                AdminAgentApproval.state.in_(
+                                    [STATE_PENDING_REVIEW, STATE_EXECUTING]
+                                ),
+                            )
+                        )
+                    ).scalars()
+                )
+                assert len(active) == 1
         finally:
             await engine.dispose()
 
