@@ -180,6 +180,18 @@ def test_studio_approval_routes_are_owner_scoped_bounded_and_idempotent(monkeypa
                 assert retry.json()["id"] == body["id"]
                 assert retry.json()["local_time"] == "14:30"
 
+                active_conflict = await client.post(
+                    f"/api/studio/channels/{channel.id}/assistant/approvals",
+                    json={
+                        "content_item_id": item.id,
+                        "local_time": "16:15",
+                        "request_id": "api-approval-active-conflict",
+                    },
+                    headers=headers,
+                )
+                assert active_conflict.status_code == 409
+                assert "active approval" in active_conflict.json()["detail"]
+
                 listing = await client.get(
                     f"/api/studio/channels/{channel.id}/assistant/approvals",
                     headers=headers,

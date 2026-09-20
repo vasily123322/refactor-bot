@@ -749,6 +749,10 @@ class AdminAgentSeriesApprovalService:
             action_fingerprint=action_fingerprint,
         )
 
+        # End the validation-only transaction before the insert. On SQLite this
+        # avoids two concurrent readers contending while upgrading to writers;
+        # the partial unique index remains the durable race authority.
+        await self.session.commit()
         batch = AdminAgentApprovalBatch(
             owner_tg_user_id=int(owner_tg_user_id),
             channel_id=int(channel_id),
@@ -825,6 +829,25 @@ class AdminAgentSeriesApprovalService:
             if retry is not None:
                 raise SeriesApprovalIdempotencyConflict(
                     "request_id already exists with different series schedule intent"
+                )
+            active = (
+                await self.session.execute(
+                    select(AdminAgentApprovalBatch).where(
+                        AdminAgentApprovalBatch.owner_tg_user_id
+                        == int(owner_tg_user_id),
+                        AdminAgentApprovalBatch.channel_id == int(channel_id),
+                        AdminAgentApprovalBatch.action_type
+                        == ACTION_SCHEDULE_CONTENT_SERIES,
+                        AdminAgentApprovalBatch.source_run_id == int(source_run_id),
+                        AdminAgentApprovalBatch.state.in_(
+                            [STATE_PENDING_REVIEW, STATE_EXECUTING]
+                        ),
+                    )
+                )
+            ).scalar_one_or_none()
+            if active is not None:
+                raise SeriesApprovalStateConflict(
+                    "an active series approval already exists for this source run"
                 )
             raise
 

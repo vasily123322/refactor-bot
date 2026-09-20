@@ -888,6 +888,8 @@ async def create_assistant_approval(
         )
     except ApprovalInputError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ApprovalStateConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if str(row.action_type) != ACTION_SCHEDULE_DRAFT_TOMORROW:
         raise HTTPException(status_code=409, detail="Unsupported approval action")
     return _approval_response(row)
@@ -1046,7 +1048,7 @@ async def create_assistant_series_approval(
         )
     except SeriesApprovalInputError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except SeriesApprovalIdempotencyConflict as exc:
+    except (SeriesApprovalIdempotencyConflict, SeriesApprovalStateConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if str(row.action_type) != ACTION_SCHEDULE_CONTENT_SERIES:
         raise HTTPException(status_code=409, detail="Unsupported series approval action")

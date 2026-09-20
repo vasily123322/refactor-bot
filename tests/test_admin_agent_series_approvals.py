@@ -37,6 +37,7 @@ from app.services.admin_agent_series_approvals import (
     AdminAgentSeriesApprovalService,
     SeriesApprovalIdempotencyConflict,
     SeriesApprovalInputError,
+    SeriesApprovalStateConflict,
 )
 from app.services.ai_generation import AIGenerationService
 from app.services.publication_bridge import LegacyPublicationBridge
@@ -295,6 +296,150 @@ def test_series_proposal_rejects_dst_invalid_slots_atomically(monkeypatch) -> No
                     30,
                     tzinfo=timezone.utc,
                 )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_one_active_series_approval_per_source_run_and_terminal_reuse(monkeypatch) -> None:
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as session:
+                owner, channel = await _setup_channel(session, 13011)
+                source = await _source_run(
+                    session,
+                    monkeypatch,
+                    owner=owner,
+                    channel=channel,
+                    count=3,
+                    request_id="active-series-source-0001",
+                )
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
+                source_id = int(source.id)
+                service = AdminAgentSeriesApprovalService(session, now_utc=NOW)
+                first = await service.create(
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    source_run_id=source_id,
+                    request_id="active-series-approval-0001",
+                    slots=_slots(3),
+                )
+                assert first.state == STATE_PENDING_REVIEW
+                first_id = int(first.id)
+
+                with pytest.raises(SeriesApprovalStateConflict, match="active series approval"):
+                    await service.create(
+                        owner_tg_user_id=owner_id,
+                        channel_id=channel_id,
+                        source_run_id=source_id,
+                        request_id="active-series-approval-0002",
+                        slots=_slots(3, minute_offset=15),
+                    )
+
+                rejected = await service.reject(
+                    batch_id=first_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    reviewer_tg_user_id=owner_id,
+                )
+                assert rejected is not None and rejected.state == STATE_REJECTED
+
+                fresh = await service.create(
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    source_run_id=source_id,
+                    request_id="active-series-approval-0003",
+                    slots=_slots(3, minute_offset=30),
+                )
+                assert fresh.id != first_id
+                assert fresh.state == STATE_PENDING_REVIEW
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_concurrent_series_proposals_have_one_active_winner(monkeypatch, tmp_path) -> None:
+    async def run() -> None:
+        database_path = tmp_path / "concurrent-series-proposal.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as setup:
+                owner, channel = await _setup_channel(setup, 13012)
+                source = await _source_run(
+                    setup,
+                    monkeypatch,
+                    owner=owner,
+                    channel=channel,
+                    count=3,
+                    request_id="active-series-source-concurrent",
+                )
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
+                source_id = int(source.id)
+
+            async with Session() as first_session, Session() as second_session:
+                first_service = AdminAgentSeriesApprovalService(
+                    first_session,
+                    now_utc=NOW,
+                )
+                second_service = AdminAgentSeriesApprovalService(
+                    second_session,
+                    now_utc=NOW,
+                )
+                results = await asyncio.wait_for(
+                    asyncio.gather(
+                        first_service.create(
+                            owner_tg_user_id=owner_id,
+                            channel_id=channel_id,
+                            source_run_id=source_id,
+                            request_id="active-series-concurrent-a",
+                            slots=_slots(3),
+                        ),
+                        second_service.create(
+                            owner_tg_user_id=owner_id,
+                            channel_id=channel_id,
+                            source_run_id=source_id,
+                            request_id="active-series-concurrent-b",
+                            slots=_slots(3, minute_offset=15),
+                        ),
+                        return_exceptions=True,
+                    ),
+                    timeout=5,
+                )
+
+            winners = [
+                row for row in results if isinstance(row, AdminAgentApprovalBatch)
+            ]
+            conflicts = [
+                row for row in results if isinstance(row, SeriesApprovalStateConflict)
+            ]
+            assert len(winners) == 1
+            assert len(conflicts) == 1
+            async with Session() as verify:
+                active = list(
+                    (
+                        await verify.execute(
+                            select(AdminAgentApprovalBatch).where(
+                                AdminAgentApprovalBatch.channel_id == channel_id,
+                                AdminAgentApprovalBatch.source_run_id == source_id,
+                                AdminAgentApprovalBatch.state.in_(
+                                    [STATE_PENDING_REVIEW, STATE_EXECUTING]
+                                ),
+                            )
+                        )
+                    ).scalars()
+                )
+                assert len(active) == 1
         finally:
             await engine.dispose()
 
