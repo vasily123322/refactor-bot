@@ -33,6 +33,7 @@ from app.services.external_bots import ExternalBotsManager
 from app.services.llm.openrouter_client import OpenRouterClient
 from app.userbot.client import app as userbot
 from app.workers.ai_auto_tasks import AIAutoTasksWorker
+from app.workers.ai_run_retention import AIRunRetentionWorker
 from app.workers.candidate_enrichment import LocalCandidateEnrichmentWorker
 from app.workers.canonical_publication_delivery_recovery import (
     CanonicalPublicationDeliveryRecoveryWorker,
@@ -486,6 +487,7 @@ async def run_bot() -> None:
     source_ingestion = None
     poller = None
     ai_auto_worker = None
+    ai_run_retention_worker = None
     local_enrichment_worker = None
 
     try:
@@ -632,6 +634,11 @@ async def run_bot() -> None:
         ai_auto_worker = AIAutoTasksWorker()
         await ai_auto_worker.start()
 
+        ai_run_retention_worker = AIRunRetentionWorker(
+            session_factory=AsyncSessionLocal,
+        )
+        ai_run_retention_worker.start()
+
         await studio_server.start()
 
         logger.info("Boot: starting aiogram polling...")
@@ -641,6 +648,11 @@ async def run_bot() -> None:
         raise
     finally:
         await _safe_stop("Studio API", studio_server.stop)
+        if ai_run_retention_worker is not None:
+            await _safe_stop(
+                "AI run retention worker",
+                ai_run_retention_worker.stop,
+            )
         if ai_auto_worker is not None:
             await _safe_stop("AI auto tasks worker", ai_auto_worker.stop)
         if poller is not None:
