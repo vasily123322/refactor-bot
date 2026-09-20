@@ -18,8 +18,10 @@ class ExternalBotsManager:
         self._dps: Dict[int, Dispatcher] = {}
         self._approver_tasks: Dict[int, asyncio.Task] = {}
         self._restarts: Dict[int, int] = {}
+        self._shutdown = False
 
     async def start_all(self) -> None:
+        self._shutdown = False
         async with AsyncSessionLocal() as session:
             repo = ExternalBotsRepo(session)
             items = await repo.get_active()
@@ -42,25 +44,46 @@ class ExternalBotsManager:
         logger.info(f"External bot started ext_id={ext_id}")
 
     async def stop_all(self) -> None:
-        for ext_id in list(self._tasks.keys()):
+        self._shutdown = True
+        ext_ids = (
+            set(self._tasks)
+            | set(self._bots)
+            | set(self._dps)
+            | set(self._approver_tasks)
+        )
+        for ext_id in list(ext_ids):
             await self.stop_one(ext_id)
 
-    async def stop_one(self, ext_id: int) -> None:
+    async def _cleanup_one(
+        self,
+        ext_id: int,
+        *,
+        skip_polling_task: asyncio.Task | None = None,
+    ) -> None:
         task = self._tasks.pop(ext_id, None)
-        self._dps.pop(ext_id, None)
+        dp = self._dps.pop(ext_id, None)
         bot = self._bots.pop(ext_id, None)
         apr = self._approver_tasks.pop(ext_id, None)
-        if task:
+        if task and task is not skip_polling_task:
             task.cancel()
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         if apr:
             apr.cancel()
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await apr
+        if dp:
+            with contextlib.suppress(Exception):
+                await dp.storage.close()
         if bot:
             with contextlib.suppress(Exception):
                 await bot.session.close()
+
+    async def stop_one(self, ext_id: int) -> None:
+        await self._cleanup_one(
+            ext_id,
+            skip_polling_task=asyncio.current_task(),
+        )
         logger.info(f"External bot stopped ext_id={ext_id}")
         self._restarts.pop(ext_id, None)
 
@@ -92,15 +115,29 @@ class ExternalBotsManager:
             if not isinstance(e, TelegramNetworkError):
                 logger.error(f"External bot polling failed ext_id={ext_id}: {e}")
             try:
+                current = asyncio.current_task()
+                if current is None or self._tasks.get(ext_id) is not current:
+                    return
                 async with AsyncSessionLocal() as session:
                     repo = ExternalBotsRepo(session)
                     ext = await repo.get_by_id(ext_id)
-                if not (ext and ext.is_active and ext.token):
+                if self._shutdown or not (ext and ext.is_active and ext.token):
+                    await self._cleanup_one(ext_id, skip_polling_task=current)
+                    self._restarts.pop(ext_id, None)
                     return
                 delay = min(60, 5 * (self._restarts.get(ext_id, 0) + 1))
                 self._restarts[ext_id] = self._restarts.get(ext_id, 0) + 1
                 await asyncio.sleep(delay)
-                await self.restart_one(ext_id)
+                if self._shutdown or self._tasks.get(ext_id) is not current:
+                    return
+                async with AsyncSessionLocal() as session:
+                    repo = ExternalBotsRepo(session)
+                    ext = await repo.get_by_id(ext_id)
+                await self._cleanup_one(ext_id, skip_polling_task=current)
+                if self._shutdown or not (ext and ext.is_active and ext.token):
+                    self._restarts.pop(ext_id, None)
+                    return
+                await self.start_one(ext_id, ext.token)
             except asyncio.CancelledError:
                 raise
             except Exception:
