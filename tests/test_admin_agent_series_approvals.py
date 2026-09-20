@@ -319,41 +319,45 @@ def test_one_active_series_approval_per_source_run_and_terminal_reuse(monkeypatc
                     count=3,
                     request_id="active-series-source-0001",
                 )
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
+                source_id = int(source.id)
                 service = AdminAgentSeriesApprovalService(session, now_utc=NOW)
                 first = await service.create(
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
-                    source_run_id=source.id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    source_run_id=source_id,
                     request_id="active-series-approval-0001",
                     slots=_slots(3),
                 )
                 assert first.state == STATE_PENDING_REVIEW
+                first_id = int(first.id)
 
                 with pytest.raises(SeriesApprovalStateConflict, match="active series approval"):
                     await service.create(
-                        owner_tg_user_id=owner.tg_user_id,
-                        channel_id=channel.id,
-                        source_run_id=source.id,
+                        owner_tg_user_id=owner_id,
+                        channel_id=channel_id,
+                        source_run_id=source_id,
                         request_id="active-series-approval-0002",
                         slots=_slots(3, minute_offset=15),
                     )
 
                 rejected = await service.reject(
-                    batch_id=first.id,
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
-                    reviewer_tg_user_id=owner.tg_user_id,
+                    batch_id=first_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    reviewer_tg_user_id=owner_id,
                 )
                 assert rejected is not None and rejected.state == STATE_REJECTED
 
                 fresh = await service.create(
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
-                    source_run_id=source.id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    source_run_id=source_id,
                     request_id="active-series-approval-0003",
                     slots=_slots(3, minute_offset=30),
                 )
-                assert fresh.id != first.id
+                assert fresh.id != first_id
                 assert fresh.state == STATE_PENDING_REVIEW
         finally:
             await engine.dispose()
