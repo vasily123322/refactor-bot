@@ -222,6 +222,18 @@ def test_studio_series_approval_api_is_owner_scoped_and_bounded(monkeypatch) -> 
                 assert same.status_code == 201
                 assert same.json()["id"] == body["id"]
 
+                active_conflict = await client.post(
+                    f"/api/studio/channels/{channel.id}/assistant/series-approvals",
+                    json={
+                        "source_run_id": source["id"],
+                        "request_id": "series-api-active-conflict",
+                        "slots": _slots(minute=20),
+                    },
+                    headers=headers,
+                )
+                assert active_conflict.status_code == 409
+                assert "active series approval" in active_conflict.json()["detail"]
+
                 changed = await client.post(
                     f"/api/studio/channels/{channel.id}/assistant/series-approvals",
                     json={
