@@ -1095,26 +1095,27 @@ def test_post_claim_revalidation_refreshes_cross_session_content_revision(
                 content_item_id = int(item.id)
                 captured_revision = int(proposal.content_revision)
 
-            initial_validation_done = asyncio.Event()
+            durable_claim_loaded = asyncio.Event()
             revision_edited = asyncio.Event()
-            stale_calls = 0
             queue_calls = 0
-            original_stale_reason = AdminAgentApprovalService._stale_reason
+            original_load = AdminAgentApprovalService._load
             original_queue = LegacyPublicationBridge.queue
 
-            async def gated_stale_reason(self, approval):
-                nonlocal stale_calls
-                reason = await original_stale_reason(self, approval)
-                stale_calls += 1
-                if stale_calls == 1:
-                    assert reason is None
-                    # End the validation read transaction at the same boundary
-                    # approve() reaches immediately after this call. With
-                    # expire_on_commit=False, the ContentItem remains cached.
+            async def gate_post_claim_load(self, **kwargs):
+                loaded = await original_load(self, **kwargs)
+                if (
+                    loaded is not None
+                    and loaded.state == STATE_EXECUTING
+                    and loaded.execution_claim_token
+                    and not durable_claim_loaded.is_set()
+                ):
+                    # The execution claim was committed before approve() reaches
+                    # this load. End this read transaction while deliberately
+                    # retaining the previously cached ContentItem.
                     await self.session.commit()
-                    initial_validation_done.set()
+                    durable_claim_loaded.set()
                     await asyncio.wait_for(revision_edited.wait(), timeout=5)
-                return reason
+                return loaded
 
             async def counted_queue(self, **kwargs):
                 nonlocal queue_calls
@@ -1123,8 +1124,8 @@ def test_post_claim_revalidation_refreshes_cross_session_content_revision(
 
             monkeypatch.setattr(
                 AdminAgentApprovalService,
-                "_stale_reason",
-                gated_stale_reason,
+                "_load",
+                gate_post_claim_load,
             )
             monkeypatch.setattr(LegacyPublicationBridge, "queue", counted_queue)
 
@@ -1140,7 +1141,7 @@ def test_post_claim_revalidation_refreshes_cross_session_content_revision(
                         reviewer_tg_user_id=owner_id,
                     )
                 )
-                await asyncio.wait_for(initial_validation_done.wait(), timeout=5)
+                await asyncio.wait_for(durable_claim_loaded.wait(), timeout=5)
 
                 await ContentRepo(edit_session).append_revision(
                     content_item_id,
@@ -1181,7 +1182,7 @@ def test_post_claim_revalidation_refreshes_cross_session_content_revision(
                 assert int(current_item.current_revision) == captured_revision + 1
                 assert await _counts(verify, channel_id) == (0, 0)
 
-            assert stale_calls == 2
+            assert durable_claim_loaded.is_set()
             assert queue_calls == 0
         finally:
             await engine.dispose()
