@@ -1,9 +1,13 @@
 import asyncio
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
+import app.api.studio.app as studio_app_module
+import app.core.runtime_readiness as runtime_readiness_module
 from app.api.studio import server as server_module
+from app.api.studio.app import create_studio_app
 from app.api.studio.config import StudioConfig
 from app.bot import dispatcher
 from app.core.config import Settings
@@ -11,6 +15,7 @@ from app.core.runtime_configuration import (
     RuntimeConfigurationError,
     validate_runtime_configuration,
 )
+from app.core.runtime_readiness import ReadinessResult, RuntimeReadiness
 
 
 def test_required_background_workers_imported() -> None:
@@ -80,6 +85,13 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
 
         async def stop(self):
             events.append("ai-run-retention-stop")
+
+    class _FakeRuntimeReadiness:
+        def mark_ready(self):
+            events.append("readiness-ready")
+
+        def mark_not_ready(self):
+            events.append("readiness-not-ready")
 
     class _FakeStudioServer:
         enabled = False
@@ -281,6 +293,7 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
         _FakeAIRunRetentionWorker,
     )
     monkeypatch.setattr(dispatcher, "StudioServer", _FakeStudioServer)
+    monkeypatch.setattr(dispatcher, "runtime_readiness", _FakeRuntimeReadiness())
     monkeypatch.setattr(dispatcher, "cancel_bg_tasks", _cancel_bg_tasks)
     monkeypatch.setattr(
         dispatcher.OpenRouterClient,
@@ -345,7 +358,14 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
     assert events.index("delivery-start") < events.index("source-ingestion-start")
     assert events.index("ai-auto-start") < events.index("ai-run-retention-start")
     assert events.index("ai-run-retention-start") < events.index("studio-start")
-    assert events.index("studio-start") < events.index("polling")
+    assert events.index("studio-start") < events.index("readiness-ready")
+    assert events.index("readiness-ready") < events.index("polling")
+    not_ready_positions = [
+        index for index, event in enumerate(events) if event == "readiness-not-ready"
+    ]
+    assert len(not_ready_positions) == 2
+    assert not_ready_positions[0] < events.index("db-prepare")
+    assert not_ready_positions[1] < events.index("studio-stop")
 
     shutdown_order = [
         "studio-stop",
@@ -638,4 +658,142 @@ def test_runtime_configuration_keeps_canonical_repeat_safety_guard() -> None:
         match="CANONICAL_REPEAT_SUCCESSFUL_PLANNING_ENABLED requires",
     ):
         validate_runtime_configuration(settings)
+
+def test_runtime_readiness_requires_boot_and_current_schema(monkeypatch) -> None:
+    async def inspect_current(_engine):
+        return SimpleNamespace(at_head=True)
+
+    monkeypatch.setattr(
+        runtime_readiness_module,
+        "inspect_alembic_schema",
+        inspect_current,
+    )
+
+    async def run() -> None:
+        readiness = RuntimeReadiness()
+
+        before_boot = await readiness.check(object())
+        assert before_boot.ready is False
+        assert before_boot.checks == {
+            "runtime": "not_ready",
+            "database": "ok",
+            "schema": "ok",
+        }
+
+        readiness.mark_ready()
+        ready = await readiness.check(object())
+        assert ready.ready is True
+        assert ready.payload() == {
+            "status": "ready",
+            "checks": {
+                "runtime": "ok",
+                "database": "ok",
+                "schema": "ok",
+            },
+        }
+
+        async def inspect_stale(_engine):
+            return SimpleNamespace(at_head=False)
+
+        monkeypatch.setattr(
+            runtime_readiness_module,
+            "inspect_alembic_schema",
+            inspect_stale,
+        )
+        stale_schema = await readiness.check(object())
+        assert stale_schema.ready is False
+        assert stale_schema.checks["database"] == "ok"
+        assert stale_schema.checks["schema"] == "not_ready"
+
+    asyncio.run(run())
+
+
+def test_runtime_readiness_fails_closed_without_dependency_details(monkeypatch) -> None:
+    async def fail_with_secret(_engine):
+        raise RuntimeError("postgresql://user:super-secret@example.invalid/db")
+
+    monkeypatch.setattr(
+        runtime_readiness_module,
+        "inspect_alembic_schema",
+        fail_with_secret,
+    )
+
+    async def run() -> None:
+        readiness = RuntimeReadiness()
+        readiness.mark_ready()
+        result = await readiness.check(object())
+        assert result.ready is False
+        assert result.payload() == {
+            "status": "not_ready",
+            "checks": {
+                "runtime": "ok",
+                "database": "unavailable",
+                "schema": "unknown",
+            },
+        }
+        assert "super-secret" not in str(result.payload())
+
+    asyncio.run(run())
+
+
+def test_studio_health_and_readiness_http_contract(monkeypatch) -> None:
+    class _FakeReadiness:
+        def __init__(self, result: ReadinessResult):
+            self.result = result
+
+        async def check(self, _engine):
+            return self.result
+
+    async def run() -> None:
+        not_ready = _FakeReadiness(
+            ReadinessResult(
+                ready=False,
+                checks={
+                    "runtime": "ok",
+                    "database": "unavailable",
+                    "schema": "unknown",
+                },
+            )
+        )
+        monkeypatch.setattr(studio_app_module, "runtime_readiness", not_ready)
+        app = create_studio_app(_config())
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://studio.test",
+        ) as client:
+            health = await client.get("/healthz")
+            assert health.status_code == 200
+            assert health.json() == {"status": "ok"}
+
+            unavailable = await client.get("/readyz")
+            assert unavailable.status_code == 503
+            assert unavailable.json() == {
+                "status": "not_ready",
+                "checks": {
+                    "runtime": "ok",
+                    "database": "unavailable",
+                    "schema": "unknown",
+                },
+            }
+
+            monkeypatch.setattr(
+                studio_app_module,
+                "runtime_readiness",
+                _FakeReadiness(
+                    ReadinessResult(
+                        ready=True,
+                        checks={
+                            "runtime": "ok",
+                            "database": "ok",
+                            "schema": "ok",
+                        },
+                    )
+                ),
+            )
+            available = await client.get("/readyz")
+            assert available.status_code == 200
+            assert available.json()["status"] == "ready"
+
+    asyncio.run(run())
 
