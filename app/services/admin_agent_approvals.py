@@ -584,21 +584,6 @@ class AdminAgentApprovalService:
         execution_key: str,
         claim_token: str,
     ) -> AdminAgentApproval:
-        if not await hold_execution_fence(
-            self.session,
-            fence_key=approval_execution_fence_key(execution_key),
-            claim_token=claim_token,
-        ):
-            await self.session.rollback()
-            current = await self._load(
-                approval_id=int(approval_id),
-                owner_tg_user_id=int(owner_tg_user_id),
-                channel_id=int(channel_id),
-            )
-            if current is None:
-                raise ApprovalExecutionError("approval disappeared during execution")
-            return current
-
         transition = await self.session.execute(
             update(AdminAgentApproval)
             .where(
@@ -618,6 +603,30 @@ class AdminAgentApprovalService:
                 execution_claimed_at=None,
             )
         )
+        if int(transition.rowcount or 0) != 1:
+            await self.session.rollback()
+            current = await self._load(
+                approval_id=int(approval_id),
+                owner_tg_user_id=int(owner_tg_user_id),
+                channel_id=int(channel_id),
+            )
+            if current is None:
+                raise ApprovalExecutionError("approval disappeared during execution")
+            return current
+        if not await hold_execution_fence(
+            self.session,
+            fence_key=approval_execution_fence_key(execution_key),
+            claim_token=claim_token,
+        ):
+            await self.session.rollback()
+            current = await self._load(
+                approval_id=int(approval_id),
+                owner_tg_user_id=int(owner_tg_user_id),
+                channel_id=int(channel_id),
+            )
+            if current is None:
+                raise ApprovalExecutionError("approval disappeared during execution")
+            return current
         await self.session.commit()
         current = await self._load(
             approval_id=int(approval_id),
@@ -769,14 +778,6 @@ class AdminAgentApprovalService:
                 and approval.execution_claim_token
             ):
                 return approval
-            stale_reason = await self._stale_reason(approval)
-            if stale_reason is not None:
-                return await self._mark_stale(
-                    approval,
-                    reviewer_tg_user_id=reviewer_tg_user_id,
-                    reason=stale_reason,
-                )
-
             old_token = (
                 str(approval.execution_claim_token)
                 if approval.execution_claim_token is not None
@@ -833,6 +834,13 @@ class AdminAgentApprovalService:
             if claimed is None:
                 raise ApprovalExecutionError(
                     "approval disappeared after recovery claim"
+                )
+            stale_reason = await self._stale_reason(claimed)
+            if stale_reason is not None:
+                return await self._mark_stale(
+                    claimed,
+                    reviewer_tg_user_id=reviewer_tg_user_id,
+                    reason=stale_reason,
                 )
             recovery, schedule, publication = await self._recover_existing(claimed)
             if recovery == "match" and schedule is not None and publication is not None:
