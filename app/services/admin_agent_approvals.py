@@ -390,6 +390,25 @@ class AdminAgentApprovalService:
             ).scalar_one_or_none()
             if retry is not None:
                 return retry
+            active = (
+                await self.session.execute(
+                    select(AdminAgentApproval).where(
+                        AdminAgentApproval.owner_tg_user_id == int(owner_tg_user_id),
+                        AdminAgentApproval.channel_id == int(channel_id),
+                        AdminAgentApproval.action_type
+                        == ACTION_SCHEDULE_DRAFT_TOMORROW,
+                        AdminAgentApproval.content_item_id == int(item.id),
+                        AdminAgentApproval.content_revision == int(revision),
+                        AdminAgentApproval.state.in_(
+                            [STATE_PENDING_REVIEW, STATE_EXECUTING]
+                        ),
+                    )
+                )
+            ).scalar_one_or_none()
+            if active is not None:
+                raise ApprovalStateConflict(
+                    "an active approval already exists for this draft revision"
+                )
             raise
 
     async def _stale_reason(self, approval: AdminAgentApproval) -> str | None:
