@@ -30,20 +30,20 @@ class Settings(BaseSettings):
 
     # Scheduler settings
     repeat_overflow_limit: int = Field(default=2, alias="REPEAT_OVERFLOW_LIMIT")
-    # Default-off shadow comparison between canonical repeat planning and the
-    # still-authoritative legacy PostTask repeat scheduler.
+    # Default-off shadow observation for canonical repeat planning before
+    # enabling the corresponding authoritative canonical transition.
     canonical_repeat_shadow_planning_enabled: bool = Field(
         default=False,
         alias="CANONICAL_REPEAT_SHADOW_PLANNING_ENABLED",
     )
-    # Default-off cutover for the normal post-success repeat transition only.
-    # Overdue/boot recovery remains legacy-backed until its own canonical planner lands.
+    # Default-off authoritative canonical planning for the normal post-success
+    # repeat transition. Overdue/boot recovery remain independently guarded.
     canonical_repeat_successful_planning_enabled: bool = Field(
         default=False,
         alias="CANONICAL_REPEAT_SUCCESSFUL_PLANNING_ENABLED",
     )
     # Independent default-off shadow observer for one overdue repeat occurrence.
-    # Boot group cleanup remains on the legacy path until separately proven.
+    # Boot-group recovery remains a separately guarded canonical transition.
     canonical_repeat_overdue_recovery_shadow_enabled: bool = Field(
         default=False,
         alias="CANONICAL_REPEAT_OVERDUE_RECOVERY_SHADOW_ENABLED",
@@ -79,38 +79,6 @@ class Settings(BaseSettings):
     canonical_publication_delivery_recovery_worker_batch_size: int = Field(
         default=100,
         alias="CANONICAL_PUBLICATION_DELIVERY_RECOVERY_WORKER_BATCH_SIZE",
-    )
-
-    # Opt-in cleanup for canonicalized unsuccessful legacy scheduler rows.
-    post_task_retention_enabled: bool = Field(
-        default=False, alias="POST_TASK_RETENTION_ENABLED"
-    )
-    # Separate destructive scope: successful published transport is never retired
-    # merely because the existing retention worker is enabled.
-    post_task_retention_successful_enabled: bool = Field(
-        default=False, alias="POST_TASK_RETENTION_SUCCESSFUL_ENABLED"
-    )
-    # Additional destructive scope for successful rows whose canonical autodelete is
-    # still pending. This remains off unless operators intentionally enable the proven
-    # canonical time + views executor handoff.
-    post_task_retention_successful_pending_autodelete_enabled: bool = Field(
-        default=False,
-        alias="POST_TASK_RETENTION_SUCCESSFUL_PENDING_AUTODELETE_ENABLED",
-    )
-    # Independently opt into retirement of terminal repeat occurrences only after the
-    # service proves a later mirrored successor owns repeat execution.
-    post_task_retention_successful_repeat_occurrences_enabled: bool = Field(
-        default=False,
-        alias="POST_TASK_RETENTION_SUCCESSFUL_REPEAT_OCCURRENCES_ENABLED",
-    )
-    post_task_retention_days: int = Field(
-        default=90, alias="POST_TASK_RETENTION_DAYS"
-    )
-    post_task_retention_batch_size: int = Field(
-        default=100, alias="POST_TASK_RETENTION_BATCH_SIZE"
-    )
-    post_task_retention_interval_seconds: int = Field(
-        default=3600, alias="POST_TASK_RETENTION_INTERVAL_SECONDS"
     )
 
     # Opt-in canonical-only time-based autodelete runtime. Disabled by default until
