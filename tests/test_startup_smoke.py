@@ -496,3 +496,69 @@ def test_bot_polling_is_cancelled_when_studio_terminates() -> None:
         assert dp.cancelled is True
 
     asyncio.run(run())
+
+_STUDIO_ENV_NAMES = (
+    "STUDIO_ENABLED",
+    "STUDIO_HOST",
+    "STUDIO_PORT",
+    "STUDIO_PUBLIC_URL",
+    "STUDIO_INIT_DATA_MAX_AGE_SECONDS",
+    "STUDIO_CORS_ORIGINS",
+)
+
+
+def _clear_studio_env(monkeypatch) -> None:
+    for name in _STUDIO_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_studio_config_absent_values_keep_defaults(monkeypatch) -> None:
+    _clear_studio_env(monkeypatch)
+
+    config = StudioConfig.from_env()
+
+    assert config.enabled is False
+    assert config.host == "127.0.0.1"
+    assert config.port == 8080
+    assert config.public_url is None
+    assert config.init_data_max_age_seconds == 86400
+    assert config.cors_origins == ()
+
+
+@pytest.mark.parametrize("value", ["tru", "", "enabled"])
+def test_studio_config_rejects_invalid_explicit_boolean(monkeypatch, value: str) -> None:
+    _clear_studio_env(monkeypatch)
+    monkeypatch.setenv("STUDIO_ENABLED", value)
+
+    with pytest.raises(ValueError, match="STUDIO_ENABLED"):
+        StudioConfig.from_env()
+
+
+@pytest.mark.parametrize("value", ["eighty", ""])
+def test_studio_config_rejects_non_numeric_explicit_port(monkeypatch, value: str) -> None:
+    _clear_studio_env(monkeypatch)
+    monkeypatch.setenv("STUDIO_PORT", value)
+
+    with pytest.raises(ValueError, match="STUDIO_PORT must be an integer"):
+        StudioConfig.from_env()
+
+
+@pytest.mark.parametrize("value", ["0", "65536"])
+def test_studio_config_rejects_out_of_range_port(monkeypatch, value: str) -> None:
+    _clear_studio_env(monkeypatch)
+    monkeypatch.setenv("STUDIO_PORT", value)
+
+    with pytest.raises(ValueError, match="STUDIO_PORT must be between 1 and 65535"):
+        StudioConfig.from_env()
+
+
+def test_studio_config_rejects_out_of_range_init_data_age(monkeypatch) -> None:
+    _clear_studio_env(monkeypatch)
+    monkeypatch.setenv("STUDIO_INIT_DATA_MAX_AGE_SECONDS", "59")
+
+    with pytest.raises(
+        ValueError,
+        match="STUDIO_INIT_DATA_MAX_AGE_SECONDS must be between 60 and 604800",
+    ):
+        StudioConfig.from_env()
+
