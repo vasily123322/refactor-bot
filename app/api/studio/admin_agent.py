@@ -254,6 +254,7 @@ class AssistantApprovalCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content_item_id: int = Field(gt=0)
+    content_revision: int = Field(gt=0, strict=True)
     local_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     request_id: str = Field(
         min_length=8,
@@ -883,6 +884,7 @@ async def create_assistant_approval(
             owner_tg_user_id=principal.tg_user_id,
             channel_id=channel_id,
             content_item_id=request.content_item_id,
+            content_revision=request.content_revision,
             local_time_value=request.local_time,
             request_id=request.request_id,
         )
