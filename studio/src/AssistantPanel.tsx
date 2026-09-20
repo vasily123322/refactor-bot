@@ -36,6 +36,15 @@ export function shouldReconcileApprovalFailure(error: unknown): boolean {
   return error.status === 404 || error.status === 409 || error.status >= 500;
 }
 
+export async function reconcileApprovalFailure(
+  error: unknown,
+  reload: () => Promise<void>,
+): Promise<boolean> {
+  if (!shouldReconcileApprovalFailure(error)) return false;
+  await reload();
+  return true;
+}
+
 function dateLabel(value: string | null): string {
   if (!value) return '—';
   const date = new Date(value);
@@ -1325,9 +1334,10 @@ export function AssistantPanel({
       } catch (reason) {
         if (isCurrent()) {
           setError({ channelId, message: errorMessage(reason) });
-          if (shouldReconcileApprovalFailure(reason)) {
-            await loadDraftApprovalScope(channelId, runId);
-          }
+          await reconcileApprovalFailure(
+            reason,
+            () => loadDraftApprovalScope(channelId, runId),
+          );
         }
         return null;
       } finally {
@@ -1399,9 +1409,10 @@ export function AssistantPanel({
       } catch (reason) {
         if (isCurrent()) {
           setError({ channelId, message: errorMessage(reason) });
-          if (shouldReconcileApprovalFailure(reason)) {
-            await loadSeriesApprovalScope(channelId, runId);
-          }
+          await reconcileApprovalFailure(
+            reason,
+            () => loadSeriesApprovalScope(channelId, runId),
+          );
         }
         return null;
       } finally {
