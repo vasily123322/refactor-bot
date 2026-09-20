@@ -422,7 +422,7 @@ describe('Assistant async ownership', () => {
     expect(retry[0].id).toBe(approval.id);
   });
 
-  it('approval merge keeps only the latest association for one draft', () => {
+  it('approval merge keeps only the latest association for one draft revision', () => {
     const older = approvalView('rejected');
     const newer = {
       ...approvalView(),
@@ -433,6 +433,20 @@ describe('Assistant async ownership', () => {
     expect(merged).toHaveLength(1);
     expect(merged[0].id).toBe(72);
     expect(merged[0].content_item_id).toBe(older.content_item_id);
+    expect(merged[0].content_revision).toBe(older.content_revision);
+  });
+
+  it('approval merge preserves associations for distinct revisions of one content item', () => {
+    const revisionOne = approvalView('rejected');
+    const revisionTwo = {
+      ...approvalView(),
+      id: 73,
+      content_revision: 2,
+      request_id: 'approval-request-73',
+    };
+    const merged = mergeAssistantApproval([revisionOne], revisionTwo);
+    expect(merged).toHaveLength(2);
+    expect(merged.map((row) => row.content_revision)).toEqual([2, 1]);
   });
 
   it('rejects a stale targeted approval response after run switch', () => {
@@ -763,6 +777,19 @@ describe('Assistant scenario rendering', () => {
     );
     expect(html).not.toContain('Создать предложение');
     expect(html).not.toContain('type="time"');
+  });
+
+  it('draft card ignores an approval for another revision of the same content item', () => {
+    const wrongRevision = {
+      ...approvalView(),
+      content_revision: 2,
+    };
+    const html = renderToStaticMarkup(
+      <AssistantBrief run={draftRunView()} approvals={[wrongRevision]} />,
+    );
+    expect(html).toContain('Content #101 · revision 1');
+    expect(html).toContain('Создать предложение');
+    expect(html).not.toContain('Content #101, revision 2');
   });
 
   it('pending review card shows exact effect, provider boundary and explicit decisions', () => {
