@@ -8,6 +8,8 @@ import {
   mergeAssistantApproval,
   mergeAssistantRun,
   mergeAssistantSeriesApproval,
+  reconcileAssistantApprovalDecisionFailure,
+  shouldReconcileAssistantApprovalDecision,
 } from './AssistantPanel';
 import {
   ChannelRequestOwnership,
@@ -15,6 +17,7 @@ import {
   resolveChannelDataView,
   runExclusiveOperation,
 } from './asyncControl';
+import { StudioApiError } from './api';
 import type {
   AssistantApprovalView,
   AssistantRunView,
@@ -485,6 +488,64 @@ describe('Assistant async ownership', () => {
     const newRun = ownership.begin(7, '34');
     expect(ownership.isCurrent(oldRun, 7, '34')).toBe(false);
     expect(ownership.isCurrent(newRun, 7, '34')).toBe(true);
+  });
+
+  it('reconciles authoritative approval scope after a conflict decision response', async () => {
+    const conflict = new StudioApiError('approval state changed', 409);
+    let reloads = 0;
+
+    expect(shouldReconcileAssistantApprovalDecision(conflict)).toBe(true);
+    await reconcileAssistantApprovalDecisionFailure(
+      conflict,
+      () => true,
+      async () => { reloads += 1; },
+    );
+
+    expect(reloads).toBe(1);
+  });
+
+  it('reconciles authoritative approval scope after a failed server decision response', async () => {
+    const failed = new StudioApiError('canonical scheduling attempt failed', 503);
+    let reloads = 0;
+
+    expect(shouldReconcileAssistantApprovalDecision(failed)).toBe(true);
+    await reconcileAssistantApprovalDecisionFailure(
+      failed,
+      () => true,
+      async () => { reloads += 1; },
+    );
+
+    expect(reloads).toBe(1);
+  });
+
+  it('does not reconcile an old approval decision after run ownership moved', async () => {
+    const conflict = new StudioApiError('approval state changed', 409);
+    const ownership = new ChannelRequestOwnership();
+    const oldRun = ownership.begin(7, '22');
+    ownership.begin(7, '23');
+    let reloads = 0;
+
+    await reconcileAssistantApprovalDecisionFailure(
+      conflict,
+      () => ownership.isCurrent(oldRun, 7, '23'),
+      async () => { reloads += 1; },
+    );
+
+    expect(reloads).toBe(0);
+  });
+
+  it('does not reconcile validation failures that cannot represent changed decision state', async () => {
+    const invalid = new StudioApiError('invalid request', 422);
+    let reloads = 0;
+
+    expect(shouldReconcileAssistantApprovalDecision(invalid)).toBe(false);
+    await reconcileAssistantApprovalDecisionFailure(
+      invalid,
+      () => true,
+      async () => { reloads += 1; },
+    );
+
+    expect(reloads).toBe(0);
   });
 
   it('coalesces repeated series proposal and approve clicks independently', async () => {
