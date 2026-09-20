@@ -106,7 +106,7 @@ class StudioServer:
         if not self.enabled or task is None:
             return
         try:
-            await task
+            await asyncio.shield(task)
         except asyncio.CancelledError:
             raise
         except BaseException as exc:
