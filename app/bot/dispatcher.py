@@ -16,13 +16,7 @@ from app.core.canonical_publication_delivery_primary_config import (
 )
 from app.core.channel_access import ChannelOwnerMiddleware, ChannelOwnerStateMiddleware
 from app.core.config import settings
-from app.core.db import (
-    AsyncSessionLocal,
-    Base,
-    engine,
-    init_db_if_needed_sync,
-    prepare_db_storage_sync,
-)
+from app.core.db import AsyncSessionLocal, engine, prepare_db_storage_sync
 from app.core.errors import ErrorsMiddleware
 from app.core.fsm_storage import build_fsm_storage
 from app.core.logging import setup_logging
@@ -92,12 +86,6 @@ async def _safe_stop(name: str, stop: Callable[[], Awaitable[None]]) -> None:
         await stop()
     except Exception:
         logger.exception("Shutdown: failed to stop {}", name)
-
-
-async def _legacy_schema_bootstrap() -> None:
-    init_db_if_needed_sync()
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
 
 
 async def _start_canonical_repeat_continuation_worker_if_enabled():
@@ -431,19 +419,11 @@ async def run_bot() -> None:
     )
 
     prepare_db_storage_sync()
-    schema_state = await bootstrap_database_schema(
-        engine,
-        unmanaged_initializer=_legacy_schema_bootstrap,
+    schema_state = await bootstrap_database_schema(engine)
+    logger.info(
+        "DB: Alembic managed schema at heads={}",
+        ",".join(schema_state.current_heads),
     )
-    if schema_state.managed:
-        logger.info(
-            "DB: Alembic managed schema at heads={}",
-            ",".join(schema_state.current_heads),
-        )
-    else:
-        logger.warning(
-            "DB: legacy unmanaged schema bootstrap active; run `alembic upgrade head` to adopt managed migrations"
-        )
 
     dp = await create_dispatcher()
     dp.include_router(main_router)

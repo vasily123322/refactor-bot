@@ -27,47 +27,68 @@ python app/bot/dispatcher.py
 
 ## Database migrations
 
-Alembic is the schema-evolution boundary for new database changes. It uses the same
-`DB_URL` and ORM registry as the application.
+Alembic is the only supported schema authority for normal application startup and
+future schema changes. It uses the same `DB_URL` and ORM registry as the application.
 
-Before deploying code with a new schema revision, run:
+### Fresh/default database
 
-```bash
-alembic upgrade head
-```
+A truly empty database is migrated to the shipped Alembic `head` automatically
+during application startup, before the dispatcher or any background worker starts.
+Startup then verifies the Alembic head, required ORM tables/columns, and (for SQLite)
+foreign-key integrity/enforcement. There is no `Base.metadata.create_all()` or ad-hoc
+schema fallback in the supported runtime path.
 
-The first revision (`20260809_0001`) is a non-destructive adoption baseline. On an
-empty database it creates the frozen baseline schema. On an existing current database
-it creates only missing baseline tables and records the Alembic version; it does not
-drop tables or rewrite existing data. Later schema changes are explicit revisions
-(e.g. `20260809_0002` for scheduler execution leases).
-
-Once a database contains `alembic_version`, application startup treats it as
-**Alembic-managed**. Managed databases do not run runtime `Base.metadata.create_all()`
-or the historical SQLite ad-hoc schema shim. Startup fails before workers are started
-when the database is behind the revision head shipped with the application. Apply:
+You can also initialize a fresh database explicitly before starting the application:
 
 ```bash
 alembic upgrade head
 ```
 
-and start the application again.
+### Existing Alembic-managed database
 
-Managed startup also verifies that every current ORM table and column is physically
-present. An Alembic `head` marker alone is not accepted if a historical/manual schema
-change left the database structurally incomplete. Fix the schema with the correct
-migration or repair procedure; the application will not auto-create missing columns.
+Application startup does **not** silently upgrade a managed database that is behind
+the revision head shipped with the application. Deployments must run:
 
-For Alembic-managed SQLite databases, startup also runs `PRAGMA foreign_key_check`
-before enabling SQLite foreign-key enforcement on application connections. If an
-existing managed database contains orphaned FK rows, startup fails closed instead of
-silently grandfathering them. Repair the reported database integrity issue before
-starting the application again. Unmanaged legacy SQLite keeps its historical behavior
-until it explicitly adopts Alembic.
+```bash
+alembic upgrade head
+```
 
-Databases that have not adopted Alembic yet retain the historical compatibility
-bootstrap so existing installations continue to start. This unmanaged path is
-transitional; future schema changes should be implemented only as Alembic revisions.
+before starting the new application version. If the database is behind, structurally
+incomplete, or fails SQLite foreign-key integrity checks, startup fails closed before
+workers start. Schema-changing migration failures are not swallowed or replaced by a
+runtime bootstrap.
+
+The first revision (`20260809_0001`) remains the frozen, non-destructive Alembic
+baseline; later schema changes remain explicit revisions. No new migration is needed
+for the startup-authority change itself because it does not change database schema.
+
+### Legacy database without `alembic_version`
+
+A non-empty database without `alembic_version` is never modified by application
+startup. This intentionally retires the old indefinite `create_all()`/ad-hoc
+production bootstrap.
+
+For a database created by the previous current-ORM `create_all()` startup path:
+
+1. Stop the application and take a verified database backup.
+2. Run the guarded one-time adoption command:
+
+   ```bash
+   python scripts/adopt_legacy_database.py
+   ```
+
+3. Restart the application.
+
+The adoption command compares the unmanaged database against the complete current ORM
+metadata, including Alembic-visible table/column/index/constraint differences. It
+stamps the database at the current Alembic `head` only when that comparison is clean.
+If the schema differs, adoption fails without stamping it. Repair or migrate that
+database explicitly from the verified backup; do **not** bypass the guard with a blind
+`alembic stamp head`.
+
+After adoption, all future changes use normal Alembic upgrades. The legacy SQLite
+repair helper in `app/core/db.py` is retained only for explicit/manual recovery of
+historical layouts and is not part of application startup.
 
 Useful checks:
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+from alembic import command
+from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
@@ -24,15 +26,32 @@ class DatabaseForeignKeyIntegrityError(RuntimeError):
     pass
 
 
+class DatabaseSchemaUnmanaged(RuntimeError):
+    pass
+
+
+class DatabaseSchemaMigrationError(RuntimeError):
+    pass
+
+
+class DatabaseLegacyAdoptionError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class AlembicSchemaState:
     managed: bool
     current_heads: tuple[str, ...]
     expected_heads: tuple[str, ...]
+    table_names: tuple[str, ...]
 
     @property
     def at_head(self) -> bool:
         return self.managed and set(self.current_heads) == set(self.expected_heads)
+
+    @property
+    def empty(self) -> bool:
+        return not self.table_names
 
 
 def _alembic_config() -> Config:
@@ -44,12 +63,13 @@ def _inspect_schema_sync(connection: Connection) -> AlembicSchemaState:
     expected_heads = tuple(
         sorted(ScriptDirectory.from_config(_alembic_config()).get_heads())
     )
-    table_names = set(inspect(connection).get_table_names())
+    table_names = tuple(sorted(inspect(connection).get_table_names()))
     if "alembic_version" not in table_names:
         return AlembicSchemaState(
             managed=False,
             current_heads=(),
             expected_heads=expected_heads,
+            table_names=table_names,
         )
 
     current_heads = tuple(
@@ -59,6 +79,53 @@ def _inspect_schema_sync(connection: Connection) -> AlembicSchemaState:
         managed=True,
         current_heads=current_heads,
         expected_heads=expected_heads,
+        table_names=table_names,
+    )
+
+
+def _upgrade_to_head_sync(connection: Connection) -> None:
+    config = _alembic_config()
+    config.attributes["connection"] = connection
+    command.upgrade(config, "head")
+
+
+def _stamp_head_sync(connection: Connection) -> None:
+    config = _alembic_config()
+    config.attributes["connection"] = connection
+    command.stamp(config, "head")
+
+
+def _diff_kind(diff: Any) -> str:
+    if isinstance(diff, tuple) and diff:
+        return str(diff[0])
+    if isinstance(diff, list) and diff:
+        return _diff_kind(diff[0])
+    return type(diff).__name__
+
+
+def _verify_exact_current_orm_schema_sync(connection: Connection) -> None:
+    # Safe stamping is deliberately stricter than normal startup shape checks.
+    # A legacy create_all() database may be adopted only when Alembic sees no
+    # metadata drift at all: tables, columns, indexes and constraints must already
+    # match the current ORM schema.
+    import app.domain  # noqa: F401
+    from app.core.db import Base
+
+    migration_context = MigrationContext.configure(
+        connection,
+        opts={"compare_type": True},
+    )
+    differences = compare_metadata(migration_context, Base.metadata)
+    if not differences:
+        return
+
+    kinds = ",".join(sorted({_diff_kind(diff) for diff in differences}))
+    raise DatabaseLegacyAdoptionError(
+        "unmanaged database cannot be safely adopted because its schema does not "
+        "exactly match current ORM metadata "
+        f"(differences={kinds or 'unknown'}); restore or repair the database from "
+        "a verified backup and retry the adoption command; do not run "
+        "`alembic stamp head` directly"
     )
 
 
@@ -155,36 +222,110 @@ async def inspect_alembic_schema(engine: AsyncEngine) -> AlembicSchemaState:
         return await connection.run_sync(_inspect_schema_sync)
 
 
-async def bootstrap_database_schema(
+def _raise_if_not_at_head(state: AlembicSchemaState) -> None:
+    if state.at_head:
+        return
+    current = ",".join(state.current_heads) or "base"
+    expected = ",".join(state.expected_heads) or "<none>"
+    raise DatabaseSchemaOutOfDate(
+        "database Alembic revision is not at application head "
+        f"(current={current}, expected={expected}); run `alembic upgrade head` "
+        "before application startup"
+    )
+
+
+async def _upgrade_fresh_database_to_head(engine: AsyncEngine) -> None:
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to_head_sync)
+    except Exception as exc:
+        raise DatabaseSchemaMigrationError(
+            "Alembic failed while initializing the fresh database; no legacy "
+            "create_all/ad-hoc fallback was attempted. Fix the migration error and "
+            "retry startup."
+        ) from exc
+
+
+async def _verify_managed_startup_state(
     engine: AsyncEngine,
-    *,
-    unmanaged_initializer: Callable[[], Awaitable[None]],
+    state: AlembicSchemaState,
 ) -> AlembicSchemaState:
-    """Use Alembic as source of truth once a database has adopted it.
-
-    Databases without an alembic_version table keep the historical bootstrap path.
-    Once managed, runtime schema mutation is disabled and startup fails closed when
-    the database is behind the revision scripts shipped with the application or lacks
-    current ORM tables/columns. Managed SQLite additionally audits existing FK
-    integrity before enforcing foreign keys on every subsequent connection.
-    """
-    state = await inspect_alembic_schema(engine)
-    if not state.managed:
-        # Inspection opens the database before the historical initializer runs.
-        # Clear pooled connections (especially SQLite StaticPool) because legacy
-        # bootstrap may atomically rename an old database file before create_all().
-        await engine.dispose()
-        await unmanaged_initializer()
-        return state
-
-    if not state.at_head:
-        current = ",".join(state.current_heads) or "base"
-        expected = ",".join(state.expected_heads) or "<none>"
-        raise DatabaseSchemaOutOfDate(
-            "database Alembic revision is not at application head "
-            f"(current={current}, expected={expected}); run `alembic upgrade head`"
-        )
-
+    _raise_if_not_at_head(state)
     await _verify_managed_schema_shape(engine)
     await _verify_and_enable_sqlite_foreign_keys(engine)
     return state
+
+
+async def bootstrap_database_schema(engine: AsyncEngine) -> AlembicSchemaState:
+    """Establish the application startup schema contract.
+
+    A truly empty database is initialized by Alembic to the shipped head. Existing
+    Alembic-managed databases must already be at that head. A non-empty database
+    without alembic_version is never mutated by runtime startup: legacy create_all()
+    compatibility requires the explicit, validated adoption command.
+    """
+
+    state = await inspect_alembic_schema(engine)
+    if state.managed:
+        return await _verify_managed_startup_state(engine, state)
+
+    if not state.empty:
+        tables = ",".join(state.table_names[:10])
+        if len(state.table_names) > 10:
+            tables += ",..."
+        raise DatabaseSchemaUnmanaged(
+            "database contains schema objects but has no alembic_version "
+            f"(tables={tables}); application startup refuses the legacy "
+            "Base.metadata.create_all()/ad-hoc bootstrap path. Stop the application, "
+            "take a verified backup, then run "
+            "`python scripts/adopt_legacy_database.py` for a database created by "
+            "the previous current-ORM create_all() bootstrap. If adoption rejects "
+            "the schema, repair or migrate it explicitly; do not stamp it blindly."
+        )
+
+    await _upgrade_fresh_database_to_head(engine)
+    migrated = await inspect_alembic_schema(engine)
+    if not migrated.managed:
+        raise DatabaseSchemaMigrationError(
+            "fresh database migration completed without creating alembic_version; "
+            "startup is refusing to continue"
+        )
+    return await _verify_managed_startup_state(engine, migrated)
+
+
+async def adopt_legacy_database_schema(engine: AsyncEngine) -> AlembicSchemaState:
+    """Safely adopt a legacy current-ORM create_all() database into Alembic.
+
+    This is an explicit operator action, never a production startup fallback. The
+    database must be unmanaged, non-empty, and exactly equivalent to current ORM
+    metadata before Alembic head is stamped.
+    """
+
+    state = await inspect_alembic_schema(engine)
+    if state.managed:
+        return await _verify_managed_startup_state(engine, state)
+    if state.empty:
+        raise DatabaseLegacyAdoptionError(
+            "legacy adoption is not for an empty database; use normal application "
+            "startup or `alembic upgrade head` so Alembic creates the schema"
+        )
+
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(_verify_exact_current_orm_schema_sync)
+            await connection.run_sync(_stamp_head_sync)
+    except DatabaseLegacyAdoptionError:
+        raise
+    except Exception as exc:
+        raise DatabaseLegacyAdoptionError(
+            "Alembic could not stamp the validated legacy database at head; "
+            "restore/repair from the verified backup and retry"
+        ) from exc
+
+    adopted = await inspect_alembic_schema(engine)
+    if not adopted.managed or not adopted.at_head:
+        raise DatabaseLegacyAdoptionError(
+            "legacy adoption did not leave the database at the application Alembic "
+            "head; restore/repair from the verified backup before startup"
+        )
+    return await _verify_managed_startup_state(engine, adopted)
