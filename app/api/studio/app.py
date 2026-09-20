@@ -14,6 +14,7 @@ from app.api.studio.candidate_actions import router as candidate_actions_router
 from app.api.studio.candidate_media import router as candidate_media_router
 from app.api.studio.candidate_prompt_rewrite import router as candidate_prompt_rewrite_router
 from app.api.studio.candidate_rewrite_authority import router as candidate_rewrite_authority_router
+from app.api.studio.candidate_structured_edit import router as candidate_structured_edit_router
 from app.api.studio.channel_dm_replies import router as channel_dm_replies_router
 from app.api.studio.channel_onboarding import router as channel_onboarding_router
 from app.api.studio.config import StudioConfig, studio_config
@@ -109,6 +110,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
     app.include_router(suggested_post_actions_router)
     app.include_router(candidate_rewrite_authority_router)
     app.include_router(candidate_prompt_rewrite_router)
+    app.include_router(candidate_structured_edit_router, prefix="/api/studio")
     app.include_router(candidate_media_router)
     app.include_router(source_media_assets_router)
     app.include_router(channel_onboarding_router)
