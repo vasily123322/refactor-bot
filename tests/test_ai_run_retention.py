@@ -12,6 +12,7 @@ from app.domain.sources.models import ContentCandidate, SourceDocument
 from app.domain.sources.rewrite import CandidateRewriteRun
 from app.repositories.sources_v2 import SourcesRepo
 from app.services.ai_run_retention import AIRunRetentionService
+from app.workers.ai_run_retention import AIRunRetentionWorker
 
 
 async def _candidate(session, *, channel_id: int, status: str):
@@ -249,3 +250,22 @@ def test_retention_is_bounded_by_candidate_limit_and_never_scans_active_candidat
             await engine.dispose()
 
     asyncio.run(run())
+
+def test_retention_worker_contains_tick_failure() -> None:
+    async def run() -> None:
+        worker = AIRunRetentionWorker(interval_seconds=60)
+        calls = 0
+
+        async def failing_tick() -> None:
+            nonlocal calls
+            calls += 1
+            worker._stop_event.set()
+            raise RuntimeError("fixture retention failure")
+
+        worker._tick = failing_tick
+        await worker._run()
+
+        assert calls == 1
+
+    asyncio.run(run())
+

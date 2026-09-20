@@ -22,6 +22,7 @@ def test_required_background_workers_imported() -> None:
     assert dispatcher.LocalCandidateEnrichmentWorker is not None
     assert dispatcher.GrabPoller is not None
     assert dispatcher.AIAutoTasksWorker is not None
+    assert dispatcher.AIRunRetentionWorker is not None
     assert dispatcher.StudioServer is not None
 
 
@@ -69,6 +70,16 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
 
         async def stop_all(self):
             events.append("external-stop")
+
+    class _FakeAIRunRetentionWorker:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            events.append("ai-run-retention-start")
+
+        async def stop(self):
+            events.append("ai-run-retention-stop")
 
     class _FakeStudioServer:
         enabled = False
@@ -264,6 +275,11 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
     )
     monkeypatch.setattr(dispatcher, "GrabPoller", _worker_class("grab-poller"))
     monkeypatch.setattr(dispatcher, "AIAutoTasksWorker", _worker_class("ai-auto"))
+    monkeypatch.setattr(
+        dispatcher,
+        "AIRunRetentionWorker",
+        _FakeAIRunRetentionWorker,
+    )
     monkeypatch.setattr(dispatcher, "StudioServer", _FakeStudioServer)
     monkeypatch.setattr(dispatcher, "cancel_bg_tasks", _cancel_bg_tasks)
     monkeypatch.setattr(
@@ -294,9 +310,11 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
         "local-enrichment-start",
         "grab-poller-start",
         "ai-auto-start",
+        "ai-run-retention-start",
         "studio-start",
         "polling",
         "studio-stop",
+        "ai-run-retention-stop",
         "ai-auto-stop",
         "grab-poller-stop",
         "local-enrichment-stop",
@@ -325,10 +343,13 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
     assert events.index("repeat-time-forward-start") < events.index("repeat-time-pin-forward-start")
     assert events.index("publication-views-start") < events.index("delivery-start")
     assert events.index("delivery-start") < events.index("source-ingestion-start")
+    assert events.index("ai-auto-start") < events.index("ai-run-retention-start")
+    assert events.index("ai-run-retention-start") < events.index("studio-start")
     assert events.index("studio-start") < events.index("polling")
 
     shutdown_order = [
         "studio-stop",
+        "ai-run-retention-stop",
         "ai-auto-stop",
         "grab-poller-stop",
         "local-enrichment-stop",
