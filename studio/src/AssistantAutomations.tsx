@@ -676,7 +676,7 @@ export function AssistantAutomations({
           disabled={loading}
           onClick={() => void loadAutomations()}
         >
-          {loading ? 'Загружаю…' : 'Обновить automations'}
+          Обновить automations
         </button>
       </div>
 
