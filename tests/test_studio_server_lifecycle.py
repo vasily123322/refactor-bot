@@ -102,6 +102,33 @@ def test_studio_clean_shutdown_is_not_reported_as_runtime_failure(monkeypatch) -
     asyncio.run(run())
 
 
+def test_cancelling_supervision_does_not_cancel_running_server(monkeypatch) -> None:
+    class _RunningServer:
+        def __init__(self, config):
+            self.started = False
+            self.should_exit = False
+
+        async def serve(self):
+            self.started = True
+            while not self.should_exit:
+                await asyncio.sleep(0)
+
+    _patch_uvicorn(monkeypatch, _RunningServer)
+
+    async def run() -> None:
+        server = server_module.StudioServer(_config(), startup_timeout_seconds=0.1)
+        await server.start()
+        watcher = asyncio.create_task(server.wait_for_termination())
+        await asyncio.sleep(0)
+        watcher.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await watcher
+        assert server.ready is True
+        await server.stop()
+
+    asyncio.run(run())
+
+
 def test_bot_polling_is_cancelled_when_studio_terminates() -> None:
     class _FakeDispatcher:
         cancelled = False
