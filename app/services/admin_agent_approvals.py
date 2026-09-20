@@ -419,7 +419,13 @@ class AdminAgentApprovalService:
             raise
 
     async def _stale_reason(self, approval: AdminAgentApproval) -> str | None:
-        item = await self.session.get(ContentItem, int(approval.content_item_id))
+        item = (
+            await self.session.execute(
+                select(ContentItem)
+                .where(ContentItem.id == int(approval.content_item_id))
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
         if item is None:
             return "draft was removed"
         if int(item.channel_id) != int(approval.channel_id):
