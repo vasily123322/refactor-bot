@@ -6,6 +6,11 @@ import pytest
 from app.api.studio import server as server_module
 from app.api.studio.config import StudioConfig
 from app.bot import dispatcher
+from app.core.config import Settings
+from app.core.runtime_configuration import (
+    RuntimeConfigurationError,
+    validate_runtime_configuration,
+)
 
 
 def test_required_background_workers_imported() -> None:
@@ -561,4 +566,55 @@ def test_studio_config_rejects_out_of_range_init_data_age(monkeypatch) -> None:
         match="STUDIO_INIT_DATA_MAX_AGE_SECONDS must be between 60 and 604800",
     ):
         StudioConfig.from_env()
+
+def test_retired_posttask_environment_is_ignored_by_supported_settings(monkeypatch) -> None:
+    monkeypatch.setenv("BOT_TOKEN", "test-token")
+    monkeypatch.setenv("API_ID", "12345")
+    monkeypatch.setenv("API_HASH", "test-hash")
+    monkeypatch.setenv("POST_TASK_RETENTION_ENABLED", "definitely-not-a-bool")
+    monkeypatch.setenv("POST_TASK_RETENTION_SUCCESSFUL_ENABLED", "also-invalid")
+    monkeypatch.setenv("POST_TASK_RETENTION_DAYS", "not-an-integer")
+    monkeypatch.setenv("POST_TASK_RETENTION_BATCH_SIZE", "-999")
+    monkeypatch.setenv("POST_TASK_RETENTION_INTERVAL_SECONDS", "zero-ish")
+
+    configured = Settings(_env_file=None)
+
+    assert "post_task_retention_enabled" not in Settings.model_fields
+    assert "post_task_retention_successful_enabled" not in Settings.model_fields
+    assert "post_task_retention_successful_pending_autodelete_enabled" not in Settings.model_fields
+    assert "post_task_retention_successful_repeat_occurrences_enabled" not in Settings.model_fields
+    assert "post_task_retention_days" not in Settings.model_fields
+    assert "post_task_retention_batch_size" not in Settings.model_fields
+    assert "post_task_retention_interval_seconds" not in Settings.model_fields
+    assert configured.canonical_repeat_successful_planning_enabled is False
+
+
+def test_runtime_configuration_no_longer_requires_posttask_settings() -> None:
+    settings = SimpleNamespace(
+        canonical_repeat_shadow_planning_enabled=False,
+        canonical_repeat_successful_planning_enabled=False,
+        canonical_repeat_overdue_recovery_shadow_enabled=False,
+        canonical_repeat_overdue_recovery_planning_enabled=False,
+        canonical_repeat_boot_recovery_shadow_enabled=False,
+        canonical_repeat_boot_recovery_planning_enabled=False,
+    )
+
+    validate_runtime_configuration(settings)
+
+
+def test_runtime_configuration_keeps_canonical_repeat_safety_guard() -> None:
+    settings = SimpleNamespace(
+        canonical_repeat_shadow_planning_enabled=False,
+        canonical_repeat_successful_planning_enabled=True,
+        canonical_repeat_overdue_recovery_shadow_enabled=False,
+        canonical_repeat_overdue_recovery_planning_enabled=False,
+        canonical_repeat_boot_recovery_shadow_enabled=False,
+        canonical_repeat_boot_recovery_planning_enabled=False,
+    )
+
+    with pytest.raises(
+        RuntimeConfigurationError,
+        match="CANONICAL_REPEAT_SUCCESSFUL_PLANNING_ENABLED requires",
+    ):
+        validate_runtime_configuration(settings)
 
