@@ -44,6 +44,19 @@ class StudioServer:
             and getattr(self._server, "started", False)
         )
 
+    async def _serve(self) -> None:
+        """Run embedded Uvicorn without allowing its SystemExit to escape the task."""
+
+        server = self._server
+        if server is None:
+            raise RuntimeError("Studio API server is not initialized")
+        try:
+            await server.serve()
+        except SystemExit as exc:
+            raise RuntimeError(
+                f"Embedded Uvicorn exited with code {exc.code!r}"
+            ) from exc
+
     async def _raise_startup_failure(self) -> None:
         task = self._task
         self._task = None
@@ -76,7 +89,7 @@ class StudioServer:
             loop="asyncio",
         )
         self._server = uvicorn.Server(uvicorn_config)
-        self._task = asyncio.create_task(self._server.serve(), name="studio-api")
+        self._task = asyncio.create_task(self._serve(), name="studio-api")
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.startup_timeout_seconds
