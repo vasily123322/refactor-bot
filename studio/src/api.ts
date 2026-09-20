@@ -847,6 +847,7 @@ export const studioApi = {
   createAssistantApproval: (
     channelId: number,
     contentItemId: number,
+    contentRevision: number,
     localTime: string,
     requestId: string,
   ) =>
@@ -856,6 +857,7 @@ export const studioApi = {
         method: 'POST',
         body: JSON.stringify({
           content_item_id: contentItemId,
+          content_revision: contentRevision,
           local_time: localTime,
           request_id: requestId,
         }),
