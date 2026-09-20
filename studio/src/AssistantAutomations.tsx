@@ -671,6 +671,13 @@ export function AssistantAutomations({
             Exact skill version · daily/weekly cadence · timezone фиксируется backend.
           </small>
         </div>
+        <button
+          className="button secondary"
+          disabled={loading}
+          onClick={() => void loadAutomations()}
+        >
+          {loading ? 'Загружаю…' : 'Обновить automations'}
+        </button>
       </div>
 
       {error?.channelId === channel.id && (
@@ -796,7 +803,12 @@ export function AssistantAutomations({
           </>
         }
         errorFallback={
-          <div className="assistant-empty">Automations не загружены.</div>
+          <div className="assistant-empty">
+            Automations не загружены.{' '}
+            <button className="link-button" onClick={() => void loadAutomations()}>
+              Повторить загрузку
+            </button>
+          </div>
         }
         emptyFallback={
           <div className="assistant-empty">Recurring automations пока не созданы.</div>
