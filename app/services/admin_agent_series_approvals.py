@@ -68,6 +68,10 @@ class SeriesApprovalExecutionError(RuntimeError):
     pass
 
 
+class _CanonicalApprovalTargetStale(RuntimeError):
+    pass
+
+
 def _normalized_now(value: datetime | None = None) -> datetime:
     return as_utc(value or datetime.now(timezone.utc))
 
@@ -1283,9 +1287,18 @@ class AdminAgentSeriesApprovalService:
             owner_model=AdminAgentApprovalBatch,
             owner_id=int(batch.id),
             claim_token=claim_token,
+            content_item_id=int(item.content_item_id),
+            content_revision=int(item.captured_content_revision),
         ):
             await self.session.rollback()
             raise SeriesApprovalStateConflict("batch execution claim was lost")
+        if await self._conflicting_schedule_exists(
+            content_item_id=int(item.content_item_id),
+            content_revision=int(item.captured_content_revision),
+        ):
+            raise _CanonicalApprovalTargetStale(
+                "conflicting canonical schedule already exists"
+            )
         reviewer = int(batch.reviewer_tg_user_id or batch.owner_tg_user_id)
         metadata = {
             "admin_agent_batch_approval_id": int(batch.id),
@@ -1473,6 +1486,14 @@ class AdminAgentSeriesApprovalService:
                     claim_token=claim_token,
                 )
                 completed_count += 1
+            except _CanonicalApprovalTargetStale as exc:
+                return await self._terminal_failure(
+                    batch,
+                    completed_count=completed_count,
+                    reason=f"item {int(item.ordinal)}: {exc}",
+                    failed_item=item,
+                    stale=True,
+                )
             except (SeriesApprovalExecutionError, SeriesApprovalStateConflict):
                 await self.session.rollback()
                 raise

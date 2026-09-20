@@ -9,9 +9,11 @@ import pytest
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+import app.services.admin_agent_approvals as approval_service_module
 import app.services.admin_agent_series_approvals as series_approval_service_module
 from app.core.db import Base
 from app.domain.admin_agent import (
+    AdminAgentApproval,
     AdminAgentApprovalBatch,
     AdminAgentApprovalBatchItem,
     AdminAgentRunArtifact,
@@ -24,6 +26,10 @@ from app.repositories.channels import ChannelsRepo
 from app.repositories.clients import ClientsRepo
 from app.repositories.content import ContentRepo
 from app.services.admin_agent import AdminAgentRunner, SERIES_SCENARIO_LIMITS
+from app.services.admin_agent_approvals import (
+    STATE_STALE as SINGLE_STATE_STALE,
+    AdminAgentApprovalService,
+)
 from app.services.admin_agent_series_approvals import (
     ITEM_EXECUTED,
     ITEM_EXECUTING,
@@ -1669,6 +1675,186 @@ def test_series_expired_claim_owner_is_fenced_from_canonical_queue(
                 assert await _counts(verify, channel_id) == (2, 2, 0)
             assert queue_calls == 2
             assert fence_calls >= 6
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+
+def test_single_and_series_same_revision_share_one_canonical_target(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    async def run() -> None:
+        database_path = tmp_path / "cross-mode-approval-target.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as setup:
+                owner, channel = await _setup_channel(setup, 13014)
+                source = await _source_run(
+                    setup,
+                    monkeypatch,
+                    owner=owner,
+                    channel=channel,
+                    count=1,
+                    request_id="series-source-cross-mode-0001",
+                )
+                artifact = (
+                    await setup.execute(
+                        select(AdminAgentRunArtifact).where(
+                            AdminAgentRunArtifact.run_id == int(source.id),
+                            AdminAgentRunArtifact.artifact_type
+                            == "series_draft",
+                            AdminAgentRunArtifact.ordinal == 1,
+                        )
+                    )
+                ).scalar_one()
+                content_item_id = int(artifact.content_item_id)
+                content_revision = int(artifact.content_revision)
+
+                series = await AdminAgentSeriesApprovalService(
+                    setup,
+                    now_utc=NOW,
+                ).create(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    source_run_id=source.id,
+                    request_id="series-cross-mode-0001",
+                    slots=_slots(1),
+                )
+                single = await AdminAgentApprovalService(
+                    setup,
+                    now_utc=NOW,
+                ).create_schedule_draft_tomorrow(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    content_item_id=content_item_id,
+                    local_time_value="13:00",
+                    request_id="single-cross-mode-0001",
+                )
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
+                batch_id = int(series.id)
+                approval_id = int(single.id)
+
+            single_target_fence_entered = asyncio.Event()
+            release_single_target_fence = asyncio.Event()
+            single_target_fence_calls = 0
+            queue_calls = 0
+            original_single_fence = approval_service_module.fence_execution_claim
+            original_queue = LegacyPublicationBridge.queue
+
+            async def blocked_single_target_fence(session, **kwargs):
+                nonlocal single_target_fence_calls
+                if (
+                    kwargs.get("content_item_id") == content_item_id
+                    and kwargs.get("content_revision") == content_revision
+                ):
+                    single_target_fence_calls += 1
+                    if single_target_fence_calls == 1:
+                        single_target_fence_entered.set()
+                        await asyncio.wait_for(
+                            release_single_target_fence.wait(),
+                            timeout=5,
+                        )
+                return await original_single_fence(session, **kwargs)
+
+            async def counted_queue(self, **kwargs):
+                nonlocal queue_calls
+                queue_calls += 1
+                return await original_queue(self, **kwargs)
+
+            monkeypatch.setattr(
+                approval_service_module,
+                "fence_execution_claim",
+                blocked_single_target_fence,
+            )
+            monkeypatch.setattr(LegacyPublicationBridge, "queue", counted_queue)
+
+            async with Session() as single_session, Session() as series_session:
+                single_task = asyncio.create_task(
+                    AdminAgentApprovalService(
+                        single_session,
+                        now_utc=NOW,
+                    ).approve(
+                        approval_id=approval_id,
+                        owner_tg_user_id=owner_id,
+                        channel_id=channel_id,
+                        reviewer_tg_user_id=owner_id,
+                    )
+                )
+                await asyncio.wait_for(single_target_fence_entered.wait(), timeout=5)
+
+                series_result = await AdminAgentSeriesApprovalService(
+                    series_session,
+                    now_utc=NOW,
+                ).approve(
+                    batch_id=batch_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    reviewer_tg_user_id=owner_id,
+                )
+                assert series_result is not None
+                assert series_result.state == STATE_EXECUTED
+
+                release_single_target_fence.set()
+                single_result = await asyncio.wait_for(single_task, timeout=5)
+                assert single_result is not None
+                assert single_result.state == SINGLE_STATE_STALE
+                assert (
+                    single_result.failure_reason
+                    == "canonical scheduling state already exists"
+                )
+
+            async with Session() as verify:
+                stored_single = await verify.get(AdminAgentApproval, approval_id)
+                assert stored_single is not None
+                assert stored_single.state == SINGLE_STATE_STALE
+                assert stored_single.schedule_entry_id is None
+                assert stored_single.publication_id is None
+
+                stored_items = list(
+                    (
+                        await verify.execute(
+                            select(AdminAgentApprovalBatchItem).where(
+                                AdminAgentApprovalBatchItem.batch_id == batch_id
+                            )
+                        )
+                    ).scalars()
+                )
+                assert len(stored_items) == 1
+                assert stored_items[0].state == ITEM_EXECUTED
+
+                schedule_count = int(
+                    (
+                        await verify.execute(
+                            select(func.count(ScheduleEntry.id)).where(
+                                ScheduleEntry.content_item_id == content_item_id,
+                                ScheduleEntry.content_revision == content_revision,
+                            )
+                        )
+                    ).scalar_one()
+                )
+                publication_count = int(
+                    (
+                        await verify.execute(
+                            select(func.count(Publication.id)).where(
+                                Publication.content_item_id == content_item_id,
+                                Publication.content_revision == content_revision,
+                            )
+                        )
+                    ).scalar_one()
+                )
+                assert schedule_count == 1
+                assert publication_count == 1
+                assert await _counts(verify, channel_id) == (1, 1, 0)
+
+            assert queue_calls == 1
+            assert single_target_fence_calls == 1
         finally:
             await engine.dispose()
 
