@@ -136,6 +136,7 @@ describe('Assistant automations', () => {
     );
     expect(html).toContain('attention_today@1');
     expect(html).toContain('prepare_content_series@1');
+    expect(html).toContain('Обновить automations');
     expect(html).not.toContain('future_mutation');
     expect(html).not.toContain('cron');
   });
