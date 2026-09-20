@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 
 from aiogram import Dispatcher
 from loguru import logger
