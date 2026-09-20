@@ -16,6 +16,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -251,6 +252,17 @@ class AdminAgentApproval(Base):
             "execution_key",
             unique=True,
         ),
+        Index(
+            "uq_admin_agent_approval_active_target",
+            "owner_tg_user_id",
+            "channel_id",
+            "action_type",
+            "content_item_id",
+            "content_revision",
+            unique=True,
+            sqlite_where=text("state IN ('pending_review','executing')"),
+            postgresql_where=text("state IN ('pending_review','executing')"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -316,6 +328,16 @@ class AdminAgentApprovalBatch(Base):
             "ix_admin_agent_approval_batches_execution_key",
             "execution_key",
             unique=True,
+        ),
+        Index(
+            "uq_admin_agent_approval_batch_active_source_run",
+            "owner_tg_user_id",
+            "channel_id",
+            "action_type",
+            "source_run_id",
+            unique=True,
+            sqlite_where=text("state IN ('pending_review','executing')"),
+            postgresql_where=text("state IN ('pending_review','executing')"),
         ),
     )
 
