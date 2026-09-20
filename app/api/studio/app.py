@@ -133,7 +133,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/readyz")
-    async def readyz() -> dict[str, object] | JSONResponse:
+    async def readyz():
         """Readiness: supported runtime boot completed and DB schema is reachable/current."""
 
         result = await runtime_readiness.check(engine)
