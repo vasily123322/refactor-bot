@@ -264,14 +264,14 @@ def test_one_active_draft_approval_per_revision_and_terminal_reuse() -> None:
             Session = async_sessionmaker(engine, expire_on_commit=False)
             async with Session() as session:
                 owner, channel = await _setup_channel(session, tg_user_id=9923)
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
                 item = await _draft(
                     session,
                     channel_id=channel_id,
                     owner_tg_user_id=owner_id,
                     title="Active approval target",
                 )
-                owner_id = int(owner.tg_user_id)
-                channel_id = int(channel.id)
                 item_id = int(item.id)
                 service = AdminAgentApprovalService(
                     session,
