@@ -62,6 +62,26 @@ The first revision (`20260809_0001`) remains the frozen, non-destructive Alembic
 baseline; later schema changes remain explicit revisions. No new migration is needed
 for the startup-authority change itself because it does not change database schema.
 
+### Health and readiness
+
+The embedded Studio API exposes two unauthenticated operational endpoints with
+different contracts:
+
+- `GET /healthz` is **liveness** only. A 200 response means the Studio HTTP process
+  can answer requests; it does not assert database or worker readiness.
+- `GET /readyz` is **readiness**. It returns 200 only after the supported bot runtime
+  has completed startup and the database is reachable at the Alembic head expected by
+  the running application. During startup, shutdown, database failure, or schema
+  mismatch it returns 503.
+
+Readiness responses expose only coarse check states (`runtime`, `database`,
+`schema`) and never connection strings, exception messages, tokens, or migration
+details. Use `/healthz` for liveness/restart detection and `/readyz` for traffic
+admission/draining. A persistent 503 on `/readyz` should trigger investigation of
+application boot logs and database/schema state rather than bypassing the readiness
+gate. Studio task termination after startup remains fatal to the parent runtime and is
+supervised by the process lifecycle.
+
 ### Legacy database without `alembic_version`
 
 A non-empty database without `alembic_version` is never modified by application
