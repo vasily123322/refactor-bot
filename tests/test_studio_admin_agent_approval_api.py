@@ -103,6 +103,7 @@ def test_studio_approval_routes_are_owner_scoped_bounded_and_idempotent(monkeypa
                     f"/api/studio/channels/{channel.id}/assistant/approvals",
                     json={
                         "content_item_id": item.id,
+                        "content_revision": 1,
                         "local_time": "14:30",
                         "request_id": "api-approval-0001",
                         "timezone": "Pacific/Auckland",
@@ -117,6 +118,7 @@ def test_studio_approval_routes_are_owner_scoped_bounded_and_idempotent(monkeypa
                     f"/api/studio/channels/{channel.id}/assistant/approvals",
                     json={
                         "content_item_id": item.id,
+                        "content_revision": 1,
                         "local_time": "29:90",
                         "request_id": "api-approval-0002",
                     },
@@ -124,10 +126,35 @@ def test_studio_approval_routes_are_owner_scoped_bounded_and_idempotent(monkeypa
                 )
                 assert malformed.status_code == 422
 
+                missing_revision = await client.post(
+                    f"/api/studio/channels/{channel.id}/assistant/approvals",
+                    json={
+                        "content_item_id": item.id,
+                        "local_time": "14:30",
+                        "request_id": "api-approval-missing-revision",
+                    },
+                    headers=headers,
+                )
+                assert missing_revision.status_code == 422
+
+                stale_revision = await client.post(
+                    f"/api/studio/channels/{channel.id}/assistant/approvals",
+                    json={
+                        "content_item_id": item.id,
+                        "content_revision": 2,
+                        "local_time": "14:30",
+                        "request_id": "api-approval-stale-revision",
+                    },
+                    headers=headers,
+                )
+                assert stale_revision.status_code == 409
+                assert stale_revision.json()["detail"] == "requested content revision is stale"
+
                 foreign_path = await client.post(
                     f"/api/studio/channels/{foreign.id}/assistant/approvals",
                     json={
                         "content_item_id": foreign_item.id,
+                        "content_revision": 1,
                         "local_time": "14:30",
                         "request_id": "api-approval-0003",
                     },
@@ -139,6 +166,7 @@ def test_studio_approval_routes_are_owner_scoped_bounded_and_idempotent(monkeypa
                     f"/api/studio/channels/{channel.id}/assistant/approvals",
                     json={
                         "content_item_id": foreign_item.id,
+                        "content_revision": 1,
                         "local_time": "14:30",
                         "request_id": "api-approval-0004",
                     },
@@ -150,6 +178,7 @@ def test_studio_approval_routes_are_owner_scoped_bounded_and_idempotent(monkeypa
                     f"/api/studio/channels/{channel.id}/assistant/approvals",
                     json={
                         "content_item_id": item.id,
+                        "content_revision": 1,
                         "local_time": "14:30",
                         "request_id": "api-approval-0005",
                     },
@@ -171,6 +200,7 @@ def test_studio_approval_routes_are_owner_scoped_bounded_and_idempotent(monkeypa
                     f"/api/studio/channels/{channel.id}/assistant/approvals",
                     json={
                         "content_item_id": item.id,
+                        "content_revision": 1,
                         "local_time": "16:00",
                         "request_id": "api-approval-0005",
                     },
@@ -184,6 +214,7 @@ def test_studio_approval_routes_are_owner_scoped_bounded_and_idempotent(monkeypa
                     f"/api/studio/channels/{channel.id}/assistant/approvals",
                     json={
                         "content_item_id": item.id,
+                        "content_revision": 1,
                         "local_time": "16:15",
                         "request_id": "api-approval-active-conflict",
                     },
@@ -232,6 +263,7 @@ def test_studio_approval_routes_are_owner_scoped_bounded_and_idempotent(monkeypa
                     f"/api/studio/channels/{channel.id}/assistant/approvals",
                     json={
                         "content_item_id": item.id,
+                        "content_revision": 1,
                         "local_time": "15:45",
                         "request_id": "api-approval-0006",
                     },
@@ -319,6 +351,16 @@ def test_visible_run_approval_lookup_survives_newer_channel_approvals(monkeypatc
                         "admin_agent_scenario": "drafts_tomorrow",
                     },
                 )
+                source_run.result = {
+                    "scenario": "drafts_tomorrow",
+                    "drafts": [
+                        {
+                            "content_item_id": target.id,
+                            "content_revision": target.current_revision,
+                        }
+                    ],
+                }
+                await session.commit()
                 noise_items = await ContentRepo(session).create_batch(
                     channel_id=channel.id,
                     items=[
