@@ -6,6 +6,8 @@
 # - PR CI #1624 removed those globs and exposed 30 more historical files importing
 #   retired PostTask/legacy runtime modules.
 #
+# Final sync base: main 6e0b1036492d25cb43502ce7da6a6f4c961bbe5c.
+#
 # These files remain versioned evidence, but are not part of the supported backend
 # contract. New tests are supported by default; adding an entry here requires an
 # explicit reviewable manifest change instead of a broad filename glob.
