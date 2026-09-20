@@ -22,6 +22,7 @@ from app.core.errors import ErrorsMiddleware
 from app.core.fsm_storage import build_fsm_storage
 from app.core.logging import setup_logging
 from app.core.runtime_configuration import validate_runtime_configuration
+from app.core.runtime_readiness import runtime_readiness
 from app.core.schema import bootstrap_database_schema
 from app.services.canonical_publication_delivery_runtime_control import (
     stop_canonical_publication_delivery_workers,
@@ -450,6 +451,7 @@ async def _start_publication_autodelete_views_worker_if_enabled(
 
 
 async def run_bot() -> None:
+    runtime_readiness.mark_not_ready()
     setup_logging(settings.log_level)
     primary_delivery_config = load_canonical_publication_delivery_primary_settings()
     validate_runtime_configuration(settings)
@@ -640,6 +642,7 @@ async def run_bot() -> None:
         ai_run_retention_worker.start()
 
         await studio_server.start()
+        runtime_readiness.mark_ready()
 
         logger.info("Boot: starting aiogram polling...")
         await _run_polling_with_studio_supervision(dp, studio_server)
@@ -647,6 +650,7 @@ async def run_bot() -> None:
         logger.exception("Bot runtime failed")
         raise
     finally:
+        runtime_readiness.mark_not_ready()
         await _safe_stop("Studio API", studio_server.stop)
         if ai_run_retention_worker is not None:
             await _safe_stop(
