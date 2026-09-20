@@ -92,6 +92,7 @@ jobs:
             tests/test_posttask_schema_drop.py \
             tests/test_p8_zero_production_refs.py \
             tests/test_schema_startup.py \
+            tests/test_startup_smoke.py \
             tests/test_source_media_promotion.py \
             tests/test_source_reconciliation.py \
             tests/test_studio_ai_activity_api.py \
@@ -108,23 +109,8 @@ jobs:
             tests/test_suggested_post_actions.py \
             tests/test_telegram_channel_dms.py \
             tests/test_telegram_source_ingestion.py
-      - name: Report historical test debt
-        continue-on-error: true
-        run: |
-          set +e
-          pytest -q --tb=no \
-            --ignore-glob='tests/test_*legacy*.py' \
-            --ignore-glob='tests/test_*retirement*.py' \
-            --ignore-glob='tests/test_*handoff*.py' \
-            --ignore-glob='tests/test_*parity*.py' \
-            --ignore-glob='tests/test_*shadow*.py' \
-            > /tmp/pytest.log 2>&1
-          status=$?
-          echo "=== historical pytest failure manifest (non-blocking) ==="
-          grep -E '^(FAILED|ERROR) ' /tmp/pytest.log || true
-          echo "=== historical pytest summary ==="
-          tail -n 8 /tmp/pytest.log
-          exit "$status"
+      - name: Collect supported broad backend suite
+        run: python scripts/backend_test_scope.py
 
   studio:
     name: Telegram Studio frontend
