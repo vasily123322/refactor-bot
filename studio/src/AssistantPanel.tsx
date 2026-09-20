@@ -113,9 +113,14 @@ export function mergeAssistantApproval(
 export function mergeAssistantSeriesApproval(
   previous: AssistantSeriesApprovalView[],
   approval: AssistantSeriesApprovalView,
-  limit = 50,
+  limit = 1,
 ): AssistantSeriesApprovalView[] {
-  return [approval, ...previous.filter((item) => item.id !== approval.id)].slice(0, limit);
+  return [
+    approval,
+    ...previous.filter(
+      (item) => item.id !== approval.id && item.source_run_id !== approval.source_run_id,
+    ),
+  ].slice(0, limit);
 }
 
 function DraftApprovalCard({
@@ -297,6 +302,7 @@ function SeriesApprovalSection({
   runId,
   result,
   approval,
+  associationReady,
   proposalBusy,
   reviewBusy,
   onOpenPlanner,
@@ -307,6 +313,7 @@ function SeriesApprovalSection({
   runId: number;
   result: AssistantContentSeriesRunResult;
   approval: AssistantSeriesApprovalView | null;
+  associationReady: boolean;
   proposalBusy: boolean;
   reviewBusy: boolean;
   onOpenPlanner?: VoidFunction;
@@ -326,8 +333,8 @@ function SeriesApprovalSection({
   const statusRef = useRef<HTMLDivElement | null>(null);
   const previousStateRef = useRef<string | null>(approval?.state ?? null);
   const approvalState = approval?.state ?? null;
-  const canCreate = !approval
-    || ['rejected', 'stale', 'failed'].includes(approval.state);
+  const canCreate = associationReady
+    && (!approval || ['rejected', 'stale', 'failed'].includes(approval.state));
   const canReview = approval?.state === 'pending_review';
   const canRecover = approval?.state === 'executing';
   const slotsComplete = slots.length === result.requested_post_count
@@ -531,6 +538,7 @@ export function AssistantBrief({
   approvals = [],
   draftApprovalsReady = true,
   seriesApprovals = [],
+  seriesApprovalsReady = true,
   busyKeys = new Set<string>(),
   onOpenPlanner,
   onOpenContent,
@@ -545,6 +553,7 @@ export function AssistantBrief({
   approvals?: AssistantApprovalView[];
   draftApprovalsReady?: boolean;
   seriesApprovals?: AssistantSeriesApprovalView[];
+  seriesApprovalsReady?: boolean;
   busyKeys?: Set<string>;
   onOpenPlanner?: VoidFunction;
   onOpenContent?: (contentId: number) => void;
@@ -615,6 +624,7 @@ export function AssistantBrief({
           runId={run.id}
           result={result}
           approval={latestSeriesApproval(seriesApprovals, run.id)}
+          associationReady={seriesApprovalsReady}
           proposalBusy={busyKeys.has(`series-proposal:${run.id}`)}
           reviewBusy={
             latestSeriesApproval(seriesApprovals, run.id)
@@ -931,6 +941,12 @@ export function AssistantPanel({
     message: string;
   } | null>(null);
   const [seriesApprovals, setSeriesApprovals] = useState<AssistantSeriesApprovalView[]>([]);
+  const [seriesApprovalLoadState, setSeriesApprovalLoadState] = useState<ScopedLoadState | null>(null);
+  const [seriesApprovalError, setSeriesApprovalError] = useState<{
+    channelId: number;
+    scopeKey: string;
+    message: string;
+  } | null>(null);
   const [currentRun, setCurrentRun] = useState<AssistantRunView | null>(null);
   const [loadState, setLoadState] = useState<ChannelLoadState | null>(null);
   const [error, setError] = useState<{ channelId: number; message: string } | null>(null);
@@ -940,6 +956,7 @@ export function AssistantPanel({
   const catalogOwnershipRef = useRef(new ChannelRequestOwnership());
   const requestOwnershipRef = useRef(new ChannelRequestOwnership());
   const approvalOwnershipRef = useRef(new ChannelRequestOwnership());
+  const seriesApprovalOwnershipRef = useRef(new ChannelRequestOwnership());
   const runOwnershipRef = useRef(new ChannelRequestOwnership());
   const operationContextOwnershipRef = useRef(new ChannelRequestOwnership());
   const operationContextRef = useRef<{
@@ -1035,14 +1052,10 @@ export function AssistantPanel({
     }
     setError(null);
     try {
-      const [rows, seriesApprovalRows] = await Promise.all([
-        studioApi.assistantRuns(channelId, 10),
-        studioApi.assistantSeriesApprovals(channelId, 50),
-      ]);
+      const rows = await studioApi.assistantRuns(channelId, 10);
       if (!isCurrent()) return;
       validDataChannelRef.current = channelId;
       setRuns(rows);
-      setSeriesApprovals(seriesApprovalRows);
       setCurrentRun((existing) => (
         existing?.channel_id === channelId ? existing : rows[0] ?? null
       ));
@@ -1098,13 +1111,55 @@ export function AssistantPanel({
     }
   }, []);
 
+  const loadSeriesApprovals = useCallback(async (run: AssistantRunView | null) => {
+    const channelId = channelIdRef.current;
+    if (
+      channelId === null
+      || run === null
+      || run.channel_id !== channelId
+      || run.scenario !== 'prepare_content_series'
+    ) {
+      seriesApprovalOwnershipRef.current.invalidate();
+      setSeriesApprovals([]);
+      setSeriesApprovalLoadState(null);
+      setSeriesApprovalError(null);
+      return;
+    }
+
+    const scopeKey = String(run.id);
+    const token = seriesApprovalOwnershipRef.current.begin(channelId, scopeKey);
+    const isCurrent = () => seriesApprovalOwnershipRef.current.isCurrent(
+      token,
+      channelIdRef.current,
+      currentRunIdRef.current === null ? null : String(currentRunIdRef.current),
+    );
+    setSeriesApprovals([]);
+    setSeriesApprovalLoadState({ channelId, scopeKey, phase: 'loading' });
+    setSeriesApprovalError(null);
+    try {
+      const rows = await studioApi.assistantRunSeriesApprovals(channelId, run.id);
+      if (!isCurrent()) return;
+      setSeriesApprovals(rows);
+      setSeriesApprovalLoadState({ channelId, scopeKey, phase: 'loaded' });
+    } catch (reason) {
+      if (!isCurrent()) return;
+      setSeriesApprovals([]);
+      setSeriesApprovalLoadState({ channelId, scopeKey, phase: 'error-without-valid-data' });
+      setSeriesApprovalError({ channelId, scopeKey, message: errorMessage(reason) });
+    }
+  }, []);
+
   useEffect(() => {
     catalogOwnershipRef.current.invalidate();
     approvalOwnershipRef.current.invalidate();
+    seriesApprovalOwnershipRef.current.invalidate();
     runOwnershipRef.current.invalidate();
     setApprovals([]);
     setApprovalLoadState(null);
     setApprovalError(null);
+    setSeriesApprovals([]);
+    setSeriesApprovalLoadState(null);
+    setSeriesApprovalError(null);
     setRunningScenario(null);
     setResumeRunId(null);
     void loadCatalog();
@@ -1113,7 +1168,13 @@ export function AssistantPanel({
 
   useEffect(() => {
     void loadDraftApprovals(currentRun);
-  }, [currentRun?.id, currentRun?.channel_id, loadDraftApprovals]);
+    void loadSeriesApprovals(currentRun);
+  }, [
+    currentRun?.id,
+    currentRun?.channel_id,
+    loadDraftApprovals,
+    loadSeriesApprovals,
+  ]);
 
   const runScenario = useCallback(async (
     scenario: AssistantScenario,
@@ -1260,11 +1321,15 @@ export function AssistantPanel({
     operation: (channelId: number) => Promise<AssistantSeriesApprovalView>,
   ) => {
     const channelId = channelIdRef.current;
+    const runId = currentRunIdRef.current;
     const operationContextToken = operationContextRef.current.token;
-    if (channelId === null || operationContextToken === null) return;
-    const isCurrent = () => operationContextOwnershipRef.current.isCurrent(
-      operationContextToken,
-      channelIdRef.current,
+    if (channelId === null || runId === null || operationContextToken === null) return;
+    const isCurrent = () => (
+      operationContextOwnershipRef.current.isCurrent(
+        operationContextToken,
+        channelIdRef.current,
+      )
+      && currentRunIdRef.current === runId
     );
     const scopedKey = `${channelId}:${key}`;
     let lock = approvalLocksRef.current.get(scopedKey);
@@ -1352,6 +1417,29 @@ export function AssistantPanel({
     && approvalError.scopeKey === draftApprovalScopeKey
   )
     ? approvalError.message
+    : null;
+  const seriesApprovalScopeKey = currentRun?.scenario === 'prepare_content_series'
+    ? String(currentRun.id)
+    : null;
+  const seriesApprovalView = seriesApprovalScopeKey === null
+    ? null
+    : resolveScopedDataView(
+      seriesApprovalLoadState,
+      channel.id,
+      seriesApprovalScopeKey,
+      seriesApprovals.length,
+    );
+  const seriesApprovalsReady = seriesApprovalView === null
+    || seriesApprovalView === 'loaded-empty'
+    || seriesApprovalView === 'loaded-data';
+  const seriesApprovalsLoading = seriesApprovalView === 'loading';
+  const seriesApprovalsFailed = seriesApprovalView === 'error-without-valid-data';
+  const currentSeriesApprovalError = (
+    seriesApprovalScopeKey !== null
+    && seriesApprovalError?.channelId === channel.id
+    && seriesApprovalError.scopeKey === seriesApprovalScopeKey
+  )
+    ? seriesApprovalError.message
     : null;
   const running = runningScenario !== null;
 
@@ -1454,6 +1542,21 @@ export function AssistantPanel({
             </button>
           </div>
         )}
+        {seriesApprovalsLoading && (
+          <InlineStatus>Проверяю статус предложения серии для этого запуска…</InlineStatus>
+        )}
+        {seriesApprovalsFailed && currentRun && (
+          <div className="assistant-empty" role="alert">
+            Статус предложения серии не загружен.{' '}
+            {currentSeriesApprovalError || 'Повторите загрузку.'}{' '}
+            <button
+              className="link-button"
+              onClick={() => void loadSeriesApprovals(currentRun)}
+            >
+              Повторить загрузку
+            </button>
+          </div>
+        )}
         {running && !currentRun ? (
           <div className="assistant-brief-skeleton">
             <SkeletonBlock height={13} width="62%" />
@@ -1466,6 +1569,7 @@ export function AssistantPanel({
             approvals={approvals}
             draftApprovalsReady={draftApprovalsReady}
             seriesApprovals={seriesApprovals}
+            seriesApprovalsReady={seriesApprovalsReady}
             busyKeys={currentApprovalBusyKeys}
             onOpenPlanner={onOpenPlanner}
             onOpenContent={onOpenContent}

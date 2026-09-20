@@ -452,6 +452,27 @@ describe('Assistant async ownership', () => {
     expect(retry[0].id).toBe(approval.id);
   });
 
+  it('series approval merge keeps only the latest association for one source run', () => {
+    const older = seriesApprovalView('rejected');
+    const newer = {
+      ...seriesApprovalView(),
+      id: 82,
+      request_id: 'series-approval-request-82',
+    };
+    const merged = mergeAssistantSeriesApproval([older], newer);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].id).toBe(82);
+    expect(merged[0].source_run_id).toBe(older.source_run_id);
+  });
+
+  it('rejects a stale targeted series approval response after run switch', () => {
+    const ownership = new ChannelRequestOwnership();
+    const oldRun = ownership.begin(7, '33');
+    const newRun = ownership.begin(7, '34');
+    expect(ownership.isCurrent(oldRun, 7, '34')).toBe(false);
+    expect(ownership.isCurrent(newRun, 7, '34')).toBe(true);
+  });
+
   it('coalesces repeated series proposal and approve clicks independently', async () => {
     const proposalLock = new ExclusiveOperationLock();
     const approveLock = new ExclusiveOperationLock();
@@ -634,6 +655,15 @@ describe('Assistant scenario rendering', () => {
     expect(html).toContain('ScheduleEntry и Publication не создаются');
     expect(html).not.toContain('Поставлено в план');
     expect(html).not.toContain('Telegram сейчас не отправляется');
+  });
+
+  it('does not offer a fresh series proposal before targeted association is loaded', () => {
+    const html = renderToStaticMarkup(
+      <AssistantBrief run={seriesRunView()} seriesApprovalsReady={false} />,
+    );
+    expect(html).not.toContain('Создать предложение расписания');
+    expect(html).not.toContain('type="date"');
+    expect(html).not.toContain('type="time"');
   });
 
   it('series review card shows exact batch effect, captured revisions and explicit decisions', () => {
