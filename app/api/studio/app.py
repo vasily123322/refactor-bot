@@ -6,6 +6,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.studio.admin_agent import router as admin_agent_router
@@ -38,7 +39,8 @@ from app.api.studio.source_media_assets import router as source_media_assets_rou
 from app.api.studio.sources import router as sources_router
 from app.api.studio.suggested_post_actions import router as suggested_post_actions_router
 from app.bot.bot_instance import bot as tg_bot
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, engine
+from app.core.runtime_readiness import runtime_readiness
 from app.domain.content import (
     NATIVE_MEDIA_KINDS,
     NATIVE_MEDIA_OPTION_KEYS_BY_KIND,
@@ -126,7 +128,22 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
+        """Liveness only: the Studio process can answer HTTP requests."""
+
         return {"status": "ok"}
+
+    @app.get("/readyz")
+    async def readyz() -> dict[str, object] | JSONResponse:
+        """Readiness: supported runtime boot completed and DB schema is reachable/current."""
+
+        result = await runtime_readiness.check(engine)
+        payload = result.payload()
+        if result.ready:
+            return payload
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=payload,
+        )
 
     @app.get("/api/studio/capabilities")
     async def capabilities(_principal: PrincipalDep) -> dict[str, object]:
