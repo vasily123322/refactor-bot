@@ -61,6 +61,15 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
         async def stop_all(self):
             events.append("external-stop")
 
+    class _FakeStudioServer:
+        enabled = False
+
+        async def start(self):
+            events.append("studio-start")
+
+        async def stop(self):
+            events.append("studio-stop")
+
     class _FakeUserbot:
         async def start(self):
             events.append("userbot-start")
@@ -246,7 +255,7 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
     )
     monkeypatch.setattr(dispatcher, "GrabPoller", _worker_class("grab-poller"))
     monkeypatch.setattr(dispatcher, "AIAutoTasksWorker", _worker_class("ai-auto"))
-    monkeypatch.setattr(dispatcher, "StudioServer", _worker_class("studio"))
+    monkeypatch.setattr(dispatcher, "StudioServer", _FakeStudioServer)
     monkeypatch.setattr(dispatcher, "cancel_bg_tasks", _cancel_bg_tasks)
     monkeypatch.setattr(
         dispatcher.OpenRouterClient,
