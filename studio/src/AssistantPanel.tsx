@@ -1658,6 +1658,13 @@ export function AssistantPanel({
             <h2>Recent runs</h2>
             <small>{initialLoading ? 'Загружаю историю…' : `${runs.length} последних запусков`}</small>
           </div>
+          <button
+            className="button secondary"
+            disabled={initialLoading}
+            onClick={() => void loadHistory()}
+          >
+            {initialLoading ? 'Загружаю…' : 'Обновить историю'}
+          </button>
         </div>
         <AsyncRegion
           className="assistant-history"
@@ -1676,7 +1683,14 @@ export function AssistantPanel({
             </>
           }
           emptyFallback={<div className="assistant-empty">История запусков пока пуста.</div>}
-          errorFallback={<div className="assistant-empty">История Assistant не загружена.</div>}
+          errorFallback={
+            <div className="assistant-empty">
+              История Assistant не загружена.{' '}
+              <button className="link-button" onClick={() => void loadHistory()}>
+                Повторить загрузку
+              </button>
+            </div>
+          }
         >
           {runs.map((run) => (
             <button
