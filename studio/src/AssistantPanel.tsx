@@ -1663,7 +1663,7 @@ export function AssistantPanel({
             disabled={initialLoading}
             onClick={() => void loadHistory()}
           >
-            {initialLoading ? 'Загружаю…' : 'Обновить историю'}
+            Обновить историю
           </button>
         </div>
         <AsyncRegion
