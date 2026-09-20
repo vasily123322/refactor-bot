@@ -31,7 +31,7 @@ def test_studio_start_reports_failure_before_readiness(monkeypatch) -> None:
             self.should_exit = False
 
         async def serve(self):
-            raise OSError("address already in use")
+            raise SystemExit(3)
 
     _patch_uvicorn(monkeypatch, _FailingServer)
 
@@ -39,7 +39,8 @@ def test_studio_start_reports_failure_before_readiness(monkeypatch) -> None:
         server = server_module.StudioServer(_config(), startup_timeout_seconds=0.1)
         with pytest.raises(RuntimeError, match="before readiness") as exc_info:
             await server.start()
-        assert isinstance(exc_info.value.__cause__, OSError)
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+        assert isinstance(exc_info.value.__cause__.__cause__, SystemExit)
         assert server.ready is False
 
     asyncio.run(run())
