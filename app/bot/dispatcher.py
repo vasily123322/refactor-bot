@@ -88,6 +88,48 @@ async def _safe_stop(name: str, stop: Callable[[], Awaitable[None]]) -> None:
         logger.exception("Shutdown: failed to stop {}", name)
 
 
+async def _run_polling_with_studio_supervision(
+    dp: Dispatcher,
+    studio_server: StudioServer,
+) -> None:
+    polling_task = asyncio.create_task(
+        dp.start_polling(
+            bot,
+            allowed_updates=dp.resolve_used_update_types(),
+            polling_timeout=50,
+        ),
+        name="aiogram-polling",
+    )
+    if not studio_server.enabled:
+        await polling_task
+        return
+
+    studio_watch = asyncio.create_task(
+        studio_server.wait_for_termination(),
+        name="studio-api-supervision",
+    )
+    try:
+        done, _ = await asyncio.wait(
+            {polling_task, studio_watch},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if studio_watch in done:
+            try:
+                await studio_watch
+            finally:
+                if not polling_task.done():
+                    polling_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await polling_task
+            raise RuntimeError("Studio API supervision ended unexpectedly")
+        await polling_task
+    finally:
+        if not studio_watch.done():
+            studio_watch.cancel()
+            with suppress(asyncio.CancelledError):
+                await studio_watch
+
+
 async def _start_canonical_repeat_continuation_worker_if_enabled():
     if not settings.canonical_repeat_successful_planning_enabled:
         logger.info("Boot: canonical repeat continuation worker disabled")
@@ -592,11 +634,7 @@ async def run_bot() -> None:
         await studio_server.start()
 
         logger.info("Boot: starting aiogram polling...")
-        await dp.start_polling(
-            bot,
-            allowed_updates=dp.resolve_used_update_types(),
-            polling_timeout=50,
-        )
+        await _run_polling_with_studio_supervision(dp, studio_server)
     except Exception:
         logger.exception("Bot runtime failed")
         raise
