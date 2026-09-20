@@ -692,6 +692,19 @@ def test_runtime_readiness_requires_boot_and_current_schema(monkeypatch) -> None
             },
         }
 
+        async def inspect_stale(_engine):
+            return SimpleNamespace(at_head=False)
+
+        monkeypatch.setattr(
+            runtime_readiness_module,
+            "inspect_alembic_schema",
+            inspect_stale,
+        )
+        stale_schema = await readiness.check(object())
+        assert stale_schema.ready is False
+        assert stale_schema.checks["database"] == "ok"
+        assert stale_schema.checks["schema"] == "not_ready"
+
     asyncio.run(run())
 
 
