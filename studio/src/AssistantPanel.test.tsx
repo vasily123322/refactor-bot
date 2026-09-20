@@ -676,6 +676,7 @@ describe('Assistant scenario rendering', () => {
     const html = renderToStaticMarkup(<AssistantPanel channel={channel} />);
     expect(html).toContain('Что сегодня требует внимания?');
     expect(html).toContain('Создать 3 черновика на завтра');
+    expect(html).toContain('Обновить историю');
   });
 
   it('renders completed attention facts and escapes long Russian/HTML-like text', () => {
