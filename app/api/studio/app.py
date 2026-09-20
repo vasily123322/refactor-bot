@@ -120,7 +120,7 @@ def create_studio_app(config: StudioConfig | None = None) -> FastAPI:
             CORSMiddleware,
             allow_origins=list(cfg.cors_origins),
             allow_credentials=False,
-            allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+            allow_methods=["GET", "POST", "PUT", "PATCH", "OPTIONS"],
             allow_headers=["Content-Type", "X-Telegram-Init-Data"],
         )
 
