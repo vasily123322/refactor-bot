@@ -573,7 +573,11 @@ export function AssistantBrief({
   busyKeys?: Set<string>;
   onOpenPlanner?: VoidFunction;
   onOpenContent?: (contentId: number) => void;
-  onCreateProposal?: (contentId: number, localTime: string) => Promise<void>;
+  onCreateProposal?: (
+    contentId: number,
+    contentRevision: number,
+    localTime: string,
+  ) => Promise<void>;
   onApprove?: (approvalId: number) => Promise<void>;
   onReject?: (approvalId: number) => Promise<void>;
   onCreateSeriesProposal?: (
