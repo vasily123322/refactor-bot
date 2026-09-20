@@ -30,20 +30,20 @@ class Settings(BaseSettings):
 
     # Scheduler settings
     repeat_overflow_limit: int = Field(default=2, alias="REPEAT_OVERFLOW_LIMIT")
-    # Default-off shadow comparison between canonical repeat planning and the
-    # still-authoritative legacy PostTask repeat scheduler.
+    # Default-off shadow observation for canonical repeat planning before
+    # enabling the corresponding authoritative canonical transition.
     canonical_repeat_shadow_planning_enabled: bool = Field(
         default=False,
         alias="CANONICAL_REPEAT_SHADOW_PLANNING_ENABLED",
     )
-    # Default-off cutover for the normal post-success repeat transition only.
-    # Overdue/boot recovery remains legacy-backed until its own canonical planner lands.
+    # Default-off authoritative canonical planning for the normal post-success
+    # repeat transition. Overdue/boot recovery remain independently guarded.
     canonical_repeat_successful_planning_enabled: bool = Field(
         default=False,
         alias="CANONICAL_REPEAT_SUCCESSFUL_PLANNING_ENABLED",
     )
     # Independent default-off shadow observer for one overdue repeat occurrence.
-    # Boot group cleanup remains on the legacy path until separately proven.
+    # Boot-group recovery remains a separately guarded canonical transition.
     canonical_repeat_overdue_recovery_shadow_enabled: bool = Field(
         default=False,
         alias="CANONICAL_REPEAT_OVERDUE_RECOVERY_SHADOW_ENABLED",
