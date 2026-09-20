@@ -16,7 +16,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Application settings remain the single source of truth for the database URL.
+# Application settings remain the single source of truth for the database URL
+# when Alembic owns its connection. Runtime startup/adoption can instead provide
+# the already-open application connection through config.attributes["connection"].
 config.set_main_option("sqlalchemy.url", settings.db_url)
 target_metadata = Base.metadata
 
@@ -58,6 +60,10 @@ async def _run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
+    provided_connection = config.attributes.get("connection")
+    if provided_connection is not None:
+        _run_migrations(provided_connection)
+        return
     asyncio.run(_run_async_migrations())
 
 

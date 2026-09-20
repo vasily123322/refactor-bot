@@ -105,6 +105,12 @@ def _is_legacy_schema(sqlite_path: str) -> bool:
 
 
 def init_db_if_needed_sync() -> None:
+    """Legacy pre-Alembic repair helper; never call from application startup.
+
+    Kept only for explicit/manual recovery of historical SQLite layouts. The
+    supported runtime startup contract is owned by app.core.schema and Alembic.
+    """
+
     path = _sqlite_file_path(settings.db_url)
     if not path:
         return

@@ -72,6 +72,9 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
         return _FakeDispatcher()
 
     async def _bootstrap_database_schema(*args, **kwargs):
+        assert len(args) == 1
+        assert isinstance(args[0], _FakeEngine)
+        assert kwargs == {}
         events.append("schema-bootstrap")
         return SimpleNamespace(managed=True, current_heads=("head",))
 
