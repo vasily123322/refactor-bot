@@ -188,7 +188,10 @@ class AdminAgentApprovalService:
                 AdminAgentApproval.source_admin_agent_run_id == int(source_run_id),
                 AdminAgentApproval.action_type == ACTION_SCHEDULE_DRAFT_TOMORROW,
             )
-            .group_by(AdminAgentApproval.content_item_id)
+            .group_by(
+                AdminAgentApproval.content_item_id,
+                AdminAgentApproval.content_revision,
+            )
             .subquery()
         )
         return list(
@@ -243,6 +246,7 @@ class AdminAgentApprovalService:
         self,
         *,
         item: ContentItem,
+        content_revision: int,
         owner_tg_user_id: int,
         channel_id: int,
     ) -> int | None:
@@ -258,6 +262,18 @@ class AdminAgentApprovalService:
             or int(run.channel_id) != int(channel_id)
             or str(run.scenario) != SCENARIO_DRAFTS_TOMORROW
         ):
+            return None
+        result = run.result if isinstance(run.result, dict) else {}
+        drafts = result.get("drafts")
+        if not isinstance(drafts, list):
+            return None
+        matches_revision = any(
+            isinstance(draft, dict)
+            and int(draft.get("content_item_id") or 0) == int(item.id)
+            and int(draft.get("content_revision") or 0) == int(content_revision)
+            for draft in drafts
+        )
+        if not matches_revision:
             return None
         return int(run.id)
 
@@ -288,6 +304,7 @@ class AdminAgentApprovalService:
         content_item_id: int,
         local_time_value: str,
         request_id: str,
+        content_revision: int | None = None,
     ) -> AdminAgentApproval:
         existing = (
             await self.session.execute(
@@ -308,9 +325,18 @@ class AdminAgentApprovalService:
             raise ApprovalInputError("draft not found")
         if str(item.kind) != "post" or str(item.status) not in _ELIGIBLE_CONTENT_STATUSES:
             raise ApprovalInputError("content item is not an eligible draft")
-        revision = int(item.current_revision or 0)
-        if revision <= 0:
+        current_revision = int(item.current_revision or 0)
+        if current_revision <= 0:
             raise ApprovalInputError("draft has no current revision")
+        revision = (
+            int(content_revision)
+            if content_revision is not None
+            else current_revision
+        )
+        if revision <= 0:
+            raise ApprovalInputError("content_revision must be positive")
+        if content_revision is not None and revision != current_revision:
+            raise ApprovalStateConflict("requested content revision is stale")
         await self._validate_document(
             content_item_id=int(item.id),
             content_revision=revision,
@@ -347,6 +373,7 @@ class AdminAgentApprovalService:
         )
         source_run_id = await self._source_run_id(
             item=item,
+            content_revision=revision,
             owner_tg_user_id=owner_tg_user_id,
             channel_id=channel_id,
         )

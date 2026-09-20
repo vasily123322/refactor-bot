@@ -76,8 +76,12 @@ function newRequestId(prefix: string): string {
 function latestApprovalForDraft(
   approvals: AssistantApprovalView[],
   contentItemId: number,
+  contentRevision: number,
 ): AssistantApprovalView | null {
-  return approvals.find((row) => row.content_item_id === contentItemId) ?? null;
+  return approvals.find(
+    (row) => row.content_item_id === contentItemId
+      && row.content_revision === contentRevision,
+  ) ?? null;
 }
 
 
@@ -104,7 +108,11 @@ export function mergeAssistantApproval(
   return [
     approval,
     ...previous.filter(
-      (item) => item.id !== approval.id && item.content_item_id !== approval.content_item_id,
+      (item) => item.id !== approval.id
+        && (
+          item.content_item_id !== approval.content_item_id
+          || item.content_revision !== approval.content_revision
+        ),
     ),
   ].slice(0, limit);
 }
@@ -146,7 +154,11 @@ function DraftApprovalCard({
   reviewBusy: boolean;
   onOpenContent?: (contentId: number) => void;
   onOpenPlanner?: VoidFunction;
-  onCreateProposal?: (contentId: number, localTime: string) => Promise<void>;
+  onCreateProposal?: (
+    contentId: number,
+    contentRevision: number,
+    localTime: string,
+  ) => Promise<void>;
   onApprove?: (approvalId: number) => Promise<void>;
   onReject?: (approvalId: number) => Promise<void>;
 }) {
@@ -283,7 +295,11 @@ function DraftApprovalCard({
             <button
               className="button secondary"
               disabled={proposalBusy || !onCreateProposal || !localTime}
-              onClick={() => void onCreateProposal?.(draft.content_item_id, localTime)}
+              onClick={() => void onCreateProposal?.(
+                draft.content_item_id,
+                draft.content_revision,
+                localTime,
+              )}
             >
               {proposalBusy ? 'Создаю предложение…' : 'Создать предложение'}
             </button>
@@ -557,7 +573,11 @@ export function AssistantBrief({
   busyKeys?: Set<string>;
   onOpenPlanner?: VoidFunction;
   onOpenContent?: (contentId: number) => void;
-  onCreateProposal?: (contentId: number, localTime: string) => Promise<void>;
+  onCreateProposal?: (
+    contentId: number,
+    contentRevision: number,
+    localTime: string,
+  ) => Promise<void>;
   onApprove?: (approvalId: number) => Promise<void>;
   onReject?: (approvalId: number) => Promise<void>;
   onCreateSeriesProposal?: (
@@ -660,8 +680,14 @@ export function AssistantBrief({
         </div>
         <div className="assistant-drafts">
           {result.drafts.map((draft) => {
-            const approval = latestApprovalForDraft(approvals, draft.content_item_id);
-            const proposalBusy = busyKeys.has(`proposal:${draft.content_item_id}`);
+            const approval = latestApprovalForDraft(
+              approvals,
+              draft.content_item_id,
+              draft.content_revision,
+            );
+            const proposalBusy = busyKeys.has(
+              `proposal:${draft.content_item_id}:${draft.content_revision}`,
+            );
             const reviewBusy = approval
               ? busyKeys.has(`approval:${approval.id}`)
               : false;
@@ -1295,11 +1321,16 @@ export function AssistantPanel({
     if (!result.started) return;
   }, []);
 
-  const createProposal = useCallback(async (contentId: number, localTime: string) => {
-    await runApprovalOperation(`proposal:${contentId}`, (channelId) =>
+  const createProposal = useCallback(async (
+    contentId: number,
+    contentRevision: number,
+    localTime: string,
+  ) => {
+    await runApprovalOperation(`proposal:${contentId}:${contentRevision}`, (channelId) =>
       studioApi.createAssistantApproval(
         channelId,
         contentId,
+        contentRevision,
         localTime,
         newRequestId('approval'),
       ));
