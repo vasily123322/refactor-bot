@@ -11,10 +11,14 @@ from app.core.db import Base
 
 
 PREVIOUS_HEAD = "20260919_0018"
-HEAD = "20260919_0023"
+HEAD = "20260920_0024"
 
 
-def _upgrade(repo_root: Path, database_path: Path, target: str) -> None:
+def _run_upgrade(
+    repo_root: Path,
+    database_path: Path,
+    target: str,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.update(
         {
@@ -24,7 +28,7 @@ def _upgrade(repo_root: Path, database_path: Path, target: str) -> None:
             "DB_URL": f"sqlite+aiosqlite:///{database_path}",
         }
     )
-    result = subprocess.run(
+    return subprocess.run(
         [sys.executable, "-m", "alembic", "-c", "alembic.ini", "upgrade", target],
         cwd=repo_root,
         env=env,
@@ -32,6 +36,10 @@ def _upgrade(repo_root: Path, database_path: Path, target: str) -> None:
         capture_output=True,
         check=False,
     )
+
+
+def _upgrade(repo_root: Path, database_path: Path, target: str) -> None:
+    result = _run_upgrade(repo_root, database_path, target)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -531,6 +539,164 @@ def test_automation_observability_migration_upgrades_0022_with_nullable_metadata
             WHERE request_id = 'historical-0022-automation'
             """
         ).fetchone() == (None, None, None, None)
+
+
+def test_active_approval_uniqueness_migration_creates_partial_indexes(tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    database_path = tmp_path / "active-approval-unique.db"
+    _upgrade(repo_root, database_path, "20260919_0023")
+    _upgrade(repo_root, database_path, "head")
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD,)
+        indexes = {
+            row[0]: row[1]
+            for row in connection.execute(
+                """
+                SELECT name, sql
+                FROM sqlite_master
+                WHERE type = 'index'
+                  AND name IN (
+                    'uq_admin_agent_approval_active_target',
+                    'uq_admin_agent_approval_batch_active_source_run'
+                  )
+                """
+            ).fetchall()
+        }
+        assert set(indexes) == {
+            "uq_admin_agent_approval_active_target",
+            "uq_admin_agent_approval_batch_active_source_run",
+        }
+        assert all(sql is not None and "CREATE UNIQUE INDEX" in sql for sql in indexes.values())
+        assert all(
+            "WHERE state IN ('pending_review','executing')" in str(sql)
+            for sql in indexes.values()
+        )
+
+
+def test_active_approval_uniqueness_migration_fails_on_duplicate_single_target(
+    tmp_path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    database_path = tmp_path / "duplicate-active-single.db"
+    _upgrade(repo_root, database_path, "20260919_0023")
+
+    with sqlite3.connect(database_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO admin_agent_approvals
+                (
+                    owner_tg_user_id, channel_id, action_type, state,
+                    content_item_id, content_revision, timezone,
+                    target_local_date, local_time, resolved_scheduled_at,
+                    action_fingerprint, request_id
+                )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    8801,
+                    99001,
+                    "schedule_draft_tomorrow",
+                    "pending_review",
+                    501,
+                    3,
+                    "UTC",
+                    "2026-09-21",
+                    "14:00",
+                    "2026-09-21 14:00:00+00:00",
+                    "a" * 64,
+                    "duplicate-single-a",
+                ),
+                (
+                    8801,
+                    99001,
+                    "schedule_draft_tomorrow",
+                    "executing",
+                    501,
+                    3,
+                    "UTC",
+                    "2026-09-21",
+                    "15:00",
+                    "2026-09-21 15:00:00+00:00",
+                    "b" * 64,
+                    "duplicate-single-b",
+                ),
+            ],
+        )
+        connection.commit()
+
+    result = _run_upgrade(repo_root, database_path, "head")
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "duplicate active admin_agent_approvals target blocks migration" in output
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == ("20260919_0023",)
+
+
+def test_active_approval_uniqueness_migration_fails_on_duplicate_series_target(
+    tmp_path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    database_path = tmp_path / "duplicate-active-series.db"
+    _upgrade(repo_root, database_path, "20260919_0023")
+
+    with sqlite3.connect(database_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO admin_agent_approval_batches
+                (
+                    owner_tg_user_id, channel_id, source_run_id, action_type, state,
+                    request_id, timezone, item_count, series_title,
+                    source_plan_fingerprint, action_fingerprint, execution_key
+                )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    8802,
+                    99002,
+                    601,
+                    "schedule_content_series",
+                    "pending_review",
+                    "duplicate-series-a",
+                    "UTC",
+                    3,
+                    "Duplicate series",
+                    "c" * 64,
+                    "d" * 64,
+                    "e" * 64,
+                ),
+                (
+                    8802,
+                    99002,
+                    601,
+                    "schedule_content_series",
+                    "executing",
+                    "duplicate-series-b",
+                    "UTC",
+                    3,
+                    "Duplicate series",
+                    "c" * 64,
+                    "f" * 64,
+                    "1" * 64,
+                ),
+            ],
+        )
+        connection.commit()
+
+    result = _run_upgrade(repo_root, database_path, "head")
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "duplicate active admin_agent_approval_batches source run blocks migration" in output
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == ("20260919_0023",)
 
 
 def test_fresh_head_contains_agent_tables_and_matches_registered_orm(tmp_path) -> None:
