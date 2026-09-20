@@ -749,6 +749,10 @@ class AdminAgentSeriesApprovalService:
             action_fingerprint=action_fingerprint,
         )
 
+        # End the validation-only transaction before the insert. On SQLite this
+        # avoids two concurrent readers contending while upgrading to writers;
+        # the partial unique index remains the durable race authority.
+        await self.session.commit()
         batch = AdminAgentApprovalBatch(
             owner_tg_user_id=int(owner_tg_user_id),
             channel_id=int(channel_id),
