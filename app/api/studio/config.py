@@ -4,22 +4,37 @@ import os
 from dataclasses import dataclass
 
 
+_TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None:
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = raw.strip().lower()
+    if normalized in _TRUE_ENV_VALUES:
+        return True
+    if normalized in _FALSE_ENV_VALUES:
+        return False
+    allowed = ", ".join(sorted(_TRUE_ENV_VALUES | _FALSE_ENV_VALUES))
+    raise ValueError(f"{name} must be one of: {allowed}; got {raw!r}")
 
 
 def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
     raw = os.getenv(name)
-    if raw is None or not raw.strip():
+    if raw is None:
         return default
+    normalized = raw.strip()
     try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return max(minimum, min(value, maximum))
+        value = int(normalized)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer; got {raw!r}") from exc
+    if value < minimum or value > maximum:
+        raise ValueError(
+            f"{name} must be between {minimum} and {maximum}; got {value}"
+        )
+    return value
 
 
 def _env_origins() -> tuple[str, ...]:
