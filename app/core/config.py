@@ -81,38 +81,6 @@ class Settings(BaseSettings):
         alias="CANONICAL_PUBLICATION_DELIVERY_RECOVERY_WORKER_BATCH_SIZE",
     )
 
-    # Opt-in cleanup for canonicalized unsuccessful legacy scheduler rows.
-    post_task_retention_enabled: bool = Field(
-        default=False, alias="POST_TASK_RETENTION_ENABLED"
-    )
-    # Separate destructive scope: successful published transport is never retired
-    # merely because the existing retention worker is enabled.
-    post_task_retention_successful_enabled: bool = Field(
-        default=False, alias="POST_TASK_RETENTION_SUCCESSFUL_ENABLED"
-    )
-    # Additional destructive scope for successful rows whose canonical autodelete is
-    # still pending. This remains off unless operators intentionally enable the proven
-    # canonical time + views executor handoff.
-    post_task_retention_successful_pending_autodelete_enabled: bool = Field(
-        default=False,
-        alias="POST_TASK_RETENTION_SUCCESSFUL_PENDING_AUTODELETE_ENABLED",
-    )
-    # Independently opt into retirement of terminal repeat occurrences only after the
-    # service proves a later mirrored successor owns repeat execution.
-    post_task_retention_successful_repeat_occurrences_enabled: bool = Field(
-        default=False,
-        alias="POST_TASK_RETENTION_SUCCESSFUL_REPEAT_OCCURRENCES_ENABLED",
-    )
-    post_task_retention_days: int = Field(
-        default=90, alias="POST_TASK_RETENTION_DAYS"
-    )
-    post_task_retention_batch_size: int = Field(
-        default=100, alias="POST_TASK_RETENTION_BATCH_SIZE"
-    )
-    post_task_retention_interval_seconds: int = Field(
-        default=3600, alias="POST_TASK_RETENTION_INTERVAL_SECONDS"
-    )
-
     # Opt-in canonical-only time-based autodelete runtime. Disabled by default until
     # operators explicitly choose the new lease-backed destructive worker.
     publication_autodelete_worker_enabled: bool = Field(
