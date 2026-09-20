@@ -31,6 +31,11 @@ function errorMessage(error: unknown): string {
   return 'Неизвестная ошибка';
 }
 
+export function shouldReconcileApprovalFailure(error: unknown): boolean {
+  if (!(error instanceof StudioApiError)) return true;
+  return error.status === 404 || error.status === 409 || error.status >= 500;
+}
+
 function dateLabel(value: string | null): string {
   if (!value) return '—';
   const date = new Date(value);
@@ -1099,6 +1104,33 @@ export function AssistantPanel({
     }
   }, [channel?.id]);
 
+  const loadDraftApprovalScope = useCallback(async (
+    channelId: number,
+    runId: number,
+  ) => {
+    const scopeKey = String(runId);
+    const token = approvalOwnershipRef.current.begin(channelId, scopeKey);
+    const isCurrent = () => approvalOwnershipRef.current.isCurrent(
+      token,
+      channelIdRef.current,
+      currentRunIdRef.current === null ? null : String(currentRunIdRef.current),
+    );
+    setApprovals([]);
+    setApprovalLoadState({ channelId, scopeKey, phase: 'loading' });
+    setApprovalError(null);
+    try {
+      const rows = await studioApi.assistantRunApprovals(channelId, runId);
+      if (!isCurrent()) return;
+      setApprovals(rows);
+      setApprovalLoadState({ channelId, scopeKey, phase: 'loaded' });
+    } catch (reason) {
+      if (!isCurrent()) return;
+      setApprovals([]);
+      setApprovalLoadState({ channelId, scopeKey, phase: 'error-without-valid-data' });
+      setApprovalError({ channelId, scopeKey, message: errorMessage(reason) });
+    }
+  }, []);
+
   const loadDraftApprovals = useCallback(async (run: AssistantRunView | null) => {
     const channelId = channelIdRef.current;
     if (
@@ -1113,27 +1145,33 @@ export function AssistantPanel({
       setApprovalError(null);
       return;
     }
+    await loadDraftApprovalScope(channelId, run.id);
+  }, [loadDraftApprovalScope]);
 
-    const scopeKey = String(run.id);
-    const token = approvalOwnershipRef.current.begin(channelId, scopeKey);
-    const isCurrent = () => approvalOwnershipRef.current.isCurrent(
+  const loadSeriesApprovalScope = useCallback(async (
+    channelId: number,
+    runId: number,
+  ) => {
+    const scopeKey = String(runId);
+    const token = seriesApprovalOwnershipRef.current.begin(channelId, scopeKey);
+    const isCurrent = () => seriesApprovalOwnershipRef.current.isCurrent(
       token,
       channelIdRef.current,
       currentRunIdRef.current === null ? null : String(currentRunIdRef.current),
     );
-    setApprovals([]);
-    setApprovalLoadState({ channelId, scopeKey, phase: 'loading' });
-    setApprovalError(null);
+    setSeriesApprovals([]);
+    setSeriesApprovalLoadState({ channelId, scopeKey, phase: 'loading' });
+    setSeriesApprovalError(null);
     try {
-      const rows = await studioApi.assistantRunApprovals(channelId, run.id);
+      const rows = await studioApi.assistantRunSeriesApprovals(channelId, runId);
       if (!isCurrent()) return;
-      setApprovals(rows);
-      setApprovalLoadState({ channelId, scopeKey, phase: 'loaded' });
+      setSeriesApprovals(rows);
+      setSeriesApprovalLoadState({ channelId, scopeKey, phase: 'loaded' });
     } catch (reason) {
       if (!isCurrent()) return;
-      setApprovals([]);
-      setApprovalLoadState({ channelId, scopeKey, phase: 'error-without-valid-data' });
-      setApprovalError({ channelId, scopeKey, message: errorMessage(reason) });
+      setSeriesApprovals([]);
+      setSeriesApprovalLoadState({ channelId, scopeKey, phase: 'error-without-valid-data' });
+      setSeriesApprovalError({ channelId, scopeKey, message: errorMessage(reason) });
     }
   }, []);
 
@@ -1151,29 +1189,8 @@ export function AssistantPanel({
       setSeriesApprovalError(null);
       return;
     }
-
-    const scopeKey = String(run.id);
-    const token = seriesApprovalOwnershipRef.current.begin(channelId, scopeKey);
-    const isCurrent = () => seriesApprovalOwnershipRef.current.isCurrent(
-      token,
-      channelIdRef.current,
-      currentRunIdRef.current === null ? null : String(currentRunIdRef.current),
-    );
-    setSeriesApprovals([]);
-    setSeriesApprovalLoadState({ channelId, scopeKey, phase: 'loading' });
-    setSeriesApprovalError(null);
-    try {
-      const rows = await studioApi.assistantRunSeriesApprovals(channelId, run.id);
-      if (!isCurrent()) return;
-      setSeriesApprovals(rows);
-      setSeriesApprovalLoadState({ channelId, scopeKey, phase: 'loaded' });
-    } catch (reason) {
-      if (!isCurrent()) return;
-      setSeriesApprovals([]);
-      setSeriesApprovalLoadState({ channelId, scopeKey, phase: 'error-without-valid-data' });
-      setSeriesApprovalError({ channelId, scopeKey, message: errorMessage(reason) });
-    }
-  }, []);
+    await loadSeriesApprovalScope(channelId, run.id);
+  }, [loadSeriesApprovalScope]);
 
   useEffect(() => {
     catalogOwnershipRef.current.invalidate();
@@ -1308,6 +1325,9 @@ export function AssistantPanel({
       } catch (reason) {
         if (isCurrent()) {
           setError({ channelId, message: errorMessage(reason) });
+          if (shouldReconcileApprovalFailure(reason)) {
+            await loadDraftApprovalScope(channelId, runId);
+          }
         }
         return null;
       } finally {
@@ -1319,7 +1339,7 @@ export function AssistantPanel({
       }
     });
     if (!result.started) return;
-  }, []);
+  }, [loadDraftApprovalScope]);
 
   const createProposal = useCallback(async (
     contentId: number,
@@ -1379,6 +1399,9 @@ export function AssistantPanel({
       } catch (reason) {
         if (isCurrent()) {
           setError({ channelId, message: errorMessage(reason) });
+          if (shouldReconcileApprovalFailure(reason)) {
+            await loadSeriesApprovalScope(channelId, runId);
+          }
         }
         return null;
       } finally {
@@ -1390,7 +1413,7 @@ export function AssistantPanel({
       }
     });
     if (!result.started) return;
-  }, []);
+  }, [loadSeriesApprovalScope]);
 
   const createSeriesProposal = useCallback(async (
     sourceRunId: number,
