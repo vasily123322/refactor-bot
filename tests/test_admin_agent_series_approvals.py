@@ -1680,8 +1680,6 @@ def test_series_expired_claim_owner_is_fenced_from_canonical_queue(
 
     asyncio.run(run())
 
-
-
 def test_single_and_series_same_revision_share_one_canonical_target(
     monkeypatch,
     tmp_path,
@@ -1700,7 +1698,7 @@ def test_single_and_series_same_revision_share_one_canonical_target(
                     monkeypatch,
                     owner=owner,
                     channel=channel,
-                    count=1,
+                    count=2,
                     request_id="series-source-cross-mode-0001",
                 )
                 artifact = (
@@ -1724,7 +1722,7 @@ def test_single_and_series_same_revision_share_one_canonical_target(
                     channel_id=channel.id,
                     source_run_id=source.id,
                     request_id="series-cross-mode-0001",
-                    slots=_slots(1),
+                    slots=_slots(2),
                 )
                 single = await AdminAgentApprovalService(
                     setup,
@@ -1826,8 +1824,11 @@ def test_single_and_series_same_revision_share_one_canonical_target(
                         )
                     ).scalars()
                 )
-                assert len(stored_items) == 1
-                assert stored_items[0].state == ITEM_EXECUTED
+                assert len(stored_items) == 2
+                assert [row.state for row in stored_items] == [
+                    ITEM_EXECUTED,
+                    ITEM_EXECUTED,
+                ]
 
                 schedule_count = int(
                     (
@@ -1851,9 +1852,9 @@ def test_single_and_series_same_revision_share_one_canonical_target(
                 )
                 assert schedule_count == 1
                 assert publication_count == 1
-                assert await _counts(verify, channel_id) == (1, 1, 0)
+                assert await _counts(verify, channel_id) == (2, 2, 0)
 
-            assert queue_calls == 1
+            assert queue_calls == 2
             assert single_target_fence_calls == 1
         finally:
             await engine.dispose()
