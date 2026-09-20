@@ -8,6 +8,7 @@ import {
   mergeAssistantApproval,
   mergeAssistantRun,
   mergeAssistantSeriesApproval,
+  reconcileApprovalFailure,
 } from './AssistantPanel';
 import {
   ChannelRequestOwnership,
@@ -15,6 +16,7 @@ import {
   resolveChannelDataView,
   runExclusiveOperation,
 } from './asyncControl';
+import { StudioApiError } from './api';
 import type {
   AssistantApprovalView,
   AssistantRunView,
@@ -404,6 +406,36 @@ describe('Assistant async ownership', () => {
     expect(unrelated).toBe(1);
     release();
     await first;
+  });
+
+  it('reconciles authoritative approval state after a conflict response', async () => {
+    let reloads = 0;
+    const reconciled = await reconcileApprovalFailure(
+      new StudioApiError('approval conflict', 409),
+      async () => { reloads += 1; },
+    );
+    expect(reconciled).toBe(true);
+    expect(reloads).toBe(1);
+  });
+
+  it('reconciles authoritative approval state after a failed decision response', async () => {
+    let reloads = 0;
+    const reconciled = await reconcileApprovalFailure(
+      new StudioApiError('execution failed', 503),
+      async () => { reloads += 1; },
+    );
+    expect(reconciled).toBe(true);
+    expect(reloads).toBe(1);
+  });
+
+  it('does not replace authoritative approval scope for local validation errors', async () => {
+    let reloads = 0;
+    const reconciled = await reconcileApprovalFailure(
+      new StudioApiError('invalid request', 422),
+      async () => { reloads += 1; },
+    );
+    expect(reconciled).toBe(false);
+    expect(reloads).toBe(0);
   });
 
   it('idempotent response replaces the same run instead of duplicating cards/history', () => {
