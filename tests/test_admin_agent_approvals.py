@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+import app.services.admin_agent_approvals as approval_service_module
 from app.core.db import Base
 from app.core.timezone import localize_wall_clock_strict
 from app.domain.admin_agent import AdminAgentApproval, AdminAgentRun
@@ -1052,6 +1053,111 @@ def test_request_id_scope_does_not_leak_and_ineligible_draft_goes_stale() -> Non
                 assert "no longer eligible" in str(stale.failure_reason)
                 assert await _counts(session, first_channel.id) == (0, 0)
                 assert await _counts(session, second_channel.id) == (0, 0)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_expired_claim_owner_is_fenced_from_canonical_queue(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    async def run() -> None:
+        database_path = tmp_path / "expired-single-claim.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as setup:
+                owner, channel = await _setup_channel(setup, tg_user_id=9926)
+                item = await _draft(
+                    setup,
+                    channel_id=channel.id,
+                    owner_tg_user_id=owner.tg_user_id,
+                    title="Expired claim fence",
+                )
+                now = datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc)
+                proposal = await AdminAgentApprovalService(
+                    setup,
+                    now_utc=now,
+                ).create_schedule_draft_tomorrow(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    content_item_id=item.id,
+                    local_time_value="19:30",
+                    request_id="approval-expired-claim-0001",
+                )
+                approval_id = int(proposal.id)
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
+
+            fence_entered = asyncio.Event()
+            release_old_owner = asyncio.Event()
+            fence_calls = 0
+            queue_calls = 0
+            original_fence = approval_service_module.fence_execution_claim
+            original_queue = LegacyPublicationBridge.queue
+
+            async def blocked_first_fence(session, **kwargs):
+                nonlocal fence_calls
+                fence_calls += 1
+                if fence_calls == 1:
+                    fence_entered.set()
+                    await asyncio.wait_for(release_old_owner.wait(), timeout=5)
+                return await original_fence(session, **kwargs)
+
+            async def counted_queue(self, **kwargs):
+                nonlocal queue_calls
+                queue_calls += 1
+                return await original_queue(self, **kwargs)
+
+            monkeypatch.setattr(
+                approval_service_module,
+                "fence_execution_claim",
+                blocked_first_fence,
+            )
+            monkeypatch.setattr(LegacyPublicationBridge, "queue", counted_queue)
+
+            async with Session() as old_session, Session() as takeover_session:
+                old_service = AdminAgentApprovalService(old_session, now_utc=now)
+                old_task = asyncio.create_task(
+                    old_service.approve(
+                        approval_id=approval_id,
+                        owner_tg_user_id=owner_id,
+                        channel_id=channel_id,
+                        reviewer_tg_user_id=owner_id,
+                    )
+                )
+                await asyncio.wait_for(fence_entered.wait(), timeout=5)
+
+                takeover_service = AdminAgentApprovalService(
+                    takeover_session,
+                    now_utc=now + timedelta(seconds=31),
+                )
+                takeover = await takeover_service.approve(
+                    approval_id=approval_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    reviewer_tg_user_id=owner_id,
+                )
+                assert takeover is not None
+                assert takeover.state == STATE_EXECUTED
+
+                release_old_owner.set()
+                old_result = await asyncio.wait_for(old_task, timeout=5)
+                assert old_result is not None
+                assert old_result.state == STATE_EXECUTED
+
+            async with Session() as verify:
+                stored = await verify.get(AdminAgentApproval, approval_id)
+                assert stored is not None
+                assert stored.state == STATE_EXECUTED
+                assert stored.execution_claim_token is None
+                assert await _counts(verify, channel_id) == (1, 1)
+            assert queue_calls == 1
+            assert fence_calls >= 3
         finally:
             await engine.dispose()
 
