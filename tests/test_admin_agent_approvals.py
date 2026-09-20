@@ -266,18 +266,21 @@ def test_one_active_draft_approval_per_revision_and_terminal_reuse() -> None:
                 owner, channel = await _setup_channel(session, tg_user_id=9923)
                 item = await _draft(
                     session,
-                    channel_id=channel.id,
-                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel_id,
+                    owner_tg_user_id=owner_id,
                     title="Active approval target",
                 )
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
+                item_id = int(item.id)
                 service = AdminAgentApprovalService(
                     session,
                     now_utc=datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc),
                 )
                 revision_one = await service.create_schedule_draft_tomorrow(
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
-                    content_item_id=item.id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    content_item_id=item_id,
                     local_time_value="14:00",
                     request_id="active-single-r1-0001",
                 )
@@ -285,15 +288,15 @@ def test_one_active_draft_approval_per_revision_and_terminal_reuse() -> None:
 
                 with pytest.raises(ApprovalStateConflict, match="active approval"):
                     await service.create_schedule_draft_tomorrow(
-                        owner_tg_user_id=owner.tg_user_id,
-                        channel_id=channel.id,
-                        content_item_id=item.id,
+                        owner_tg_user_id=owner_id,
+                        channel_id=channel_id,
+                        content_item_id=item_id,
                         local_time_value="14:30",
                         request_id="active-single-r1-0002",
                     )
 
                 await ContentRepo(session).append_revision(
-                    item.id,
+                    item_id,
                     PostDocument(
                         blocks=[
                             {
@@ -303,44 +306,45 @@ def test_one_active_draft_approval_per_revision_and_terminal_reuse() -> None:
                             }
                         ]
                     ),
-                    created_by_tg_user_id=owner.tg_user_id,
+                    created_by_tg_user_id=owner_id,
                     source="studio",
                     status="draft",
                 )
                 revision_two = await service.create_schedule_draft_tomorrow(
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
-                    content_item_id=item.id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    content_item_id=item_id,
                     local_time_value="15:00",
                     request_id="active-single-r2-0001",
                 )
                 assert revision_two.content_revision == 2
+                revision_two_id = int(revision_two.id)
 
                 with pytest.raises(ApprovalStateConflict, match="active approval"):
                     await service.create_schedule_draft_tomorrow(
-                        owner_tg_user_id=owner.tg_user_id,
-                        channel_id=channel.id,
-                        content_item_id=item.id,
+                        owner_tg_user_id=owner_id,
+                        channel_id=channel_id,
+                        content_item_id=item_id,
                         local_time_value="15:30",
                         request_id="active-single-r2-0002",
                     )
 
                 rejected = await service.reject(
-                    approval_id=revision_two.id,
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
-                    reviewer_tg_user_id=owner.tg_user_id,
+                    approval_id=revision_two_id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    reviewer_tg_user_id=owner_id,
                 )
                 assert rejected is not None and rejected.state == STATE_REJECTED
 
                 fresh = await service.create_schedule_draft_tomorrow(
-                    owner_tg_user_id=owner.tg_user_id,
-                    channel_id=channel.id,
-                    content_item_id=item.id,
+                    owner_tg_user_id=owner_id,
+                    channel_id=channel_id,
+                    content_item_id=item_id,
                     local_time_value="16:00",
                     request_id="active-single-r2-0003",
                 )
-                assert fresh.id != revision_two.id
+                assert fresh.id != revision_two_id
                 assert fresh.content_revision == 2
                 assert fresh.state == STATE_PENDING_REVIEW
         finally:
