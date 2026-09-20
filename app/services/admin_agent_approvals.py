@@ -343,14 +343,19 @@ class AdminAgentApprovalService:
             local_time_value=parsed_time.strftime("%H:%M"),
             scheduled_at=scheduled_at,
         )
+        source_run_id = await self._source_run_id(
+            item=item,
+            owner_tg_user_id=owner_tg_user_id,
+            channel_id=channel_id,
+        )
+        # End the validation-only transaction before the insert. On SQLite this
+        # avoids two concurrent readers contending while upgrading to writers;
+        # the partial unique index remains the durable race authority.
+        await self.session.commit()
         approval = AdminAgentApproval(
             owner_tg_user_id=int(owner_tg_user_id),
             channel_id=int(channel_id),
-            source_admin_agent_run_id=await self._source_run_id(
-                item=item,
-                owner_tg_user_id=owner_tg_user_id,
-                channel_id=channel_id,
-            ),
+            source_admin_agent_run_id=source_run_id,
             action_type=ACTION_SCHEDULE_DRAFT_TOMORROW,
             state=STATE_PENDING_REVIEW,
             content_item_id=int(item.id),
