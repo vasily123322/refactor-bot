@@ -1059,6 +1059,137 @@ def test_request_id_scope_does_not_leak_and_ineligible_draft_goes_stale() -> Non
     asyncio.run(run())
 
 
+def test_post_claim_revalidation_refreshes_cross_session_content_revision(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    async def run() -> None:
+        database_path = tmp_path / "single-content-refresh.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            Session = async_sessionmaker(engine, expire_on_commit=False)
+            async with Session() as setup:
+                owner, channel = await _setup_channel(setup, tg_user_id=9927)
+                item = await _draft(
+                    setup,
+                    channel_id=channel.id,
+                    owner_tg_user_id=owner.tg_user_id,
+                    title="Post-claim content refresh",
+                )
+                now = datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc)
+                proposal = await AdminAgentApprovalService(
+                    setup,
+                    now_utc=now,
+                ).create_schedule_draft_tomorrow(
+                    owner_tg_user_id=owner.tg_user_id,
+                    channel_id=channel.id,
+                    content_item_id=item.id,
+                    local_time_value="19:45",
+                    request_id="approval-content-refresh-0001",
+                )
+                approval_id = int(proposal.id)
+                owner_id = int(owner.tg_user_id)
+                channel_id = int(channel.id)
+                content_item_id = int(item.id)
+                captured_revision = int(proposal.content_revision)
+
+            durable_claim_loaded = asyncio.Event()
+            revision_edited = asyncio.Event()
+            queue_calls = 0
+            original_load = AdminAgentApprovalService._load
+            original_queue = LegacyPublicationBridge.queue
+
+            async def gate_post_claim_load(self, **kwargs):
+                loaded = await original_load(self, **kwargs)
+                if (
+                    loaded is not None
+                    and loaded.state == STATE_EXECUTING
+                    and loaded.execution_claim_token
+                    and not durable_claim_loaded.is_set()
+                ):
+                    # The execution claim was committed before approve() reaches
+                    # this load. End this read transaction while deliberately
+                    # retaining the previously cached ContentItem.
+                    await self.session.commit()
+                    durable_claim_loaded.set()
+                    await asyncio.wait_for(revision_edited.wait(), timeout=5)
+                return loaded
+
+            async def counted_queue(self, **kwargs):
+                nonlocal queue_calls
+                queue_calls += 1
+                return await original_queue(self, **kwargs)
+
+            monkeypatch.setattr(
+                AdminAgentApprovalService,
+                "_load",
+                gate_post_claim_load,
+            )
+            monkeypatch.setattr(LegacyPublicationBridge, "queue", counted_queue)
+
+            async with Session() as approval_session, Session() as edit_session:
+                approval_task = asyncio.create_task(
+                    AdminAgentApprovalService(
+                        approval_session,
+                        now_utc=now,
+                    ).approve(
+                        approval_id=approval_id,
+                        owner_tg_user_id=owner_id,
+                        channel_id=channel_id,
+                        reviewer_tg_user_id=owner_id,
+                    )
+                )
+                await asyncio.wait_for(durable_claim_loaded.wait(), timeout=5)
+
+                await ContentRepo(edit_session).append_revision(
+                    content_item_id,
+                    PostDocument(
+                        blocks=[
+                            {
+                                "id": "cross-session-edit",
+                                "type": "text",
+                                "text": "Changed after initial approval validation.",
+                            }
+                        ]
+                    ),
+                    created_by_tg_user_id=owner_id,
+                    source="studio",
+                    status="draft",
+                )
+                revision_edited.set()
+
+                result = await asyncio.wait_for(approval_task, timeout=5)
+                assert result is not None
+                assert result.state == STATE_STALE
+                assert result.failure_reason == "draft revision changed"
+                assert result.schedule_entry_id is None
+                assert result.publication_id is None
+
+            async with Session() as verify:
+                stored = await verify.get(AdminAgentApproval, approval_id)
+                assert stored is not None
+                assert stored.state == STATE_STALE
+                assert stored.execution_claim_token is None
+                assert stored.schedule_entry_id is None
+                assert stored.publication_id is None
+                current_item = await verify.get(
+                    approval_service_module.ContentItem,
+                    content_item_id,
+                )
+                assert current_item is not None
+                assert int(current_item.current_revision) == captured_revision + 1
+                assert await _counts(verify, channel_id) == (0, 0)
+
+            assert durable_claim_loaded.is_set()
+            assert queue_calls == 0
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_expired_claim_owner_is_fenced_from_canonical_queue(
     monkeypatch,
     tmp_path,
