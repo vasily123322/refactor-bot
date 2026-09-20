@@ -402,7 +402,7 @@ class AdminAgentApprovalService:
                         AdminAgentApproval.channel_id == int(channel_id),
                         AdminAgentApproval.action_type
                         == ACTION_SCHEDULE_DRAFT_TOMORROW,
-                        AdminAgentApproval.content_item_id == int(item.id),
+                        AdminAgentApproval.content_item_id == int(content_item_id),
                         AdminAgentApproval.content_revision == int(revision),
                         AdminAgentApproval.state.in_(
                             [STATE_PENDING_REVIEW, STATE_EXECUTING]
