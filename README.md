@@ -151,7 +151,11 @@ mypy app
 
 ## Environment variables
 
-Set these to control networking and extraction behavior:
+Set these to control runtime, logging, networking, and extraction behavior:
+
+- LOG_LEVEL: stdout logging level (default `INFO`)
+- LOG_FILE_ENABLED: keep the repository-managed `logs/bot.log` sink (default `true`); set `false` when an external collector owns persistence
+- LOG_FILE_RETENTION: Loguru retention expression for rotated compressed file logs (default `14 days`)
 
 - OPENROUTER_API_KEY: API key for OpenRouter
 - OPENROUTER_BASE_URL: Default `https://openrouter.ai/api/v1`
@@ -181,3 +185,8 @@ Set these to control networking and extraction behavior:
 ## Observability
 
 Each LLM call is logged with: request_id, model, duration (ms), tokens and outcome.
+
+The repository file sink rotates daily, compresses rotated files, and retains them for
+`LOG_FILE_RETENTION` (14 days by default). Set `LOG_FILE_ENABLED=false` when
+stdout/stderr is collected by an external logging platform so the repository does not
+persist a second copy on disk.

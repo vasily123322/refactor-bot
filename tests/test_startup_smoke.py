@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 import app.api.studio.app as studio_app_module
+import app.core.logging as logging_module
 import app.core.runtime_readiness as runtime_readiness_module
 from app.api.studio import server as server_module
 from app.api.studio.app import create_studio_app
@@ -29,6 +30,73 @@ def test_required_background_workers_imported() -> None:
     assert dispatcher.AIAutoTasksWorker is not None
     assert dispatcher.AIRunRetentionWorker is not None
     assert dispatcher.StudioServer is not None
+
+
+def test_file_logging_defaults_are_bounded(monkeypatch) -> None:
+    monkeypatch.setenv("BOT_TOKEN", "test-token")
+    monkeypatch.setenv("API_ID", "12345")
+    monkeypatch.setenv("API_HASH", "test-hash")
+    monkeypatch.delenv("LOG_FILE_ENABLED", raising=False)
+    monkeypatch.delenv("LOG_FILE_RETENTION", raising=False)
+
+    configured = Settings(_env_file=None)
+
+    assert configured.log_file_enabled is True
+    assert configured.log_file_retention == "14 days"
+
+
+def test_file_logging_operator_can_disable_and_override_retention(monkeypatch) -> None:
+    monkeypatch.setenv("BOT_TOKEN", "test-token")
+    monkeypatch.setenv("API_ID", "12345")
+    monkeypatch.setenv("API_HASH", "test-hash")
+    monkeypatch.setenv("LOG_FILE_ENABLED", "false")
+    monkeypatch.setenv("LOG_FILE_RETENTION", "30 days")
+
+    configured = Settings(_env_file=None)
+
+    assert configured.log_file_enabled is False
+    assert configured.log_file_retention == "30 days"
+
+
+def test_setup_logging_applies_retention_and_can_disable_file_sink(monkeypatch) -> None:
+    class _FakeLogger:
+        def __init__(self) -> None:
+            self.add_calls: list[tuple[object, dict[str, object]]] = []
+            self.remove_calls = 0
+
+        def remove(self) -> None:
+            self.remove_calls += 1
+
+        def add(self, sink, **kwargs) -> int:
+            self.add_calls.append((sink, kwargs))
+            return len(self.add_calls)
+
+    enabled_logger = _FakeLogger()
+    monkeypatch.setattr(logging_module, "logger", enabled_logger)
+    logging_module.setup_logging(
+        "INFO",
+        file_enabled=True,
+        file_retention="7 days",
+    )
+
+    assert enabled_logger.remove_calls == 1
+    assert len(enabled_logger.add_calls) == 2
+    file_sink, file_options = enabled_logger.add_calls[1]
+    assert file_sink == "logs/bot.log"
+    assert file_options["rotation"] == "1 day"
+    assert file_options["retention"] == "7 days"
+    assert file_options["compression"] == "zip"
+
+    disabled_logger = _FakeLogger()
+    monkeypatch.setattr(logging_module, "logger", disabled_logger)
+    logging_module.setup_logging(
+        "INFO",
+        file_enabled=False,
+        file_retention="90 days",
+    )
+
+    assert disabled_logger.remove_calls == 1
+    assert len(disabled_logger.add_calls) == 1
 
 
 def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
@@ -207,6 +275,8 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
 
     monkeypatch.setattr(dispatcher, "settings", SimpleNamespace(
         log_level="INFO",
+        log_file_enabled=True,
+        log_file_retention="14 days",
         sqla_staticpool=False,
         sqla_nullpool=False,
         local_enrichment_worker_enabled=True,
@@ -215,7 +285,7 @@ def test_run_bot_startup_shutdown_smoke(monkeypatch) -> None:
         local_enrichment_worker_candidate_timeout_seconds=1,
         get_ai_models_config=lambda: {},
     ))
-    monkeypatch.setattr(dispatcher, "setup_logging", lambda level: None)
+    monkeypatch.setattr(dispatcher, "setup_logging", lambda level, **kwargs: None)
     monkeypatch.setattr(
         dispatcher,
         "load_canonical_publication_delivery_primary_settings",
