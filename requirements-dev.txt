@@ -1,1 +1,3 @@
-# Install test/tooling dependencies through the canonical Python 3.12 lock.\n-c requirements.lock\n-r requirements-dev.in\n
+# Install test/tooling dependencies through the canonical Python 3.12 lock.
+-c requirements.lock
+-r requirements-dev.in
