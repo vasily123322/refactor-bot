@@ -25,6 +25,9 @@ Alternatively, you can run the file directly:
 python app/bot/dispatcher.py
 ```
 
+For the supported production deployment, supervision, backup/restore, rollback, and
+failed-start recovery contract, see `docs/deployment-recovery.md`.
+
 ## Database migrations
 
 Alembic is the only supported schema authority for normal application startup and
