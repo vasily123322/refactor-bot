@@ -26,7 +26,7 @@ PYTHON="$VENV/bin/python"
 
 {
   printf '%s\n' '# Generated from requirements.in + requirements-dev.in on canonical Python 3.12.'
-  printf '%s\n' '# Refresh intentionally with: ./scripts/update_python_lock.sh'
+  printf '%s\n' '# Refresh intentionally with: bash scripts/update_python_lock.sh'
   printf '%s\n' '# Do not hand-edit package versions in this file.'
   "$PYTHON" -m pip freeze | LC_ALL=C sort -f
 } > "$ROOT/requirements.lock"
