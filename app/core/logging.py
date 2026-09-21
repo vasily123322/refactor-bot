@@ -40,7 +40,12 @@ def with_context_logging(handler):
     return _wrap
 
 
-def setup_logging(level: str = "INFO") -> None:
+def setup_logging(
+    level: str = "INFO",
+    *,
+    file_enabled: bool = True,
+    file_retention: str = "14 days",
+) -> None:
     logger.remove()
     logger.add(
         sys.stdout,
@@ -51,9 +56,12 @@ def setup_logging(level: str = "INFO") -> None:
         backtrace=False,
         diagnose=False,
     )
+    if not file_enabled:
+        return
     logger.add(
         "logs/bot.log",
         rotation="1 day",
+        retention=file_retention,
         compression="zip",
         level="DEBUG",
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {extra} {message}",
