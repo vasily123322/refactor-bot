@@ -1,5 +1,5 @@
 # Generated from requirements.in + requirements-dev.in on canonical Python 3.12.
-# Refresh intentionally with: ./scripts/update_python_lock.sh
+# Refresh intentionally with: bash scripts/update_python_lock.sh
 # Do not hand-edit package versions in this file.
 aiofiles==25.1.0
 aiogram==3.30.0
