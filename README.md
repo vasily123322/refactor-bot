@@ -117,6 +117,18 @@ alembic current --check-heads
 alembic history
 ```
 
+## Python dependencies
+
+Python 3.12 is the supported production/canonical CI version. Install runtime and
+test dependencies through the committed lock:
+
+```bash
+python -m pip install -r requirements.txt -r requirements-dev.txt
+```
+
+See `docs/python-dependencies.md` for the lock format and intentional upgrade
+workflow.
+
 ## How to Test
 
 Make sure the virtual environment is activated:
