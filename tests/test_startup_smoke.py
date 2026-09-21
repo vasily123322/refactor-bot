@@ -623,6 +623,30 @@ _STUDIO_ENV_NAMES = (
 )
 
 
+
+def test_env_example_matches_supported_operator_environment() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    documented = {
+        line.split("=", 1)[0].strip()
+        for line in (root / ".env.example").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+        and not line.lstrip().startswith("#")
+        and "=" in line
+    }
+    supported = {
+        str(field.alias)
+        for field in Settings.model_fields.values()
+        if isinstance(field.alias, str) and field.alias.isupper()
+    }
+    supported.update(_STUDIO_ENV_NAMES)
+
+    assert documented == supported
+    assert "DB_SECRET_KEY" not in documented
+    assert not any(name.startswith("POST_TASK_RETENTION_") for name in documented)
+
+
 def _clear_studio_env(monkeypatch) -> None:
     for name in _STUDIO_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
