@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import {
+  reconcileSuggestedPostActionFailure,
   submitSuggestedPostAction,
   type SuggestedPostAction,
 } from './suggestedPostActions';
@@ -27,10 +28,12 @@ export function SuggestedPostProvenance({
   candidateId,
   suggestedPost,
   candidateStatus,
+  onAuthorityRefresh,
 }: {
   candidateId: number;
   suggestedPost: SuggestedPostView | null | undefined;
   candidateStatus: string;
+  onAuthorityRefresh?: () => Promise<unknown>;
 }) {
   const [current, setCurrent] = useState<SuggestedPostView | null | undefined>(suggestedPost);
   const [busyAction, setBusyAction] = useState<SuggestedPostAction | null>(null);
@@ -72,6 +75,13 @@ export function SuggestedPostProvenance({
       if (action === 'decline') setDeclineComment('');
     } catch (error) {
       setActionError(actionErrorMessage(error));
+      if (onAuthorityRefresh) {
+        try {
+          await reconcileSuggestedPostActionFailure(error, onAuthorityRefresh);
+        } catch {
+          // The parent loader owns refresh errors and stale-response handling.
+        }
+      }
     } finally {
       setBusyAction(null);
     }

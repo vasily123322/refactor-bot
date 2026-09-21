@@ -12,6 +12,21 @@ export class SuggestedPostActionApiError extends Error {
   }
 }
 
+const AUTHORITY_REFRESH_STATUSES = new Set([403, 409, 410]);
+
+export function isSuggestedPostAuthorityError(error: unknown): boolean {
+  return error instanceof SuggestedPostActionApiError
+    && AUTHORITY_REFRESH_STATUSES.has(error.status);
+}
+
+export async function reconcileSuggestedPostActionFailure(
+  error: unknown,
+  refreshAuthority: () => Promise<unknown>,
+): Promise<void> {
+  if (!isSuggestedPostAuthorityError(error)) return;
+  await refreshAuthority();
+}
+
 async function actionRequest<T>(path: string, init: RequestInit): Promise<T> {
   const initData = getRawInitData();
   if (!initData) {

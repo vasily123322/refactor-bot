@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SuggestedPostProvenance } from './SuggestedPostProvenance';
 import {
   SuggestedPostActionApiError,
+  isSuggestedPostAuthorityError,
+  reconcileSuggestedPostActionFailure,
   submitSuggestedPostAction,
 } from './suggestedPostActions';
 import type { ContentCandidateView, SuggestedPostView } from './types';
@@ -126,6 +128,34 @@ describe('Suggested Post action request authority', () => {
   });
 });
 
+describe('Suggested Post authority conflict revalidation', () => {
+  it.each([403, 409, 410])(
+    'refreshes authoritative Inbox state after native authority status %s',
+    async (status) => {
+      const refreshAuthority = vi.fn(async () => undefined);
+      const error = new SuggestedPostActionApiError('authority changed', status);
+
+      expect(isSuggestedPostAuthorityError(error)).toBe(true);
+      await reconcileSuggestedPostActionFailure(error, refreshAuthority);
+
+      expect(refreshAuthority).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([401, 422, 503])(
+    'does not refresh authoritative Inbox state after non-authority status %s',
+    async (status) => {
+      const refreshAuthority = vi.fn(async () => undefined);
+      const error = new SuggestedPostActionApiError('request failed', status);
+
+      expect(isSuggestedPostAuthorityError(error)).toBe(false);
+      await reconcileSuggestedPostActionFailure(error, refreshAuthority);
+
+      expect(refreshAuthority).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe('Suggested Post controls are plausibility-only UI', () => {
   it('renders explicit approve/decline controls only for a pending Suggested Post', () => {
     const html = renderToStaticMarkup(createElement(SuggestedPostProvenance, {
@@ -138,7 +168,7 @@ describe('Suggested Post controls are plausibility-only UI', () => {
     expect(html).toContain('До 128 символов');
   });
 
-  it('renders terminal Suggested Posts read-only', () => {
+  it('renders refreshed terminal Suggested Posts read-only without stale mutation controls', () => {
     const html = renderToStaticMarkup(createElement(SuggestedPostProvenance, {
       candidateId: 55,
       suggestedPost: { ...pending, native_status: 'approved' },
