@@ -16,6 +16,11 @@ storage, and external monitoring.
 - Alembic is the only supported schema authority.
 - The default database is SQLite at `./data/bot.db`; PostgreSQL is supported through
   `DB_URL`, but PostgreSQL service operation and backups are provider/operator owned.
+- `DB_SECRET_KEY` is read by the database-secret encryption layer rather than
+  Pydantic `Settings`. New encrypted secret writes require a key of at least 32
+  characters. A database that already contains `enc:v1` values must be restored with
+  the same key; databases without encrypted values do not gain a blanket startup
+  requirement for this key.
 - The repository does not ship a production process supervisor. Use a service manager,
   container platform, or orchestrator appropriate for the deployment.
 - Telegram/userbot sessions, Redis data, provider-side Telegram state, and external
@@ -53,7 +58,9 @@ For a deployment that may include schema changes:
 3. Verify that the required environment and secrets for that deployment are present,
    including the Telegram credentials required by `Settings`, any non-default
    `DB_URL`, userbot/session configuration when enabled, and configured provider
-   credentials.
+   credentials. If the database contains encrypted `enc:v1` secrets or the deployment
+   can create/update encrypted DB secrets, preserve/configure the matching
+   `DB_SECRET_KEY` (at least 32 characters).
 4. Stop or drain the currently running application before taking a file-level SQLite
    backup or performing restore work.
 5. Take and verify a database backup using the database-specific procedure below.
@@ -235,6 +242,9 @@ Before returning service to production, confirm:
 - Python 3.12 runtime dependencies were installed through the committed lock;
 - the deployment's required Telegram, database, userbot/session, and provider
   configuration is present;
+- when the database contains encrypted `enc:v1` values, the matching
+  `DB_SECRET_KEY` is present; new encrypted writes also require a key of at least
+  32 characters;
 - the restored/migrated database passes its engine-specific integrity checks;
 - `alembic current --check-heads` succeeds;
 - the application starts without schema/runtime configuration errors;

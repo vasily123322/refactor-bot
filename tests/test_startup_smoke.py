@@ -11,6 +11,9 @@ from app.api.studio import server as server_module
 from app.api.studio.app import create_studio_app
 from app.api.studio.config import StudioConfig
 from app.bot import dispatcher
+from app.core.canonical_publication_delivery_primary_config import (
+    CanonicalPublicationDeliveryPrimarySettings,
+)
 from app.core.config import Settings
 from app.core.runtime_configuration import (
     RuntimeConfigurationError,
@@ -621,6 +624,38 @@ _STUDIO_ENV_NAMES = (
     "STUDIO_INIT_DATA_MAX_AGE_SECONDS",
     "STUDIO_CORS_ORIGINS",
 )
+
+
+
+def test_env_example_matches_supported_operator_environment() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    documented_names = [
+        line.split("=", 1)[0].strip()
+        for line in (root / ".env.example").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+        and not line.lstrip().startswith("#")
+        and "=" in line
+    ]
+    assert len(documented_names) == len(set(documented_names))
+    documented = set(documented_names)
+
+    supported = {
+        str(field.alias)
+        for field in Settings.model_fields.values()
+        if isinstance(field.alias, str) and field.alias.isupper()
+    }
+    supported.update(
+        str(field.alias)
+        for field in CanonicalPublicationDeliveryPrimarySettings.model_fields.values()
+        if isinstance(field.alias, str) and field.alias.isupper()
+    )
+    supported.update(_STUDIO_ENV_NAMES)
+    supported.add("DB_SECRET_KEY")
+
+    assert documented == supported
+    assert not any(name.startswith("POST_TASK_RETENTION_") for name in documented)
 
 
 def _clear_studio_env(monkeypatch) -> None:

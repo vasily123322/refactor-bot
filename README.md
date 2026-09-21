@@ -154,27 +154,60 @@ mypy app
 
 ## Environment variables
 
-Set these to control runtime, logging, networking, and extraction behavior:
+`.env.example` is the exhaustive supported operator-facing environment inventory.
+The blocking startup-smoke regression keeps it synchronized with the current config
+sources. Legacy compatibility inputs such as lowercase `redis_host` / `redis_port` /
+`redis_db` are intentionally not part of the supported operator surface, and retired
+`POST_TASK_RETENTION_*` settings must not be reintroduced.
 
-- LOG_LEVEL: stdout logging level (default `INFO`)
-- LOG_FILE_ENABLED: keep the repository-managed `logs/bot.log` sink (default `true`); set `false` when an external collector owns persistence
-- LOG_FILE_RETENTION: Loguru retention expression for rotated compressed file logs (default `14 days`)
+Core runtime and storage:
 
-- OPENROUTER_API_KEY: API key for OpenRouter
-- OPENROUTER_BASE_URL: Default `https://openrouter.ai/api/v1`
-- OPENROUTER_MODEL: Single model code in use (e.g. `openai/gpt-4o-mini`)
-- OPENROUTER_TEMPERATURE: Default 0.7
-- OPENROUTER_TOP_P: Default 0.7
-- OPENROUTER_TIMEOUT_SECONDS: LLM HTTP timeout (default 60)
-- OPENROUTER_MAX_RETRIES: LLM retries (default 3)
-- OPENROUTER_BACKOFF_INITIAL: LLM backoff start seconds (default 0.5)
-- OPENROUTER_BACKOFF_MAX: LLM backoff cap seconds (default 5.0)
-- HTTP_FETCH_TIMEOUT_SECONDS: HTML fetch timeout (default 30)
-- HTTP_FETCH_MAX_RETRIES: HTML fetch retries (default 2)
-- HTTP_FETCH_BACKOFF_INITIAL: HTML fetch backoff start seconds (default 0.4)
-- HTTP_FETCH_BACKOFF_MAX: HTML backoff cap seconds (default 3.0)
-- HTTP_FETCH_USER_AGENT: User-Agent header for fetcher (browser-like default)
-- CONTENT_EXTRACT_MAX_LEN: Max extracted text length before LLM (default 8000)
+- `BOT_TOKEN`, `API_ID`, and `API_HASH` are required by `Settings`.
+- `ADMIN_USER_ID` and `ADMIN_USERNAME` are optional administration identity values.
+- `USERBOT_SESSION` and the `USERBOT_PROXY_*` family configure optional Telethon use.
+- `DB_URL` defaults to SQLite at `./data/bot.db`; `REDIS_DSN` is optional.
+- `DB_SECRET_KEY` is read directly by the DB-secret encryption layer rather than
+  Pydantic `Settings`. New encrypted secret writes require at least 32 characters.
+  Preserve the same key when restoring a DB that already contains `enc:v1` values.
+- `SQLA_NULLPOOL` and `SQLA_STATICPOOL` control SQLAlchemy pooling.
+
+Studio and logging:
+
+- `STUDIO_ENABLED`, `STUDIO_HOST`, `STUDIO_PORT`, `STUDIO_PUBLIC_URL`,
+  `STUDIO_INIT_DATA_MAX_AGE_SECONDS`, and `STUDIO_CORS_ORIGINS` configure the
+  embedded Studio API. Invalid explicitly supplied boolean/integer values fail closed.
+- `LOG_LEVEL`, `LOG_FILE_ENABLED`, and `LOG_FILE_RETENTION` control stdout and
+  bounded repository-managed file logging.
+
+Canonical scheduling/delivery controls are default-off unless stated otherwise:
+
+- `REPEAT_OVERFLOW_LIMIT` defaults to `2`.
+- `CANONICAL_REPEAT_SHADOW_PLANNING_ENABLED` gates
+  `CANONICAL_REPEAT_SUCCESSFUL_PLANNING_ENABLED`.
+- `CANONICAL_REPEAT_OVERDUE_RECOVERY_SHADOW_ENABLED` gates
+  `CANONICAL_REPEAT_OVERDUE_RECOVERY_PLANNING_ENABLED`.
+- `CANONICAL_REPEAT_BOOT_RECOVERY_SHADOW_ENABLED` gates
+  `CANONICAL_REPEAT_BOOT_RECOVERY_PLANNING_ENABLED`.
+- `CANONICAL_PUBLICATION_DELIVERY_RECOVERY_WORKER_ENABLED` plus its
+  `_INTERVAL_SECONDS` and `_BATCH_SIZE` settings configure fail-closed expired-lease
+  recovery. The primary delivery worker requires this recovery flag to be enabled.
+- `CANONICAL_PUBLICATION_DELIVERY_WORKER_ENABLED`,
+  `CANONICAL_PUBLICATION_DELIVERY_WORKER_INTERVAL_SECONDS`,
+  `CANONICAL_PUBLICATION_DELIVERY_WORKER_BATCH_SIZE`,
+  `CANONICAL_PUBLICATION_DELIVERY_WORKER_SCAN_LIMIT`,
+  `CANONICAL_PUBLICATION_DELIVERY_WORKER_LEASE_TTL_SECONDS`, and
+  `CANONICAL_PUBLICATION_DELIVERY_WORKER_HEARTBEAT_INTERVAL_SECONDS` configure the
+  opt-in primary delivery worker.
+- `PUBLICATION_AUTODELETE_WORKER_*` configures time-based canonical autodelete.
+- `PUBLICATION_AUTODELETE_VIEWS_WORKER_*` configures views-based autodelete and
+  requires a successfully started userbot.
+- `LOCAL_ENRICHMENT_WORKER_*` configures the optional deterministic Inbox enrichment
+  worker.
+
+AI/network operator settings are also enumerated with defaults in `.env.example`:
+`OPENROUTER_*`, `AI_MODELS_JSON`, optional direct-provider keys/base URLs,
+`WHISPER_MODEL`, `SPEECH_PROVIDER`, `GROQ_*`, `HTTP_FETCH_*`, and
+`CONTENT_EXTRACT_MAX_LEN`.
 
 ## Modules overview (new/updated)
 
