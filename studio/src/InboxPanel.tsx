@@ -780,6 +780,7 @@ export function InboxPanel({
                   candidateId={candidate.id}
                   suggestedPost={candidate.suggested_post}
                   candidateStatus={candidate.status}
+                  onAuthorityRefresh={load}
                 />
                 <ChannelDMProvenance
                   candidateId={candidate.id}
