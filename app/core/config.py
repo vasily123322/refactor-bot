@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     redis_db: int | None = Field(default=None, alias="redis_db")
     db_url: str = Field(default="sqlite+aiosqlite:///./data/bot.db", alias="DB_URL")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    log_file_enabled: bool = Field(default=True, alias="LOG_FILE_ENABLED")
+    log_file_retention: str = Field(
+        default="14 days",
+        min_length=1,
+        alias="LOG_FILE_RETENTION",
+    )
 
     # Scheduler settings
     repeat_overflow_limit: int = Field(default=2, alias="REPEAT_OVERFLOW_LIMIT")
