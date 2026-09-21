@@ -797,3 +797,13 @@ def test_studio_health_and_readiness_http_contract(monkeypatch) -> None:
 
     asyncio.run(run())
 
+def test_capture_resolved_python_dependency_graph_for_lock_bootstrap() -> None:
+    import subprocess
+    import sys
+
+    frozen = subprocess.check_output(
+        [sys.executable, "-m", "pip", "freeze"],
+        text=True,
+    ).strip()
+    raise AssertionError("PYTHON_LOCK_CAPTURE_BEGIN\n" + frozen + "\nPYTHON_LOCK_CAPTURE_END")
+
