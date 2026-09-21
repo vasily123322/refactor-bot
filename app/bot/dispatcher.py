@@ -456,7 +456,11 @@ async def _start_publication_autodelete_views_worker_if_enabled(
 
 async def run_bot() -> None:
     runtime_readiness.mark_not_ready()
-    setup_logging(settings.log_level)
+    setup_logging(
+        settings.log_level,
+        file_enabled=settings.log_file_enabled,
+        file_retention=settings.log_file_retention,
+    )
     primary_delivery_config = load_canonical_publication_delivery_primary_settings()
     validate_runtime_configuration(settings)
 
