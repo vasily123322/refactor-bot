@@ -154,54 +154,60 @@ mypy app
 
 ## Environment variables
 
-`.env.example` is the supported operator-facing environment inventory. Keep deployment
-secrets outside Git and copy only the values needed by the selected runtime features.
+`.env.example` is the exhaustive supported operator-facing environment inventory.
+The blocking startup-smoke regression keeps it synchronized with the current config
+sources. Legacy compatibility inputs such as lowercase `redis_host` / `redis_port` /
+`redis_db` are intentionally not part of the supported operator surface, and retired
+`POST_TASK_RETENTION_*` settings must not be reintroduced.
 
-Core requirements and infrastructure:
+Core runtime and storage:
 
-- `BOT_TOKEN`, `API_ID`, and `API_HASH` are required by the main `Settings` contract.
-- `DB_URL` defaults to `sqlite+aiosqlite:///./data/bot.db`; `REDIS_DSN` is optional.
-- `SQLA_NULLPOOL=false` and `SQLA_STATICPOOL=false` are the explicit pool controls.
-- `USERBOT_SESSION` and `USERBOT_PROXY_*` configure the optional Telethon userbot.
-- `ADMIN_USER_ID` and `ADMIN_USERNAME` are optional administration selectors.
+- `BOT_TOKEN`, `API_ID`, and `API_HASH` are required by `Settings`.
+- `ADMIN_USER_ID` and `ADMIN_USERNAME` are optional administration identity values.
+- `USERBOT_SESSION` and the `USERBOT_PROXY_*` family configure optional Telethon use.
+- `DB_URL` defaults to SQLite at `./data/bot.db`; `REDIS_DSN` is optional.
+- `DB_SECRET_KEY` is read directly by the DB-secret encryption layer rather than
+  Pydantic `Settings`. New encrypted secret writes require at least 32 characters.
+  Preserve the same key when restoring a DB that already contains `enc:v1` values.
+- `SQLA_NULLPOOL` and `SQLA_STATICPOOL` control SQLAlchemy pooling.
 
-Operational cutovers are intentionally fail-safe and default-off:
+Studio and logging:
 
-- canonical repeat planning uses separate shadow/authoritative pairs:
-  `CANONICAL_REPEAT_SHADOW_PLANNING_ENABLED` /
-  `CANONICAL_REPEAT_SUCCESSFUL_PLANNING_ENABLED`,
-  `CANONICAL_REPEAT_OVERDUE_RECOVERY_SHADOW_ENABLED` /
-  `CANONICAL_REPEAT_OVERDUE_RECOVERY_PLANNING_ENABLED`, and
-  `CANONICAL_REPEAT_BOOT_RECOVERY_SHADOW_ENABLED` /
-  `CANONICAL_REPEAT_BOOT_RECOVERY_PLANNING_ENABLED`. An authoritative flag requires
-  its matching shadow observation flag.
-- `CANONICAL_PUBLICATION_DELIVERY_RECOVERY_WORKER_ENABLED=false` is the default.
-  Its recovery worker marks ambiguous expired delivery leases unknown and does not resend.
-- `PUBLICATION_AUTODELETE_WORKER_ENABLED=false` is the default for canonical
-  time-based destructive autodelete.
-- `PUBLICATION_AUTODELETE_VIEWS_WORKER_ENABLED=false` is the default for views-based
-  autodelete; enabling it also requires a successfully started userbot/MTProto session.
-- `LOCAL_ENRICHMENT_WORKER_ENABLED=false` is the default for deterministic local Inbox
-  enrichment; it does not use AI providers.
+- `STUDIO_ENABLED`, `STUDIO_HOST`, `STUDIO_PORT`, `STUDIO_PUBLIC_URL`,
+  `STUDIO_INIT_DATA_MAX_AGE_SECONDS`, and `STUDIO_CORS_ORIGINS` configure the
+  embedded Studio API. Invalid explicitly supplied boolean/integer values fail closed.
+- `LOG_LEVEL`, `LOG_FILE_ENABLED`, and `LOG_FILE_RETENTION` control stdout and
+  bounded repository-managed file logging.
 
-Studio has an independent environment parser. `STUDIO_ENABLED=false`,
-`STUDIO_HOST=127.0.0.1`, `STUDIO_PORT=8080`, and
-`STUDIO_INIT_DATA_MAX_AGE_SECONDS=86400` are the defaults. Invalid explicit boolean or
-integer values fail closed. `STUDIO_PUBLIC_URL` is optional and
-`STUDIO_CORS_ORIGINS` is a comma-separated allow-list for a separately hosted frontend.
+Canonical scheduling/delivery controls are default-off unless stated otherwise:
 
-Logging defaults to `LOG_LEVEL=INFO`, `LOG_FILE_ENABLED=true`, and
-`LOG_FILE_RETENTION=14 days`. The repository file sink rotates daily and compresses
-rotated files; set `LOG_FILE_ENABLED=false` when an external stdout/stderr collector
-owns persistence.
+- `REPEAT_OVERFLOW_LIMIT` defaults to `2`.
+- `CANONICAL_REPEAT_SHADOW_PLANNING_ENABLED` gates
+  `CANONICAL_REPEAT_SUCCESSFUL_PLANNING_ENABLED`.
+- `CANONICAL_REPEAT_OVERDUE_RECOVERY_SHADOW_ENABLED` gates
+  `CANONICAL_REPEAT_OVERDUE_RECOVERY_PLANNING_ENABLED`.
+- `CANONICAL_REPEAT_BOOT_RECOVERY_SHADOW_ENABLED` gates
+  `CANONICAL_REPEAT_BOOT_RECOVERY_PLANNING_ENABLED`.
+- `CANONICAL_PUBLICATION_DELIVERY_RECOVERY_WORKER_ENABLED` plus its
+  `_INTERVAL_SECONDS` and `_BATCH_SIZE` settings configure fail-closed expired-lease
+  recovery. The primary delivery worker requires this recovery flag to be enabled.
+- `CANONICAL_PUBLICATION_DELIVERY_WORKER_ENABLED`,
+  `CANONICAL_PUBLICATION_DELIVERY_WORKER_INTERVAL_SECONDS`,
+  `CANONICAL_PUBLICATION_DELIVERY_WORKER_BATCH_SIZE`,
+  `CANONICAL_PUBLICATION_DELIVERY_WORKER_SCAN_LIMIT`,
+  `CANONICAL_PUBLICATION_DELIVERY_WORKER_LEASE_TTL_SECONDS`, and
+  `CANONICAL_PUBLICATION_DELIVERY_WORKER_HEARTBEAT_INTERVAL_SECONDS` configure the
+  opt-in primary delivery worker.
+- `PUBLICATION_AUTODELETE_WORKER_*` configures time-based canonical autodelete.
+- `PUBLICATION_AUTODELETE_VIEWS_WORKER_*` configures views-based autodelete and
+  requires a successfully started userbot.
+- `LOCAL_ENRICHMENT_WORKER_*` configures the optional deterministic Inbox enrichment
+  worker.
 
-AI/provider, speech, HTTP fetch, retry/backoff, model, and extraction controls are also
-enumerated with their defaults in `.env.example`. Retired `POST_TASK_RETENTION_*`
-settings and the historical undocumented `DB_SECRET_KEY` entry are not supported
-runtime configuration and must not be reintroduced into operator docs.
-
-For deployment sequencing, backups, schema upgrades, rollback boundaries, and readiness
-checks, see [Production deployment and recovery](docs/deployment-recovery.md).
+AI/network operator settings are also enumerated with defaults in `.env.example`:
+`OPENROUTER_*`, `AI_MODELS_JSON`, optional direct-provider keys/base URLs,
+`WHISPER_MODEL`, `SPEECH_PROVIDER`, `GROQ_*`, `HTTP_FETCH_*`, and
+`CONTENT_EXTRACT_MAX_LEN`.
 
 ## Modules overview (new/updated)
 
