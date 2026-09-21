@@ -154,27 +154,54 @@ mypy app
 
 ## Environment variables
 
-Set these to control runtime, logging, networking, and extraction behavior:
+`.env.example` is the supported operator-facing environment inventory. Keep deployment
+secrets outside Git and copy only the values needed by the selected runtime features.
 
-- LOG_LEVEL: stdout logging level (default `INFO`)
-- LOG_FILE_ENABLED: keep the repository-managed `logs/bot.log` sink (default `true`); set `false` when an external collector owns persistence
-- LOG_FILE_RETENTION: Loguru retention expression for rotated compressed file logs (default `14 days`)
+Core requirements and infrastructure:
 
-- OPENROUTER_API_KEY: API key for OpenRouter
-- OPENROUTER_BASE_URL: Default `https://openrouter.ai/api/v1`
-- OPENROUTER_MODEL: Single model code in use (e.g. `openai/gpt-4o-mini`)
-- OPENROUTER_TEMPERATURE: Default 0.7
-- OPENROUTER_TOP_P: Default 0.7
-- OPENROUTER_TIMEOUT_SECONDS: LLM HTTP timeout (default 60)
-- OPENROUTER_MAX_RETRIES: LLM retries (default 3)
-- OPENROUTER_BACKOFF_INITIAL: LLM backoff start seconds (default 0.5)
-- OPENROUTER_BACKOFF_MAX: LLM backoff cap seconds (default 5.0)
-- HTTP_FETCH_TIMEOUT_SECONDS: HTML fetch timeout (default 30)
-- HTTP_FETCH_MAX_RETRIES: HTML fetch retries (default 2)
-- HTTP_FETCH_BACKOFF_INITIAL: HTML fetch backoff start seconds (default 0.4)
-- HTTP_FETCH_BACKOFF_MAX: HTML backoff cap seconds (default 3.0)
-- HTTP_FETCH_USER_AGENT: User-Agent header for fetcher (browser-like default)
-- CONTENT_EXTRACT_MAX_LEN: Max extracted text length before LLM (default 8000)
+- `BOT_TOKEN`, `API_ID`, and `API_HASH` are required by the main `Settings` contract.
+- `DB_URL` defaults to `sqlite+aiosqlite:///./data/bot.db`; `REDIS_DSN` is optional.
+- `SQLA_NULLPOOL=false` and `SQLA_STATICPOOL=false` are the explicit pool controls.
+- `USERBOT_SESSION` and `USERBOT_PROXY_*` configure the optional Telethon userbot.
+- `ADMIN_USER_ID` and `ADMIN_USERNAME` are optional administration selectors.
+
+Operational cutovers are intentionally fail-safe and default-off:
+
+- canonical repeat planning uses separate shadow/authoritative pairs:
+  `CANONICAL_REPEAT_SHADOW_PLANNING_ENABLED` /
+  `CANONICAL_REPEAT_SUCCESSFUL_PLANNING_ENABLED`,
+  `CANONICAL_REPEAT_OVERDUE_RECOVERY_SHADOW_ENABLED` /
+  `CANONICAL_REPEAT_OVERDUE_RECOVERY_PLANNING_ENABLED`, and
+  `CANONICAL_REPEAT_BOOT_RECOVERY_SHADOW_ENABLED` /
+  `CANONICAL_REPEAT_BOOT_RECOVERY_PLANNING_ENABLED`. An authoritative flag requires
+  its matching shadow observation flag.
+- `CANONICAL_PUBLICATION_DELIVERY_RECOVERY_WORKER_ENABLED=false` is the default.
+  Its recovery worker marks ambiguous expired delivery leases unknown and does not resend.
+- `PUBLICATION_AUTODELETE_WORKER_ENABLED=false` is the default for canonical
+  time-based destructive autodelete.
+- `PUBLICATION_AUTODELETE_VIEWS_WORKER_ENABLED=false` is the default for views-based
+  autodelete; enabling it also requires a successfully started userbot/MTProto session.
+- `LOCAL_ENRICHMENT_WORKER_ENABLED=false` is the default for deterministic local Inbox
+  enrichment; it does not use AI providers.
+
+Studio has an independent environment parser. `STUDIO_ENABLED=false`,
+`STUDIO_HOST=127.0.0.1`, `STUDIO_PORT=8080`, and
+`STUDIO_INIT_DATA_MAX_AGE_SECONDS=86400` are the defaults. Invalid explicit boolean or
+integer values fail closed. `STUDIO_PUBLIC_URL` is optional and
+`STUDIO_CORS_ORIGINS` is a comma-separated allow-list for a separately hosted frontend.
+
+Logging defaults to `LOG_LEVEL=INFO`, `LOG_FILE_ENABLED=true`, and
+`LOG_FILE_RETENTION=14 days`. The repository file sink rotates daily and compresses
+rotated files; set `LOG_FILE_ENABLED=false` when an external stdout/stderr collector
+owns persistence.
+
+AI/provider, speech, HTTP fetch, retry/backoff, model, and extraction controls are also
+enumerated with their defaults in `.env.example`. Retired `POST_TASK_RETENTION_*`
+settings and the historical undocumented `DB_SECRET_KEY` entry are not supported
+runtime configuration and must not be reintroduced into operator docs.
+
+For deployment sequencing, backups, schema upgrades, rollback boundaries, and readiness
+checks, see [Production deployment and recovery](docs/deployment-recovery.md).
 
 ## Modules overview (new/updated)
 
