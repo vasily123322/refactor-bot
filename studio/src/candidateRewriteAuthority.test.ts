@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StudioApiError } from './api';
 import { promptCandidateStructuredRewrite } from './candidatePromptRewrite';
 import {
+  currentCandidateStructuredRewrite,
   isRewriteAuthorityStaleError,
   loadCurrentStructuredRewritePreviews,
   previewFromCurrentStructuredRewrite,
