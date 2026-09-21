@@ -66,7 +66,11 @@ except Exception as exc:
 
 
 async def create_dispatcher() -> Dispatcher:
-    setup_logging(settings.log_level)
+    setup_logging(
+        settings.log_level,
+        file_enabled=settings.log_file_enabled,
+        file_retention=settings.log_file_retention,
+    )
     dp = Dispatcher(storage=build_fsm_storage())
     dp.message.middleware(ErrorsMiddleware())
     dp.message.middleware(ChannelOwnerStateMiddleware())
