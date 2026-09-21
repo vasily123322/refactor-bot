@@ -797,3 +797,45 @@ def test_studio_health_and_readiness_http_contract(monkeypatch) -> None:
 
     asyncio.run(run())
 
+def test_python_dependency_install_contract_is_locked() -> None:
+    from pathlib import Path
+
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    root = Path(__file__).resolve().parents[1]
+    wrappers = {
+        "requirements.txt": "requirements.in",
+        "requirements-dev.txt": "requirements-dev.in",
+    }
+    for wrapper_name, source_name in wrappers.items():
+        wrapper_lines = [
+            line.strip()
+            for line in (root / wrapper_name).read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        assert "-c requirements.lock" in wrapper_lines
+        assert f"-r {source_name}" in wrapper_lines
+
+    lock_lines = [
+        line.strip()
+        for line in (root / "requirements.lock").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert lock_lines
+    assert all("==" in line for line in lock_lines)
+    locked_names = {
+        canonicalize_name(line.split("==", 1)[0])
+        for line in lock_lines
+    }
+
+    source_names: set[str] = set()
+    for source_name in wrappers.values():
+        for raw_line in (root / source_name).read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            source_names.add(canonicalize_name(Requirement(line).name))
+
+    assert source_names <= locked_names
+
