@@ -1,3 +1,1 @@
-pytest>=8.3,<10
-pytest-asyncio>=0.24,<2
-ruff==0.16.0
+# Install test/tooling dependencies through the canonical Python 3.12 lock.\n-c requirements.lock\n-r requirements-dev.in\n
