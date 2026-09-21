@@ -9,16 +9,15 @@ storage, and external monitoring.
 ## Supported baseline
 
 - Production and canonical CI use Python 3.12.
-- Install Python dependencies through the committed lock:
-  `python -m pip install -r requirements.txt -r requirements-dev.txt`.
+- Install production runtime dependencies through the committed lock:
+  `python -m pip install -r requirements.txt`. Development/canonical CI additionally
+  installs `requirements-dev.txt` for test and tooling dependencies.
 - The supported foreground entry point is `python -m app.bot.dispatcher`.
 - Alembic is the only supported schema authority.
 - The default database is SQLite at `./data/bot.db`; PostgreSQL is supported through
   `DB_URL`, but PostgreSQL service operation and backups are provider/operator owned.
 - The repository does not ship a production process supervisor. Use a service manager,
   container platform, or orchestrator appropriate for the deployment.
-- `DB_SECRET_KEY` must be preserved with the deployment secrets. A database restore
-  without the matching key can make encrypted values unusable.
 - Telegram/userbot sessions, Redis data, provider-side Telegram state, and external
   service credentials are not part of a database backup unless the operator backs them
   up separately.
@@ -49,9 +48,12 @@ Repeated schema/readiness failures require operator investigation.
 For a deployment that may include schema changes:
 
 1. Select the exact application commit/release to deploy.
-2. Install the locked Python dependencies in the target Python 3.12 environment.
-3. Verify that the required environment/secrets are present, especially `DB_URL`,
-   `DB_SECRET_KEY`, Telegram credentials, and any userbot session material.
+2. Install the locked runtime dependencies in the target Python 3.12 environment with
+   `python -m pip install -r requirements.txt`.
+3. Verify that the required environment and secrets for that deployment are present,
+   including the Telegram credentials required by `Settings`, any non-default
+   `DB_URL`, userbot/session configuration when enabled, and configured provider
+   credentials.
 4. Stop or drain the currently running application before taking a file-level SQLite
    backup or performing restore work.
 5. Take and verify a database backup using the database-specific procedure below.
@@ -230,8 +232,9 @@ validates and preserves it.
 Before returning service to production, confirm:
 
 - the intended application commit is deployed;
-- Python 3.12 dependencies were installed through the committed lock;
-- the correct `DB_URL` and matching `DB_SECRET_KEY` are present;
+- Python 3.12 runtime dependencies were installed through the committed lock;
+- the deployment's required Telegram, database, userbot/session, and provider
+  configuration is present;
 - the restored/migrated database passes its engine-specific integrity checks;
 - `alembic current --check-heads` succeeds;
 - the application starts without schema/runtime configuration errors;
