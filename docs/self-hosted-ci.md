@@ -1,265 +1,143 @@
-# Self-hosted CI bootstrap
+# Self-hosted CI
 
-GitHub-hosted Actions for this repository are blocked before runner allocation by the
-account billing/spending policy documented in issue #213. This document defines an
-independent self-hosted execution path. It does not make the hosted failure green and it
-does not change application production code.
+GitHub-hosted CI in `.github/workflows/ci.yml` is the repository's canonical CI
+contract. It runs on pull requests, pushes to `main`, and manual dispatch. Do not
+treat a historical account billing/spending incident as current repository state:
+availability of GitHub-hosted runners is an external account/platform condition and
+must be checked from the current workflow run when it matters.
 
-## Runner architecture
+The canonical required job names are:
 
-Use a dedicated Linux x64 VM/VPS for `refactor-bot` CI. Do not use a personal workstation
-or a machine that contains other sensitive workloads.
+- `Python 3.12`
+- `Telegram Studio frontend`
 
-Preferred production mode is disposable/ephemeral:
+A self-hosted runner is optional. Use it when an operator deliberately wants an
+independent exact-SHA validation path, when GitHub-hosted runner allocation is
+temporarily unavailable, or when diagnosing runner-specific infrastructure. A
+self-hosted success is supplemental evidence; it does not replace the canonical hosted
+checks or change their required status.
 
-1. create a clean VM from a controlled image;
-2. register the GitHub runner with `--ephemeral`;
-3. execute at most one GitHub Actions job;
-4. preserve the GitHub job log and, if needed, runner diagnostics externally;
-5. destroy the VM and its disk after the job.
+## Canonical CI contract
 
-GitHub recommends ephemeral runners for autoscaling/isolation because an ephemeral runner
-is automatically de-registered after one job. A reusable runner may be used only as a
-short-lived bootstrap diagnostic. Repository workspace cleanup such as `git clean -ffdx`
-is hygiene, not a security boundary: workflow code runs as the runner account and can
-modify files outside the checkout. Re-image or destroy the VM between trust boundaries.
+For backend validation, `.github/workflows/ci.yml` currently uses Python 3.12 and:
 
-Exact labels used by repository workflows:
-
-- `self-hosted` (default GitHub label)
-- `linux` (default GitHub label)
-- `x64` (default GitHub label)
-- `refactor-bot-ci` (custom repository label)
-
-## Minimal VM baseline
-
-Recommended bootstrap image: Ubuntu 24.04 LTS x86_64. GitHub supports Ubuntu 20.04 or
-later for self-hosted runners.
-
-Create a dedicated unprivileged account and a dedicated runner directory from an admin
-shell:
-
-```bash
-sudo useradd --create-home --shell /bin/bash actions || true
-sudo install -d -o actions -g actions /opt/actions-runner
-sudo apt-get update
-sudo apt-get install -y \
-  ca-certificates curl git tar gzip unzip \
-  build-essential pkg-config libssl-dev libffi-dev
+```text
+python -m pip install --upgrade pip
+pip install -r requirements.txt -r requirements-dev.txt
+python scripts/secret_scan.py
+ruff check app tests scripts
+python -m compileall -q app tests scripts
+pytest -q <stabilization regression files>
+python scripts/backend_test_scope.py
 ```
 
-Do **not** add `actions` to sudoers. Do not give it the Docker socket. The current CI
-uses SQLite in memory and does not require Docker, PostgreSQL, Redis, or inbound service
-ports.
+The committed `requirements.txt` and `requirements-dev.txt` wrappers use the
+repository dependency lock contract. The supported broad-suite step is collection,
+not an unrestricted `pytest -q` of every historical test.
 
-The machine needs outbound HTTPS to GitHub/GitHub Actions and normal package download
-access used by pip/npm. No inbound network access is required by the runner itself.
-Restrict administrative SSH separately to trusted sources.
+For Telegram Studio, the canonical workflow uses Node 24 and the committed
+`studio/package-lock.json`:
 
-Do not place API keys, SSH private keys, cloud credentials, production `.env` files, or
-other workload data on the runner VM. The repository CI uses only synthetic non-secret
-environment values.
-
-## Register the repository runner
-
-In GitHub open:
-
-`vasily123322/refactor-bot` -> **Settings** -> **Actions** -> **Runners** ->
-**New self-hosted runner** -> **Linux** -> **x64**.
-
-GitHub displays the current runner archive URL, checksum/configuration commands, and a
-short-lived registration token. The registration token expires after about one hour, so
-generate it only when the VM is ready. Run the displayed download/extract commands as the
-`actions` user inside `/opt/actions-runner`. Do not save or commit the token.
-
-For the configuration step, keep the URL/token supplied by GitHub and add the repository
-identity options below:
-
-```bash
-cd /opt/actions-runner
-./config.sh \
-  --url https://github.com/vasily123322/refactor-bot \
-  --token '<TOKEN_FROM_GITHUB_UI>' \
-  --name 'refactor-bot-ci-01' \
-  --labels 'refactor-bot-ci' \
-  --work '_work' \
-  --unattended \
-  --ephemeral
+```text
+npm ci --no-audit --no-fund
+npm run test
+npm run build
 ```
 
-Do not use `--no-default-labels`; the workflows intentionally require GitHub's default
-`self-hosted`, `linux`, and `x64` labels in addition to `refactor-bot-ci`.
+Use `npm ci`, not `npm install`, when reproducing the canonical frontend dependency
+install. The lockfile exists and is part of the reproducible CI contract.
 
-For the preferred ephemeral runner, start it in the foreground:
+## Self-hosted runner architecture
 
-```bash
-cd /opt/actions-runner
-./run.sh
-```
+Use a dedicated Linux x64 CI machine. Prefer a disposable/ephemeral VM rather than a
+personal workstation or a host carrying production credentials or unrelated sensitive
+workloads.
 
-It should report that it is connected and listening for jobs. After it accepts one job,
-it deregisters. Destroy the VM after the job rather than reusing its filesystem. For a
-production ephemeral provisioning system, forward runner diagnostic logs externally
-before destroying the VM so runner-level failures remain diagnosable.
+The repository self-hosted workflows request these labels:
 
-### Temporary reusable diagnostic service
+- `self-hosted`
+- `linux`
+- `x64`
+- `refactor-bot-ci`
 
-If a disposable VM cannot be recreated yet, omit `--ephemeral` during configuration and
-use a dedicated CI-only VM. From an administrator shell in the runner directory:
+A practical baseline is a currently supported Ubuntu LTS image with outbound HTTPS,
+Git, archive tools, and the build prerequisites needed by Python packages. The runner
+does not require inbound service ports, Docker, PostgreSQL, or Redis for the repository's
+current SQLite-based CI environment.
 
-```bash
-sudo ./svc.sh install actions
-sudo ./svc.sh start
-sudo ./svc.sh status
-```
+Do not place production `.env` files, API keys, SSH private keys, cloud credentials,
+or unrelated workload data on the runner. Do not grant the runner account passwordless
+sudo or access to the Docker socket.
 
-To stop or remove it:
+## Registration
 
-```bash
-sudo ./svc.sh stop
-sudo ./svc.sh uninstall
-```
+In the repository, open **Settings → Actions → Runners → New self-hosted runner** and
+follow GitHub's current Linux/x64 download and registration instructions. Registration
+tokens are short-lived; generate one only when the runner host is ready and never
+commit it.
 
-The service account remains `actions`; the runner account itself should still have no
-sudo capability. Replace/re-image this bootstrap VM after diagnostic use.
+Keep GitHub's default labels and add the custom `refactor-bot-ci` label. For an
+ephemeral runner, configure it with GitHub's `--ephemeral` option and destroy or
+re-image the VM after the accepted job. Workspace cleanup such as `git clean -ffdx`
+is hygiene, not a security boundary.
 
 ## Diagnostic workflow
 
-`.github/workflows/self-hosted-diagnostic.yml` runs only on the bootstrap branch push or
-manual dispatch. It requests exactly:
+`.github/workflows/self-hosted-diagnostic.yml` is for runner/bootstrap diagnostics.
+It validates allocation, checkout, Python 3.12, Node 24, and basic repository/toolchain
+visibility. It intentionally does not prove the canonical backend/frontend test
+contract.
 
-```yaml
-runs-on: [self-hosted, linux, x64, refactor-bot-ci]
-```
+Use it when confirming that a newly registered runner is reachable and correctly
+labelled. Do not use a diagnostic success as a merge gate.
 
-The diagnostic deliberately does not install project dependencies or execute the test
-suite. It proves only:
+## Exact-SHA self-hosted workflow
 
-- GitHub assigned a real self-hosted runner;
-- checkout works with credentials not persisted in `.git/config`;
-- `uname` and runner identity are visible;
-- `actions/setup-python` can provide Python 3.12;
-- `actions/setup-node` can provide Node 24/npm;
-- repository files and exact checked-out commit are visible;
-- workflow command logs are available.
+`.github/workflows/self-hosted-ci.yml` validates an explicitly selected commit SHA on
+a runner labelled `refactor-bot-ci`. Its checkout is deliberately exact-SHA and uses
+non-persisted checkout credentials.
 
-Success criteria in GitHub's job metadata/logs:
+The self-hosted workflow has historically carried extra compatibility/stress checks
+(such as Python 3.10, an explicit Alembic upgrade, or a broader full-suite run). Those
+checks are supplemental and are not part of the canonical required-check definition.
+When the two workflows differ, `.github/workflows/ci.yml` is the source of truth for
+the required dependency-install and test contract.
 
-- `runner_id` is non-zero;
-- `runner_name` is populated (for example `refactor-bot-ci-01`);
-- steps are present instead of `null`;
-- checkout completes;
-- command output is visible;
-- the final `self-hosted diagnostic OK` line is present.
+In particular, anyone maintaining the self-hosted workflow should keep its canonical
+overlap synchronized with hosted CI:
 
-## Full CI control plane after the diagnostic
+- Python 3.12 dependency install through `requirements.txt` and
+  `requirements-dev.txt`;
+- tracked-file secret scan;
+- Ruff and compile gates;
+- the current stabilization regression set;
+- `scripts/backend_test_scope.py`;
+- Node 24;
+- Studio install with `npm ci --no-audit --no-fund`;
+- Studio tests and build.
 
-GitHub only accepts `workflow_dispatch` events when the workflow file exists on the
-default branch. Therefore the full workflow has two deliberately different control paths.
-
-### Pre-merge validation
-
-Before `.github/workflows/self-hosted-ci.yml` reaches `main`, it can run only from its
-control branch `agent/self-hosted-ci-workflow`. A push on that branch allocates a runner
-**only** when all of these are true:
-
-- actor is `vasily123322`;
-- the first commit-message line begins exactly `validate-sha: `;
-- the remainder is an exact lowercase 40-hex commit SHA.
-
-Example control commit message:
-
-```text
-validate-sha: 0123456789abcdef0123456789abcdef01234567
-```
-
-The workflow parses that SHA as data, validates its format, checks out that exact commit
-with persisted checkout credentials disabled, and requires `git rev-parse HEAD` to match.
-A normal workflow-development push does not allocate the self-hosted runner job.
-
-This exists so PR #281 can be validated before either CI PR is merged. It is not an
-automatic `pull_request` executor and does not run every mutable PR head.
-
-### Canonical path after merge
-
-After the workflow exists on `main`, use GitHub **Actions** -> **Self-hosted CI** ->
-**Run workflow**, supply the exact 40-hex `commit_sha`, and run it. Write access is
-required to manually dispatch a workflow. The workflow again validates and checks out the
-exact supplied SHA rather than a mutable PR branch name.
-
-## Full CI contract
-
-The self-hosted full CI reproduces the existing hosted CI contract and adds an explicit
-Alembic upgrade command before each Python full-suite run.
-
-Backend matrix semantics, executed sequentially in one ephemeral-runner job:
-
-- Python 3.10 and 3.12;
-- install `requirements.txt` and `requirements-dev.txt`;
-- `python scripts/secret_scan.py`;
-- `ruff check app tests scripts`;
-- `python -m compileall -q app tests scripts`;
-- `python -m alembic -c alembic.ini upgrade head`;
-- `pytest -q` (includes additional Alembic/schema regressions).
-
-Synthetic backend environment:
-
-```text
-BOT_TOKEN=123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi
-API_ID=123456
-API_HASH=0123456789abcdef0123456789abcdef
-DB_URL=sqlite+aiosqlite:///:memory:
-DB_SECRET_KEY=ci-only-database-secret-key-0123456789abcdef
-PYTHONPATH=.
-```
-
-Telegram Studio frontend:
-
-- Node 24 (the package declares Node >=20.19);
-- `npm install --no-audit --no-fund` because the repository currently has no
-  `studio/package-lock.json`;
-- `npm run test`;
-- `npm run build`.
-
-No service containers, Docker daemon, PostgreSQL, Redis, caches, or build artifacts are
-required by the current canonical CI workflow.
-
-A single sequential full-CI job is intentional for the first production design: one
-`--ephemeral` runner accepts one GitHub job, executes every backend/frontend gate for one
-exact SHA, then de-registers and the VM can be destroyed. This avoids needing three
-separately provisioned ephemeral runners merely to reproduce the old matrix.
+Additional self-hosted-only checks must be clearly treated as supplemental rather than
+silently redefining canonical CI.
 
 ## Security rules
 
-- Keep workflow-level `permissions: contents: read`.
-- Use `actions/checkout` with `persist-credentials: false`.
-- Pin official actions to reviewed exact commit SHAs.
-- Do not expose repository/environment secrets to validation jobs.
-- Do not use `pull_request_target` to check out and execute PR code.
-- Do not automatically execute arbitrary `pull_request` heads on a persistent runner.
-- Do not mount the Docker socket or grant passwordless sudo.
-- Do not keep SSH/private keys or cloud metadata credentials on the machine.
-- Keep the runner dedicated to this repository.
-- Prefer a fresh VM for every independently changing commit.
-- Treat `git clean` as workspace hygiene only; it does not undo host compromise.
-- For a reusable bootstrap runner, remove it from GitHub and re-image the VM after use.
-- Preserve explicit hosted-CI failure status; self-hosted success is a separate validation
-  signal and must not rewrite #213 as a code fix.
+Keep workflow permissions read-only unless a reviewed use case requires more. Use
+checkout without persisted credentials for untrusted/exact-SHA validation. Do not use
+`pull_request_target` to execute PR code, do not automatically execute arbitrary PR
+heads on a persistent privileged runner, and do not expose repository/environment
+secrets to validation jobs.
 
-## Merge gate
+Prefer a fresh runner image for independently changing commits. Preserve GitHub job
+logs and runner diagnostics externally when an ephemeral host will be destroyed.
 
-A PR is not validated merely because the GitHub-hosted workflow fails with the known
-billing signature. Merge readiness requires the exact PR head SHA to run through the
-self-hosted full CI and show:
+## Merge interpretation
 
-- real runner allocation and checkout;
-- exact requested SHA equals `git rev-parse HEAD`;
-- Python 3.10 green;
-- Python 3.12 green;
-- Ruff/compile/explicit Alembic upgrade/full pytest green;
-- Telegram Studio tests green;
-- Telegram Studio build green;
-- any PR-specific safety regressions green.
+Normal repository merge readiness is determined by the canonical hosted workflow for
+the exact PR head: `Python 3.12` and `Telegram Studio frontend` must both be green.
+After merge, the canonical push workflow on the merge SHA must also be green before the
+roadmap issue is considered done.
 
-The first full validations after runner bootstrap are PR #281 and then the top safe
-migration/repeat head owned by Chat A.
+A self-hosted exact-SHA run can provide additional confidence or temporary diagnostic
+coverage, but it must not be used to rewrite a hosted infrastructure/account failure as
+a code success or to claim that a different test matrix is the repository's canonical
+contract.
