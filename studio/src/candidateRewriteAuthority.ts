@@ -1,4 +1,4 @@
-import { getRawInitData } from './telegram';
+import { StudioApiError, studioRequest } from './api';
 import type { ContentCandidateView, ContentDetail, PostDocument } from './types';
 
 export type RewriteProvenanceStatus =
@@ -49,33 +49,7 @@ export function rewriteProvenanceLabel(
 }
 
 export function isRewriteAuthorityStaleError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const message = error.message.toLowerCase();
-  return message.includes('no longer current') || message.includes('rewrite authority changed');
-}
-
-async function authorityRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const initData = getRawInitData();
-  if (!initData) throw new Error('Откройте Studio из Telegram, чтобы авторизоваться.');
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Telegram-Init-Data': initData,
-      ...init.headers,
-    },
-  });
-  if (!response.ok) {
-    let detail = response.statusText || 'Studio API error';
-    try {
-      const payload = (await response.json()) as { detail?: string };
-      detail = payload.detail || detail;
-    } catch {
-      // Keep HTTP status text when no JSON detail is available.
-    }
-    throw new Error(detail);
-  }
-  return (await response.json()) as T;
+  return error instanceof StudioApiError && error.status === 409;
 }
 
 export function previewFromCurrentStructuredRewrite(
@@ -96,7 +70,7 @@ export async function currentCandidateStructuredRewrite(
   channelId: number,
   candidateId: number,
 ): Promise<CurrentStructuredRewrite | null> {
-  return authorityRequest<CurrentStructuredRewrite | null>(
+  return studioRequest<CurrentStructuredRewrite | null>(
     `/api/studio/channels/${channelId}/candidates/${candidateId}/rewrite/ai/structured/current`,
   );
 }
@@ -138,7 +112,7 @@ export async function applyCurrentStructuredRewrite(
   candidateId: number,
   runId: number,
 ): Promise<ContentDetail> {
-  return authorityRequest<ContentDetail>(
+  return studioRequest<ContentDetail>(
     `/api/studio/channels/${channelId}/candidates/${candidateId}/rewrite/ai/structured/apply`,
     { method: 'POST', body: JSON.stringify({ run_id: runId }) },
   );

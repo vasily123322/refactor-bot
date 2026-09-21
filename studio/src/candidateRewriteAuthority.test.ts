@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { StudioApiError } from './api';
+import { promptCandidateStructuredRewrite } from './candidatePromptRewrite';
 import {
+  currentCandidateStructuredRewrite,
   isRewriteAuthorityStaleError,
   loadCurrentStructuredRewritePreviews,
   previewFromCurrentStructuredRewrite,
@@ -8,6 +11,7 @@ import {
   type CurrentStructuredRewrite,
   type RewritePreview,
 } from './candidateRewriteAuthority';
+import { editCurrentStructuredRewrite } from './candidateStructuredEdit';
 import type { ContentCandidateView, PostDocument } from './types';
 
 const document: PostDocument = {
@@ -96,7 +100,7 @@ describe('structured rewrite provenance presentation', () => {
     );
   });
 
-  it('renders server-rejected visible proposals as stale for both preflight and late-CAS rejection', () => {
+  it('renders server-rejected visible proposals as stale and classifies conflict by HTTP status', () => {
     const label = rewriteProvenanceLabel(
       { ...structuredPreview, provenanceStatus: 'stale' },
       5,
@@ -104,8 +108,15 @@ describe('structured rewrite provenance presentation', () => {
     );
     expect(label).toContain(' · stale · ');
     expect(label).not.toContain('current at last server check');
-    expect(isRewriteAuthorityStaleError(new Error('candidate structured rewrite is no longer current'))).toBe(true);
-    expect(isRewriteAuthorityStaleError(new Error('candidate rewrite authority changed during rewrite'))).toBe(true);
+    expect(isRewriteAuthorityStaleError(
+      new StudioApiError('localized detail can change', 409),
+    )).toBe(true);
+    expect(isRewriteAuthorityStaleError(
+      new StudioApiError('candidate rewrite authority changed during rewrite', 422),
+    )).toBe(false);
+    expect(isRewriteAuthorityStaleError(
+      new Error('candidate structured rewrite is no longer current'),
+    )).toBe(false);
   });
 
   it('never presents failed or historical state as current, regardless of run identity', () => {
@@ -150,3 +161,77 @@ describe('structured rewrite provenance presentation', () => {
     )).toBeNull();
   });
 });
+
+function stubTelegramLaunch() {
+  vi.stubGlobal('window', {
+    location: {
+      search: '?tgWebAppData=signed-test-init-data',
+      hash: '',
+    },
+  });
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('structured rewrite typed Studio API errors', () => {
+  it('preserves 401 when Telegram init data is missing', async () => {
+    vi.stubGlobal('window', {
+      location: {
+        search: '',
+        hash: '',
+      },
+    });
+
+    try {
+      await currentCandidateStructuredRewrite(7, 10);
+      throw new Error('expected current rewrite request to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(StudioApiError);
+      expect((error as StudioApiError).status).toBe(401);
+      expect((error as StudioApiError).message).toContain('Telegram');
+    }
+  });
+
+  it('preserves 409 detail for structured edit and marks it stale by status', async () => {
+    stubTelegramLaunch();
+    vi.stubGlobal('fetch', vi.fn(async () => (
+      new Response(JSON.stringify({ detail: 'authority changed on server' }), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )));
+
+    try {
+      await editCurrentStructuredRewrite(7, 10, 42, 'shorten');
+      throw new Error('expected structured edit to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(StudioApiError);
+      expect((error as StudioApiError).status).toBe(409);
+      expect((error as StudioApiError).message).toBe('authority changed on server');
+      expect(isRewriteAuthorityStaleError(error)).toBe(true);
+    }
+  });
+
+  it('preserves 422 detail for prompt rewrite without treating it as stale', async () => {
+    stubTelegramLaunch();
+    vi.stubGlobal('fetch', vi.fn(async () => (
+      new Response(JSON.stringify({ detail: 'instruction is invalid' }), {
+        status: 422,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )));
+
+    try {
+      await promptCandidateStructuredRewrite(7, 10, '');
+      throw new Error('expected prompt rewrite to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(StudioApiError);
+      expect((error as StudioApiError).status).toBe(422);
+      expect((error as StudioApiError).message).toBe('instruction is invalid');
+      expect(isRewriteAuthorityStaleError(error)).toBe(false);
+    }
+  });
+});
+

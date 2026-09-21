@@ -40,7 +40,10 @@ async function parseResponse<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function studioRequest<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
   const initData = getRawInitData();
   if (!initData) {
     throw new StudioApiError('Откройте Studio из Telegram, чтобы авторизоваться.', 401);
@@ -56,6 +59,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   return parseResponse<T>(response);
 }
+
+const request = studioRequest;
 
 async function multipartRequest<T>(path: string, form: FormData): Promise<T> {
   const initData = getRawInitData();
